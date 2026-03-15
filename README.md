@@ -62,3 +62,5 @@ By default, the API will be accessible at `http://localhost:5002` (or the port s
 - **Protected Routes:** Certain API endpoints require either a Default API Bearer token for open access, or a fully signed JWT token for sensitive reads/writes.
 - **Soft Deletion:** Safely disables application models (e.g., Company) using `is_deleted_status` instead of physical deletion.
 - **Sequelize ORM:** Streamlined querying, migrations, and model life-cycle hooks.
+
+
