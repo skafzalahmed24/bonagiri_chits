@@ -1,7 +1,8 @@
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company } = require('../models');
+const { Company, Member } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
+const { Op } = require('sequelize');
 
 const loginAdminService = async (res, email, password) => {
   // Static check for superadmin
@@ -10,10 +11,10 @@ const loginAdminService = async (res, email, password) => {
       email: 'superadmin@gmail.com',
       role: 'superadmin'
     };
-    
+
     // Generate JWT tokens
     const tokens = generateTokens(user);
-    
+
     return successResponse(res, statusCodes.OK, 'Login success', {
       user,
       tokens
@@ -54,7 +55,7 @@ const loginCompanyService = async (res, company_id, company_email, company_passw
 const refreshTokenService = async (res, refresh_token) => {
   try {
     const decoded = verifyRefreshToken(refresh_token);
-    
+
     // Strip exp/iat to generate a fresh token payload
     const payload = { ...decoded };
     delete payload.iat;
@@ -105,15 +106,79 @@ const getAllCompanyDetailsService = async (res, min, max) => {
 
 const deleteCompanyService = async (res, id) => {
   const company = await Company.findByPk(id);
-  
+
   if (!company) {
     return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
   }
 
   // Soft delete
   await company.update({ is_deleted_status: 1 });
-  
+
   return successResponse(res, statusCodes.OK, 'Company deleted successfully');
+};
+
+const storeOrUpdateMemberService = async (res, data = {}) => {
+  try {
+    const { id, ...memberData } = data;
+
+    if (id) {
+      // Update existing
+      const member = await Member.findByPk(id);
+      if (!member) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      }
+      await member.update(memberData);
+      return successResponse(res, statusCodes.OK, 'Member updated successfully', member);
+    } else {
+      // Create new
+      const newMember = await Member.create(memberData);
+      return successResponse(res, statusCodes.CREATED, 'Member registered successfully', newMember);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateMemberService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllMemberDetailsService = async (res, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const members = await Member.findAndCountAll({
+      limit,
+      offset,
+      where: {
+        is_deleted_status: 0,
+        name: {
+          [Op.like]: `%${search || ''}%`
+        }
+      },
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Members retrieved successfully', members);
+  } catch (error) {
+    console.error('Error in getAllMemberDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteMemberService = async (res, id) => {
+  try {
+    const member = await Member.findByPk(id);
+
+    if (!member) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+    }
+
+    await member.update({ is_deleted_status: 1 });
+
+    return successResponse(res, statusCodes.OK, 'Member deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteMemberService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
 };
 
 module.exports = {
@@ -122,5 +187,8 @@ module.exports = {
   getAllCompanyDetailsService,
   deleteCompanyService,
   loginCompanyService,
-  refreshTokenService
+  refreshTokenService,
+  storeOrUpdateMemberService,
+  getAllMemberDetailsService,
+  deleteMemberService
 };

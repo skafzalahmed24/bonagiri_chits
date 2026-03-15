@@ -64,11 +64,43 @@ const refreshToken = async (req, res) => {
   }
 };
 
+const storeOrUpdateMember = async (req, res) => {
+  try {
+    return await adminService.storeOrUpdateMemberService(res, req.body);
+  } catch (error) {
+    console.error('Error in storeOrUpdateMember:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllMemberDetails = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllMemberDetailsService(res, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllMemberDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteMember = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteMemberService(res, id);
+  } catch (error) {
+    console.error('Error in deleteMember:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
   getAllCompanyDetails,
   deleteCompany,
   loginCompany,
-  refreshToken
+  refreshToken,
+  storeOrUpdateMember,
+  getAllMemberDetails,
+  deleteMember
 };
