@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const adminRoutes = require('./routes/adminRoutes');
 
 const app = express();
@@ -11,6 +12,9 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use('/api/admin', adminRoutes);
+
+// Static file routing for global uploaded documents
+app.use('/uploads', express.static(path.join(__dirname, '../../uploads')));
 
 // Basic health check route
 app.get('/', (req, res) => {

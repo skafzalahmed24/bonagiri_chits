@@ -1,5 +1,5 @@
 const adminService = require('../services/adminService');
-const { errorResponse } = require('../utils/responseHelper');
+const { errorResponse, successResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 
 const loginAdmin = async (req, res) => {
@@ -93,6 +93,30 @@ const deleteMember = async (req, res) => {
   }
 };
 
+const uploadDocument = async (req, res) => {
+  try {
+    const { type } = req.body;
+    const files = req.files;
+
+    if (!files || files.length === 0) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'No documents uploaded');
+    }
+
+    if (String(type) === '1' && files.length > 1) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Only one document is allowed for type 1');
+    }
+
+    const filePaths = files.map(file => `/uploads/${file.filename}`);
+
+    return successResponse(res, statusCodes.OK, 'Documents uploaded successfully', {
+      file_paths: filePaths
+    });
+  } catch (error) {
+    console.error('Error in uploadDocument:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, error.message || 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -102,5 +126,6 @@ module.exports = {
   refreshToken,
   storeOrUpdateMember,
   getAllMemberDetails,
-  deleteMember
+  deleteMember,
+  uploadDocument
 };

@@ -172,6 +172,13 @@ const deleteMemberSchema = Joi.object({
   })
 });
 
+const uploadDocumentSchema = Joi.object({
+  type: Joi.number().integer().valid(1, 2).required().messages({
+    'any.required': 'Upload type is required',
+    'any.only': 'Upload type must be 1 (single) or 2 (multiple)'
+  })
+});
+
 module.exports = {
   loginAdminSchema,
   companyValidator,
@@ -181,5 +188,6 @@ module.exports = {
   refreshTokenSchema,
   memberValidator,
   getAllMemberSchema,
-  deleteMemberSchema
+  deleteMemberSchema,
+  uploadDocumentSchema
 };
