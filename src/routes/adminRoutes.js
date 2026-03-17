@@ -26,4 +26,14 @@ router.post('/member/delete', authMiddleware.authenticateToken, validate(adminVa
 // upload routes
 router.post('/upload/document', authMiddleware.authenticateToken, uploadMiddleware.array('document', 20), validate(adminValidation.uploadDocumentSchema), adminController.uploadDocument);
 
+// routes management
+router.post('/route/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.routeValidator), adminController.storeOrUpdateRoute);
+router.post('/route/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllRouteSchema), adminController.getAllRouteDetails);
+router.post('/route/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteRouteSchema), adminController.deleteRoute);
+
+// area management
+router.post('/area/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.areaValidator), adminController.storeOrUpdateArea);
+router.post('/area/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllAreaSchema), adminController.getAllAreaDetails);
+router.post('/area/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAreaSchema), adminController.deleteArea);
+
 module.exports = router;

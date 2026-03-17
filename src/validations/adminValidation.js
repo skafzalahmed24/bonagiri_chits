@@ -93,6 +93,10 @@ const memberValidator = Joi.object({
   id: Joi.number().integer().optional().messages({
     'number.base': 'Invalid Member ID format'
   }),
+  member_id: Joi.string().required().messages({
+    'any.required': 'Member User ID is required',
+    'string.empty': 'Member User ID cannot be empty'
+  }),
   name_prefix: Joi.string().allow('', null).optional(),
   name: Joi.string().required().messages({
     'any.required': 'Name is required',
@@ -179,6 +183,64 @@ const uploadDocumentSchema = Joi.object({
   })
 });
 
+const routeValidator = Joi.object({
+  id: Joi.number().integer().optional().messages({
+    'number.base': 'Invalid Route ID format'
+  }),
+  route_name: Joi.string().required().messages({
+    'any.required': 'Route name is required',
+    'string.empty': 'Route name cannot be empty'
+  })
+});
+
+const getAllRouteSchema = Joi.object({
+  min: Joi.number().integer().min(0).optional().messages({
+    'number.min': 'Min must be greater than or equal to 0'
+  }),
+  max: Joi.number().integer().min(1).optional().messages({
+    'number.min': 'Max must be greater than or equal to 1'
+  }),
+  search: Joi.string().allow('', null).optional()
+});
+
+const deleteRouteSchema = Joi.object({
+  id: Joi.number().integer().required().messages({
+    'any.required': 'Route ID is required',
+    'number.base': 'Invalid Route ID format'
+  })
+});
+
+const areaValidator = Joi.object({
+  id: Joi.number().integer().optional().messages({
+    'number.base': 'Invalid Area ID format'
+  }),
+  route_id: Joi.number().integer().required().messages({
+    'any.required': 'Route ID is required',
+    'number.base': 'Invalid Route ID format'
+  }),
+  area_name: Joi.string().required().messages({
+    'any.required': 'Area name is required',
+    'string.empty': 'Area name cannot be empty'
+  })
+});
+
+const getAllAreaSchema = Joi.object({
+  min: Joi.number().integer().min(0).optional().messages({
+    'number.min': 'Min must be greater than or equal to 0'
+  }),
+  max: Joi.number().integer().min(1).optional().messages({
+    'number.min': 'Max must be greater than or equal to 1'
+  }),
+  search: Joi.string().allow('', null).optional()
+});
+
+const deleteAreaSchema = Joi.object({
+  id: Joi.number().integer().required().messages({
+    'any.required': 'Area ID is required',
+    'number.base': 'Invalid Area ID format'
+  })
+});
+
 module.exports = {
   loginAdminSchema,
   companyValidator,
@@ -189,5 +251,11 @@ module.exports = {
   memberValidator,
   getAllMemberSchema,
   deleteMemberSchema,
-  uploadDocumentSchema
+  uploadDocumentSchema,
+  routeValidator,
+  getAllRouteSchema,
+  deleteRouteSchema,
+  areaValidator,
+  getAllAreaSchema,
+  deleteAreaSchema
 };

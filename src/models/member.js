@@ -14,6 +14,7 @@ module.exports = (sequelize, DataTypes) => {
     }
   }
   Member.init({
+    member_id: DataTypes.STRING,
     name_prefix: DataTypes.STRING,
     name: DataTypes.STRING,
     date_of_birth: DataTypes.DATEONLY,

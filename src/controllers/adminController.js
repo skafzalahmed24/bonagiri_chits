@@ -117,6 +117,64 @@ const uploadDocument = async (req, res) => {
   }
 };
 
+const storeOrUpdateRoute = async (req, res) => {
+  try {
+    return await adminService.storeOrUpdateRouteService(res, req.body);
+  } catch (error) {
+    console.error('Error in storeOrUpdateRoute:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllRouteDetails = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllRouteDetailsService(res, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllRouteDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteRoute = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteRouteService(res, id);
+  } catch (error) {
+    console.error('Error in deleteRoute:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateArea = async (req, res) => {
+  try {
+    return await adminService.storeOrUpdateAreaService(res, req.body);
+  } catch (error) {
+    console.error('Error in storeOrUpdateArea:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAreaDetails = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllAreaDetailsService(res, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllAreaDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteArea = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteAreaService(res, id);
+  } catch (error) {
+    console.error('Error in deleteArea:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -127,5 +185,11 @@ module.exports = {
   storeOrUpdateMember,
   getAllMemberDetails,
   deleteMember,
-  uploadDocument
+  uploadDocument,
+  storeOrUpdateRoute,
+  getAllRouteDetails,
+  deleteRoute,
+  storeOrUpdateArea,
+  getAllAreaDetails,
+  deleteArea
 };

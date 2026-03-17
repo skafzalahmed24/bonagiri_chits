@@ -1,6 +1,6 @@
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member } = require('../models');
+const { Company, Member, Route, Area } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -181,6 +181,137 @@ const deleteMemberService = async (res, id) => {
   }
 };
 
+const storeOrUpdateRouteService = async (res, data = {}) => {
+  try {
+    const { id, ...routeData } = data;
+
+    if (id) {
+      const route = await Route.findByPk(id);
+      if (!route) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
+      }
+      await route.update(routeData);
+      return successResponse(res, statusCodes.OK, 'Route updated successfully', route);
+    } else {
+      const newRoute = await Route.create(routeData);
+      return successResponse(res, statusCodes.CREATED, 'Route created successfully', newRoute);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateRouteService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllRouteDetailsService = async (res, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const routes = await Route.findAndCountAll({
+      limit,
+      offset,
+      where: search ? {
+        is_deleted_status: 0,
+        route_name: {
+          [Op.like]: `%${search}%`
+        }
+      } : { is_deleted_status: 0 },
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Routes retrieved successfully', routes);
+  } catch (error) {
+    console.error('Error in getAllRouteDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteRouteService = async (res, id) => {
+  try {
+    const route = await Route.findByPk(id);
+
+    if (!route) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
+    }
+
+    await route.update({ is_deleted_status: 1 });
+
+    return successResponse(res, statusCodes.OK, 'Route deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteRouteService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAreaService = async (res, data = {}) => {
+  try {
+    const { id, ...areaData } = data;
+
+    if (id) {
+      const area = await Area.findByPk(id);
+      if (!area) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
+      }
+      await area.update(areaData);
+      return successResponse(res, statusCodes.OK, 'Area updated successfully', area);
+    } else {
+      const newArea = await Area.create(areaData);
+      return successResponse(res, statusCodes.CREATED, 'Area created successfully', newArea);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateAreaService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAreaDetailsService = async (res, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const areas = await Area.findAndCountAll({
+      limit,
+      offset,
+      where: search ? {
+        is_deleted_status: 0,
+        area_name: {
+          [Op.like]: `%${search}%`
+        }
+      } : { is_deleted_status: 0 },
+      include: [
+        {
+          model: Route,
+          as: 'route',
+          attributes: ['id', 'route_name']
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Areas retrieved successfully', areas);
+  } catch (error) {
+    console.error('Error in getAllAreaDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteAreaService = async (res, id) => {
+  try {
+    const area = await Area.findByPk(id);
+
+    if (!area) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
+    }
+
+    await area.update({ is_deleted_status: 1 });
+
+    return successResponse(res, statusCodes.OK, 'Area deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteAreaService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdminService,
   storeOrUpdateCompanyService,
@@ -190,5 +321,11 @@ module.exports = {
   refreshTokenService,
   storeOrUpdateMemberService,
   getAllMemberDetailsService,
-  deleteMemberService
+  deleteMemberService,
+  storeOrUpdateRouteService,
+  getAllRouteDetailsService,
+  deleteRouteService,
+  storeOrUpdateAreaService,
+  getAllAreaDetailsService,
+  deleteAreaService
 };
