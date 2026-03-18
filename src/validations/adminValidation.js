@@ -71,11 +71,7 @@ const companyLoginSchema = Joi.object({
     'any.required': 'Company ID is required',
     'string.empty': 'Company ID cannot be empty'
   }),
-  company_email: Joi.string().email().required().messages({
-    'string.email': 'Please provide a valid email',
-    'any.required': 'Email is required',
-    'string.empty': 'Email cannot be empty'
-  }),
+  company_email: Joi.string().allow('', null).optional(),
   company_password: Joi.string().required().messages({
     'any.required': 'Password is required',
     'string.empty': 'Password cannot be empty'
@@ -83,7 +79,7 @@ const companyLoginSchema = Joi.object({
 });
 
 const refreshTokenSchema = Joi.object({
-  refreshToken: Joi.string().required().messages({
+  refresh_token: Joi.string().required().messages({
     'any.required': 'Refresh token is required',
     'string.empty': 'Refresh token cannot be empty'
   })

@@ -46,8 +46,8 @@ const deleteCompany = async (req, res) => {
 
 const loginCompany = async (req, res) => {
   try {
-    const { company_id, company_email, company_password } = req.body;
-    return await adminService.loginCompanyService(res, company_id, company_email, company_password);
+    const { company_id, company_password } = req.body;
+    return await adminService.loginCompanyService(res, company_id, company_password);
   } catch (error) {
     console.error('Error in loginCompany:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

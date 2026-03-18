@@ -24,9 +24,9 @@ const loginAdminService = async (res, email, password) => {
   return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid email or password');
 };
 
-const loginCompanyService = async (res, company_id, company_email, company_password) => {
+const loginCompanyService = async (res, company_id, company_password) => {
   const company = await Company.findOne({
-    where: { company_id, company_email, company_password, is_deleted_status: 0 }
+    where: { company_id, company_password, is_deleted_status: 0 }
   });
 
   if (!company) {
@@ -45,8 +45,7 @@ const loginCompanyService = async (res, company_id, company_email, company_passw
     company: {
       id: company.id,
       company_id: company.company_id,
-      company_name: company.company_name,
-      company_email: company.company_email
+      company_name: company.company_name
     },
     tokens
   });
@@ -288,7 +287,24 @@ const getAllAreaDetailsService = async (res, min, max, search) => {
       order: [['createdAt', 'DESC']]
     });
 
-    return successResponse(res, statusCodes.OK, 'Areas retrieved successfully', areas);
+    // 🔥 Flatten route
+    const formattedRows = areas.rows.map(area => {
+      const areaData = area.toJSON();
+
+      return {
+        ...areaData,
+        route_id: areaData.route?.id || null,
+        route_name: areaData.route?.route_name || null,
+        route: undefined // remove nested object
+      };
+    });
+
+    const response = {
+      count: areas.count,
+      rows: formattedRows
+    };
+
+    return successResponse(res, statusCodes.OK, 'Areas retrieved successfully', response);
   } catch (error) {
     console.error('Error in getAllAreaDetailsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
