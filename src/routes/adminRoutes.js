@@ -36,4 +36,28 @@ router.post('/area/store-or-update', authMiddleware.authenticateToken, validate(
 router.post('/area/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllAreaSchema), adminController.getAllAreaDetails);
 router.post('/area/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAreaSchema), adminController.deleteArea);
 
+// chits-group management
+router.post('/chits-group/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.chitsGroupValidator), adminController.storeOrUpdateChitsGroup);
+router.post('/chits-group/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllChitsGroupSchema), adminController.getAllChitsGroupDetails);
+router.post('/chits-group/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteChitsGroupSchema), adminController.deleteChitsGroup);
+
+// import locations 
+router.post('/import-locations', authMiddleware.authenticateToken, adminController.importLocations);
+
+// country & state routes
+router.post('/get-countries', authMiddleware.authenticateToken, validate(adminValidation.getCountriesSchema), adminController.getCountriesList);
+router.post('/get-states', authMiddleware.authenticateToken, validate(adminValidation.getStatesSchema), adminController.getStatesList);
+
+// district routes
+router.post('/district/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.districtValidator), adminController.storeOrUpdateDistrict);
+router.post('/district/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllDistrictSchema), adminController.getAllDistrictDetails);
+router.post('/get-districts', authMiddleware.authenticateToken, validate(adminValidation.getDistrictsSchema), adminController.getDistrictsList);
+
+// city routes
+router.post('/city/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.cityValidator), adminController.storeOrUpdateCity);
+router.post('/city/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllCitySchema), adminController.getAllCityDetails);
+router.post('/city/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteCitySchema), adminController.deleteCity);
+
+router.post('/fetch-static-dropdown', authMiddleware.authenticateToken, validate(adminValidation.fetchStaticDropdownSchema), adminController.fetchStaticDropdown);
+
 module.exports = router;

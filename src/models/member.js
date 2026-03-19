@@ -10,19 +10,27 @@ module.exports = (sequelize, DataTypes) => {
      * The `models/index` file will call this method automatically.
      */
     static associate(models) {
-      // define association here
+      Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'name_prefix', as: 'title', targetKey: 'id' });
+      Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'parental_prefix', as: 'parental_title', targetKey: 'id' });
+      Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'gender', as: 'gender_dropdown', targetKey: 'id' });
+      Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'employee_occupation', as: 'occupation', targetKey: 'id' });
+      Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'employee_type', as: 'emp_type', targetKey: 'id' });
     }
   }
   Member.init({
     member_id: DataTypes.STRING,
-    name_prefix: DataTypes.STRING,
+    name_prefix: DataTypes.UUID,
+    rep_by_first_name: DataTypes.STRING,
+    sur_name: DataTypes.STRING,
     name: DataTypes.STRING,
     date_of_birth: DataTypes.DATEONLY,
     age: DataTypes.INTEGER,
     registration_date: DataTypes.DATEONLY,
-    parental_prefix: DataTypes.STRING,
+    parental_prefix: DataTypes.UUID,
     parental_name: DataTypes.STRING,
-    gender: DataTypes.STRING,
+    guardian_name: DataTypes.STRING,
+    relation: DataTypes.STRING,
+    gender: DataTypes.UUID,
     mobile_number: DataTypes.STRING,
     email: DataTypes.STRING,
     gst_number: DataTypes.STRING,
@@ -37,8 +45,8 @@ module.exports = (sequelize, DataTypes) => {
     upload_image: DataTypes.STRING,
     upload_signature: DataTypes.STRING,
     passbook_details: DataTypes.STRING,
-    employee_occupation: DataTypes.STRING,
-    employee_type: DataTypes.STRING,
+    employee_occupation: DataTypes.UUID,
+    employee_type: DataTypes.UUID,
     employee_organisation: DataTypes.STRING,
     employee_designation: DataTypes.STRING,
     employee_department: DataTypes.STRING,

@@ -175,6 +175,132 @@ const deleteArea = async (req, res) => {
   }
 };
 
+const storeOrUpdateChitsGroup = async (req, res) => {
+  try {
+    return await adminService.storeOrUpdateChitsGroupService(res, req.body);
+  } catch (error) {
+    console.error('Error in storeOrUpdateChitsGroup:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllChitsGroupDetails = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllChitsGroupDetailsService(res, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllChitsGroupDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteChitsGroup = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteChitsGroupService(res, id);
+  } catch (error) {
+    console.error('Error in deleteChitsGroup:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const importLocations = async (req, res) => {
+  try {
+    return await adminService.importLocationsService(res);
+  } catch (error) {
+    console.error('Error in importLocations:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCountriesList = async (req, res) => {
+  try {
+    const { search } = req.body || {};
+    return await adminService.getCountriesListService(res, search);
+  } catch (error) {
+    console.error('Error in getCountriesList:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStatesList = async (req, res) => {
+  try {
+    const { country_id, search } = req.body || {};
+    return await adminService.getStatesListService(res, country_id, search);
+  } catch (error) {
+    console.error('Error in getStatesList:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateDistrict = async (req, res) => {
+  try {
+    return await adminService.storeOrUpdateDistrictService(res, req.body);
+  } catch (error) {
+    console.error('Error in storeOrUpdateDistrict:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllDistrictDetails = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllDistrictDetailsService(res, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllDistrictDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateCity = async (req, res) => {
+  try {
+    return await adminService.storeOrUpdateCityService(res, req.body);
+  } catch (error) {
+    console.error('Error in storeOrUpdateCity:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllCityDetails = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllCityDetailsService(res, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllCityDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteCity = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteCityService(res, id);
+  } catch (error) {
+    console.error('Error in deleteCity:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const fetchStaticDropdown = async (req, res) => {
+  try {
+    const { type_id, search } = req.body || {};
+    return await adminService.fetchStaticDropdownService(res, type_id, search);
+  } catch (error) {
+    console.error('Error in fetchStaticDropdown:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getDistrictsList = async (req, res) => {
+  try {
+    const { state_id, search } = req.body || {};
+    return await adminService.getDistrictsListService(res, state_id, search);
+  } catch (error) {
+    console.error('Error in getDistrictsList:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -191,5 +317,18 @@ module.exports = {
   deleteRoute,
   storeOrUpdateArea,
   getAllAreaDetails,
-  deleteArea
+  deleteArea,
+  storeOrUpdateChitsGroup,
+  getAllChitsGroupDetails,
+  deleteChitsGroup,
+  importLocations,
+  getCountriesList,
+  getStatesList,
+  storeOrUpdateDistrict,
+  getAllDistrictDetails,
+  storeOrUpdateCity,
+  getAllCityDetails,
+  getDistrictsList,
+  deleteCity,
+  fetchStaticDropdown
 };
