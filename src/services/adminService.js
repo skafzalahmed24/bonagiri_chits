@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, Enrollment } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, Enrollment, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -356,7 +356,14 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search)
       limit, offset, where: {
         is_deleted_status: 0,
         ...(company_id && company_id !== '' ? { company_id } : {}),
-        ...(search && { [Op.or]: [{ group_name: { [Op.like]: `%${search}%` } }, { chit_agreement_number: { [Op.like]: `%${search}%` } }, { company_chit_number: { [Op.like]: `%${search}%` } }, { fdr_number: { [Op.like]: `%${search}%` } }] })
+        ...(search && {
+          [Op.or]: [
+            { group_name: { [Op.like]: `%${search}%` } },
+            { chit_agreement_number: { [Op.like]: `%${search}%` } },
+            sequelize.where(sequelize.cast(sequelize.col('company_chit_number'), 'varchar'), { [Op.like]: `%${search}%` }),
+            { fdr_number: { [Op.like]: `%${search}%` } }
+          ]
+        })
       },
       order: [['createdAt', 'DESC']]
     });
@@ -535,7 +542,10 @@ const getAllEnrollmentDetailsService = async (res, company_id, min, max, search)
       where: {
         ...(company_id && company_id !== '' ? { company_id } : {}),
         delete_status: 0,
-        [Op.or]: [{ nominee_name: { [Op.like]: `%${search || ''}%` } }, { group_position_number: { [Op.like]: `%${search || ''}%` } }]
+        [Op.or]: [
+          { nominee_name: { [Op.like]: `%${search || ''}%` } },
+          sequelize.where(sequelize.cast(sequelize.col('group_position_number'), 'varchar'), { [Op.like]: `%${search || ''}%` })
+        ]
       },
       include: [
         { model: Company, as: 'company', attributes: ['company_name'] },

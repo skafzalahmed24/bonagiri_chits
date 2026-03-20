@@ -5,7 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 module.exports = {
   async up(queryInterface, Sequelize) {
     await queryInterface.bulkInsert('static_dropdowns_list', [
-      // type id 1 - Title
+      // type id 1 - Prefix
       { id: uuidv4(), dropdown_name: 'Mr.', type_id: 1, status: 1, createdAt: new Date(), updatedAt: new Date() },
       { id: uuidv4(), dropdown_name: 'Mrs.', type_id: 1, status: 1, createdAt: new Date(), updatedAt: new Date() },
       { id: uuidv4(), dropdown_name: 'Miss.', type_id: 1, status: 1, createdAt: new Date(), updatedAt: new Date() },
