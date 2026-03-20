@@ -19,6 +19,10 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true
     },
+    group_name: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
     chit_series_term: {
       type: DataTypes.INTEGER,
       allowNull: false
@@ -42,7 +46,7 @@ module.exports = (sequelize, DataTypes) => {
     commencement_date: DataTypes.DATEONLY,
     term_date: DataTypes.DATEONLY,
     enrollment_fee: DataTypes.DECIMAL(15, 2),
-    company_chit_number: DataTypes.STRING,
+    company_chit_number: DataTypes.INTEGER,
     no_auction_installment: DataTypes.INTEGER,
     company_commission: DataTypes.DECIMAL(5, 2),
     max_ceiling_in: DataTypes.DECIMAL(5, 2),
@@ -76,6 +80,7 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER,
       defaultValue: 1
     },
+    company_id: DataTypes.UUID,
     is_deleted_status: {
       type: DataTypes.INTEGER,
       defaultValue: 0

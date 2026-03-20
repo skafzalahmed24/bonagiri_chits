@@ -80,7 +80,12 @@ module.exports = (sequelize, DataTypes) => {
     other_info_web_access: DataTypes.BOOLEAN,
     other_info_user_code: DataTypes.STRING,
     other_info_user_password: DataTypes.STRING,
+    company_id: DataTypes.UUID,
     is_deleted_status: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0
+    },
+    group_status: {
       type: DataTypes.INTEGER,
       defaultValue: 0
     }

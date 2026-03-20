@@ -156,10 +156,14 @@ const memberValidator = Joi.object({
   other_info_mobile_access: Joi.boolean().allow('', null).optional(),
   other_info_web_access: Joi.boolean().allow('', null).optional(),
   other_info_user_code: Joi.string().allow('', null).optional(),
-  other_info_user_password: Joi.string().allow('', null).optional()
+  other_info_user_password: Joi.string().allow('', null).optional(),
+  company_id: Joi.string().uuid().allow('', null).optional(),
+  group_status: Joi.number().integer().valid(0, 1).default(0).optional()
 });
 
 const getAllMemberSchema = Joi.object({
+  company_id: Joi.string().uuid().allow('', null).optional(),
+  introduced_as: Joi.string().uuid().allow('', null).optional(),
   min: Joi.number().integer().min(0).optional().messages({
     'number.min': 'Min must be greater than or equal to 0'
   }),
@@ -245,6 +249,7 @@ const chitsGroupValidator = Joi.object({
   id: Joi.string().uuid().optional().messages({
     'string.uuid': 'Invalid Chits Group ID format'
   }),
+  group_name: Joi.string().allow('', null).optional(),
   chit_series_term: Joi.number().integer().valid(1, 2, 3).required().messages({
     'any.only': 'Chit series term must be 1 (short term), 2 (mid term), or 3 (long term)',
     'any.required': 'Chit series term is required'
@@ -266,7 +271,7 @@ const chitsGroupValidator = Joi.object({
   commencement_date: Joi.date().iso().allow('', null).optional(),
   term_date: Joi.date().iso().allow('', null).optional(),
   enrollment_fee: Joi.number().precision(2).allow(null).optional(),
-  company_chit_number: Joi.string().allow('', null).optional(),
+  company_chit_number: Joi.number().integer().allow(null).optional(),
   no_auction_installment: Joi.number().integer().allow(null).optional(),
   company_commission: Joi.number().precision(2).allow(null).optional(),
   max_ceiling_in: Joi.number().precision(2).allow(null).optional(),
@@ -293,10 +298,12 @@ const chitsGroupValidator = Joi.object({
   bank_branch: Joi.string().allow('', null).optional(),
   asset_description: Joi.string().allow('', null).optional(),
   asset_value: Joi.number().precision(2).allow(null).optional(),
+  company_id: Joi.string().uuid().allow('', null).optional(),
   running_status: Joi.number().integer().valid(1, 2, 3).optional()
 });
 
 const getAllChitsGroupSchema = Joi.object({
+  company_id: Joi.string().uuid().allow('', null).optional(),
   min: Joi.number().integer().min(0).optional().messages({
     'number.min': 'Min must be greater than or equal to 0'
   }),
@@ -400,5 +407,44 @@ module.exports = {
       'number.base': 'Type ID must be a number'
     }),
     search: Joi.string().allow('', null).optional()
+  }),
+  enrollmentValidator: Joi.object({
+    id: Joi.number().integer().optional(),
+    company_id: Joi.string().uuid().required(),
+    group_id: Joi.string().uuid().required(),
+    group_position_number: Joi.number().integer().required(),
+    enrollment_date: Joi.date().iso().required(),
+    subscriber_id: Joi.number().integer().required(),
+    payment_mode_id: Joi.string().uuid().required(),
+    business_agent_id: Joi.number().integer().allow(null).optional(),
+    intimation_card_id: Joi.string().uuid().required(),
+    address_type: Joi.number().integer().valid(1, 2).required(),
+    collection_agent_id: Joi.number().integer().allow(null).optional(),
+    business_type_id: Joi.number().integer().valid(1, 2).required(),
+    area_id: Joi.number().integer().required(),
+    nominee_name: Joi.string().allow('', null).optional(),
+    nominee_age: Joi.number().integer().allow(null).optional(),
+    nominee_relation: Joi.string().allow('', null).optional(),
+    nominee_door_number: Joi.string().allow('', null).optional(),
+    nominee_city_id: Joi.string().uuid().allow(null).optional(),
+    nominee_street_name: Joi.string().allow('', null).optional(),
+    nominee_address: Joi.string().allow('', null).optional(),
+    nominee_mobile_number: Joi.string().allow('', null).optional(),
+    nominee_pincode: Joi.string().allow('', null).optional(),
+    fill_subscriber_address_status: Joi.number().integer().valid(0, 1).optional()
+  }),
+  getEnrollmentSchema: Joi.object({
+    company_id: Joi.string().uuid().allow('', null).optional(),
+    min: Joi.number().integer().optional(),
+    max: Joi.number().integer().optional(),
+    search: Joi.string().allow('', null).optional()
+  }),
+  deleteEnrollmentSchema: Joi.object({
+    id: Joi.number().integer().required().messages({
+      'any.required': 'Enrollment ID is required'
+    })
+  }),
+  getPositionNumbersSchema: Joi.object({
+    group_id: Joi.string().uuid().required()
   })
 };

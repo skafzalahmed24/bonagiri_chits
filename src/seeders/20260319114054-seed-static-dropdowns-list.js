@@ -80,6 +80,16 @@ module.exports = {
       { id: uuidv4(), dropdown_name: 'Private', type_id: 11, status: 1, createdAt: new Date(), updatedAt: new Date() },
       { id: uuidv4(), dropdown_name: 'Govt.', type_id: 11, status: 1, createdAt: new Date(), updatedAt: new Date() },
 
+      // type id 12 - Payment Mode
+      { id: uuidv4(), dropdown_name: 'Monthly', type_id: 12, status: 1, createdAt: new Date(), updatedAt: new Date() },
+      { id: uuidv4(), dropdown_name: 'Daily', type_id: 12, status: 1, createdAt: new Date(), updatedAt: new Date() },
+
+      // type id 13 - Intimation Card
+      { id: uuidv4(), dropdown_name: 'Post', type_id: 13, status: 1, createdAt: new Date(), updatedAt: new Date() },
+      { id: uuidv4(), dropdown_name: 'Hand', type_id: 13, status: 1, createdAt: new Date(), updatedAt: new Date() },
+      { id: uuidv4(), dropdown_name: 'Courier', type_id: 13, status: 1, createdAt: new Date(), updatedAt: new Date() },
+      { id: uuidv4(), dropdown_name: 'Email', type_id: 13, status: 1, createdAt: new Date(), updatedAt: new Date() },
+      { id: uuidv4(), dropdown_name: 'No', type_id: 13, status: 1, createdAt: new Date(), updatedAt: new Date() },
 
     ], {});
   },

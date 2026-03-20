@@ -66,7 +66,11 @@ const refreshToken = async (req, res) => {
 
 const storeOrUpdateMember = async (req, res) => {
   try {
-    return await adminService.storeOrUpdateMemberService(res, req.body);
+    const data = { ...req.body };
+    if (req.user && req.user.role === 'company' && req.user.id) {
+      data.company_id = req.user.id;
+    }
+    return await adminService.storeOrUpdateMemberService(res, data);
   } catch (error) {
     console.error('Error in storeOrUpdateMember:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -75,8 +79,8 @@ const storeOrUpdateMember = async (req, res) => {
 
 const getAllMemberDetails = async (req, res) => {
   try {
-    const { min, max, search } = req.body || {};
-    return await adminService.getAllMemberDetailsService(res, min, max, search);
+    const { company_id, introduced_as, min, max, search } = req.body || {};
+    return await adminService.getAllMemberDetailsService(res, company_id, introduced_as, min, max, search);
   } catch (error) {
     console.error('Error in getAllMemberDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -177,7 +181,11 @@ const deleteArea = async (req, res) => {
 
 const storeOrUpdateChitsGroup = async (req, res) => {
   try {
-    return await adminService.storeOrUpdateChitsGroupService(res, req.body);
+    const data = { ...req.body };
+    if (req.user && req.user.role === 'company' && req.user.id) {
+      data.company_id = req.user.id;
+    }
+    return await adminService.storeOrUpdateChitsGroupService(res, data);
   } catch (error) {
     console.error('Error in storeOrUpdateChitsGroup:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -186,8 +194,8 @@ const storeOrUpdateChitsGroup = async (req, res) => {
 
 const getAllChitsGroupDetails = async (req, res) => {
   try {
-    const { min, max, search } = req.body || {};
-    return await adminService.getAllChitsGroupDetailsService(res, min, max, search);
+    const { company_id, min, max, search } = req.body || {};
+    return await adminService.getAllChitsGroupDetailsService(res, company_id, min, max, search);
   } catch (error) {
     console.error('Error in getAllChitsGroupDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -301,6 +309,49 @@ const getDistrictsList = async (req, res) => {
   }
 };
 
+const storeOrUpdateEnrollment = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    if (req.user && req.user.role === 'company' && req.user.id) {
+      data.company_id = req.user.id;
+    }
+    return await adminService.storeOrUpdateEnrollmentService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateEnrollment:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllEnrollmentDetails = async (req, res) => {
+  try {
+    const { company_id, min, max, search } = req.body || {};
+    return await adminService.getAllEnrollmentDetailsService(res, company_id, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllEnrollmentDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteEnrollment = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteEnrollmentService(res, id);
+  } catch (error) {
+    console.error('Error in deleteEnrollment:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getPositionNumbers = async (req, res) => {
+  try {
+    const { group_id } = req.body || {};
+    return await adminService.getPositionNumbersService(res, group_id);
+  } catch (error) {
+    console.error('Error in getPositionNumbers:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -330,5 +381,9 @@ module.exports = {
   getAllCityDetails,
   getDistrictsList,
   deleteCity,
-  fetchStaticDropdown
+  fetchStaticDropdown,
+  storeOrUpdateEnrollment,
+  getAllEnrollmentDetails,
+  deleteEnrollment,
+  getPositionNumbers
 };
