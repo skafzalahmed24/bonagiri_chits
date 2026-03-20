@@ -67,15 +67,45 @@ const deleteCompanySchema = Joi.object({
 });
 
 const companyLoginSchema = Joi.object({
-  company_id: Joi.string().required().messages({
-    'any.required': 'Company ID is required',
-    'string.empty': 'Company ID cannot be empty'
+  user_code: Joi.string().required().messages({
+    'any.required': 'User ID is required',
+    'string.empty': 'User ID cannot be empty'
   }),
-  company_email: Joi.string().allow('', null).optional(),
   company_password: Joi.string().required().messages({
     'any.required': 'Password is required',
     'string.empty': 'Password cannot be empty'
+  }),
+  type: Joi.number().integer().valid(1, 2).required().messages({
+    'any.required': 'Login type is required',
+    'any.only': 'Invalid login type'
+  }),
+  device_id: Joi.string().allow('', null).optional(),
+  device_unique_id: Joi.string().allow('', null).optional(),
+  platform_type: Joi.string().allow('', null).optional(),
+  device_details: Joi.string().allow('', null).optional()
+});
+
+const forgotPasswordSchema = Joi.object({
+  user_code: Joi.alternatives().try(Joi.string(), Joi.number()).required().messages({
+    'any.required': 'User code is required',
+    'string.empty': 'User code cannot be empty'
+  }),
+  type: Joi.number().integer().valid(1, 2).required().messages({
+    'any.required': 'Type is required',
+    'any.only': 'Invalid type'
   })
+});
+
+const verifyOtpSchema = Joi.object({
+  user_code: Joi.string().required(),
+  type: Joi.number().integer().valid(1, 2).required(),
+  otp: Joi.string().length(6).required()
+});
+
+const resetPasswordSchema = Joi.object({
+  user_code: Joi.string().required(),
+  type: Joi.number().integer().valid(1, 2).required(),
+  password: Joi.string().required()
 });
 
 const refreshTokenSchema = Joi.object({
@@ -89,10 +119,7 @@ const memberValidator = Joi.object({
   id: Joi.number().integer().optional().messages({
     'number.base': 'Invalid Member ID format'
   }),
-  member_id: Joi.string().required().messages({
-    'any.required': 'Member User ID is required',
-    'string.empty': 'Member User ID cannot be empty'
-  }),
+  member_id: Joi.string().allow('', null).optional(),
   name_prefix: Joi.string().allow('', null).optional(),
   rep_by_first_name: Joi.string().allow('', null).optional(),
   sur_name: Joi.string().allow('', null).optional(),
@@ -155,7 +182,7 @@ const memberValidator = Joi.object({
   other_info_remarks: Joi.string().allow('', null).optional(),
   other_info_mobile_access: Joi.boolean().allow('', null).optional(),
   other_info_web_access: Joi.boolean().allow('', null).optional(),
-  other_info_user_code: Joi.string().allow('', null).optional(),
+  other_info_user_code: Joi.number().integer().min(100000).allow('', null).optional(),
   other_info_user_password: Joi.string().allow('', null).optional(),
   company_id: Joi.string().uuid().allow('', null).optional(),
   group_status: Joi.number().integer().valid(0, 1).default(0).optional()
@@ -326,6 +353,9 @@ module.exports = {
   getAllCompanySchema,
   deleteCompanySchema,
   companyLoginSchema,
+  forgotPasswordSchema,
+  verifyOtpSchema,
+  resetPasswordSchema,
   refreshTokenSchema,
   memberValidator,
   getAllMemberSchema,

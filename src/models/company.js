@@ -87,6 +87,26 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER, // 1 = General, 2 = Divided
       defaultValue: 1,
     },
+    device_id: {
+      type: DataTypes.STRING,
+    },
+    device_unique_id: {
+      type: DataTypes.STRING,
+    },
+    platform_type: {
+      type: DataTypes.STRING,
+    },
+    device_details: {
+      type: DataTypes.TEXT,
+    },
+    mobile_otp: {
+      type: DataTypes.STRING,
+    },
+    type: {
+      type: DataTypes.INTEGER,
+      defaultValue: 1,
+      allowNull: false
+    },
   }, {
     sequelize,
     modelName: 'Company',

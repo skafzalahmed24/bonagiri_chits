@@ -78,7 +78,12 @@ module.exports = (sequelize, DataTypes) => {
     other_info_remarks: DataTypes.TEXT,
     other_info_mobile_access: DataTypes.BOOLEAN,
     other_info_web_access: DataTypes.BOOLEAN,
-    other_info_user_code: DataTypes.STRING,
+    other_info_user_code: {
+      type: DataTypes.INTEGER,
+      validate: {
+        min: 100000
+      }
+    },
     other_info_user_password: DataTypes.STRING,
     company_id: DataTypes.UUID,
     is_deleted_status: {
@@ -88,7 +93,27 @@ module.exports = (sequelize, DataTypes) => {
     group_status: {
       type: DataTypes.INTEGER,
       defaultValue: 0
-    }
+    },
+    device_id: {
+      type: DataTypes.STRING,
+    },
+    device_unique_id: {
+      type: DataTypes.STRING,
+    },
+    platform_type: {
+      type: DataTypes.STRING,
+    },
+    device_details: {
+      type: DataTypes.TEXT,
+    },
+    mobile_otp: {
+      type: DataTypes.STRING,
+    },
+    type: {
+      type: DataTypes.INTEGER,
+      defaultValue: 2,
+      allowNull: false
+    },
   }, {
     sequelize,
     modelName: 'Member',

@@ -15,20 +15,103 @@ const loginAdminService = async (res, email, password) => {
   return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid email or password');
 };
 
-const loginCompanyService = async (res, company_id, company_password) => {
-  const company = await Company.findOne({ where: { company_id, company_password, is_deleted_status: 0 } });
-  if (!company) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid company credentials');
-  const payload = { id: company.id, company_id: company.company_id, role: 'company' };
-  const tokens = generateTokens(payload);
-  return successResponse(res, statusCodes.OK, 'Company login success', {
-    company: { id: company.id, company_id: company.company_id, company_name: company.company_name },
-    tokens
-  });
+const loginCompanyService = async (res, user_code, password, type, deviceInfo = {}) => {
+  try {
+    let user;
+    let role;
+    if (type === 1) {
+      user = await Company.findOne({ where: { company_id: user_code, company_password: password, is_deleted_status: 0 } });
+      role = 'company';
+    } else if (type === 2) {
+      user = await Member.findOne({ where: { other_info_user_code: user_code, other_info_user_password: password, is_deleted_status: 0 } });
+      role = 'member';
+    }
+
+    if (!user) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid credentials');
+
+    // Update device information
+    const { device_id, device_unique_id, platform_type, device_details } = deviceInfo;
+    await user.update({
+      device_id,
+      device_unique_id,
+      platform_type,
+      device_details
+    });
+
+    const payload = { 
+      id: user.id, 
+      user_id: type === 1 ? user.company_id : user.other_info_user_code, 
+      role, 
+      device_unique_id 
+    };
+    const tokens = generateTokens(payload);
+    
+    return successResponse(res, statusCodes.OK, 'Login success', {
+      user: { id: user.id, user_id: payload.user_id, name: user.company_name || user.name, type: user.type },
+      tokens
+    });
+  } catch (error) {
+    console.error('Error in loginCompanyService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Login failed');
+  }
+};
+
+const forgotPasswordService = async (res, user_code, type) => {
+  try {
+    let user;
+    if (type === 1) user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+    else user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
+
+    const otp = '123456'; // Default as per request
+    await user.update({ mobile_otp: otp });
+
+    // TODO: Call sendMesageOtpMobile(user.mobile_number, otp) if implemented
+    return successResponse(res, statusCodes.OK, 'OTP sent successfully', { user_code, type });
+  } catch (error) {
+    console.error('Error in forgotPasswordService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to send OTP');
+  }
+};
+
+const verifyOtpService = async (res, user_code, type, otp) => {
+  try {
+    let user;
+    if (type === 1) user = await Company.findOne({ where: { company_id: user_code, mobile_otp: otp, is_deleted_status: 0 } });
+    else user = await Member.findOne({ where: { other_info_user_code: user_code, mobile_otp: otp, is_deleted_status: 0 } });
+
+    if (!user) return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid OTP');
+
+    return successResponse(res, statusCodes.OK, 'OTP verified successfully');
+  } catch (error) {
+    console.error('Error in verifyOtpService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'OTP verification failed');
+  }
+};
+
+const resetPasswordService = async (res, user_code, type, password) => {
+  try {
+    let user;
+    if (type === 1) user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+    else user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
+
+    if (type === 1) await user.update({ company_password: password, mobile_otp: null });
+    else await user.update({ other_info_user_password: password, mobile_otp: null });
+
+    return successResponse(res, statusCodes.OK, 'Password reset successfully');
+  } catch (error) {
+    console.error('Error in resetPasswordService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Password reset failed');
+  }
 };
 
 const refreshTokenService = async (res, refresh_token) => {
   try {
     const decoded = verifyRefreshToken(refresh_token);
+    // On refresh, we could also verify if device_unique_id still matches the DB
     const payload = { ...decoded };
     delete payload.iat;
     delete payload.exp;
@@ -67,12 +150,10 @@ const deleteCompanyService = async (res, id) => {
 };
 
 const generateUniqueUserCode = async () => {
-  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
   let isUnique = false;
   while (!isUnique) {
-    code = '';
-    for (let i = 0; i < 6; i++) code += characters.charAt(Math.floor(Math.random() * characters.length));
+    code = Math.floor(100000 + Math.random() * 900000);
     const existing = await Member.findOne({ where: { other_info_user_code: code } });
     if (!existing) isUnique = true;
   }
@@ -600,6 +681,10 @@ module.exports = {
   deleteCompanyService,
   loginCompanyService,
   refreshTokenService,
+  forgotPasswordService,
+  verifyOtpService,
+  resetPasswordService,
+  generateUniqueUserCode,
   storeOrUpdateMemberService,
   getAllMemberDetailsService,
   deleteMemberService,

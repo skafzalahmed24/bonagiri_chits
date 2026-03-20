@@ -11,7 +11,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Routes
-app.use('/api/admin', adminRoutes);
+app.use('/api', adminRoutes);
 
 // Static file routing for global uploaded documents
 app.use('/uploads', express.static(path.join(__dirname, '../../uploads')));

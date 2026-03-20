@@ -46,10 +46,41 @@ const deleteCompany = async (req, res) => {
 
 const loginCompany = async (req, res) => {
   try {
-    const { company_id, company_password } = req.body;
-    return await adminService.loginCompanyService(res, company_id, company_password);
+    const { user_code, company_password, type, device_id, device_unique_id, platform_type, device_details } = req.body;
+    const deviceInfo = { device_id, device_unique_id, platform_type, device_details };
+    return await adminService.loginCompanyService(res, user_code, company_password, type, deviceInfo);
   } catch (error) {
     console.error('Error in loginCompany:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const forgotPassword = async (req, res) => {
+  try {
+    const { user_code, type } = req.body;
+    return await adminService.forgotPasswordService(res, user_code, type);
+  } catch (error) {
+    console.error('Error in forgotPassword:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const verifyOtp = async (req, res) => {
+  try {
+    const { user_code, type, otp } = req.body;
+    return await adminService.verifyOtpService(res, user_code, type, otp);
+  } catch (error) {
+    console.error('Error in verifyOtp:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const resetPassword = async (req, res) => {
+  try {
+    const { user_code, type, password } = req.body;
+    return await adminService.resetPasswordService(res, user_code, type, password);
+  } catch (error) {
+    console.error('Error in resetPassword:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -359,6 +390,9 @@ module.exports = {
   deleteCompany,
   loginCompany,
   refreshToken,
+  forgotPassword,
+  verifyOtp,
+  resetPassword,
   storeOrUpdateMember,
   getAllMemberDetails,
   deleteMember,
