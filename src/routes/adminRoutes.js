@@ -71,4 +71,6 @@ router.post('/enrollment/get-all', authMiddleware.authenticateToken, validate(ad
 router.post('/enrollment/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteEnrollmentSchema), adminController.deleteEnrollment);
 router.post('/enrollment/get-position-numbers', authMiddleware.authenticateToken, validate(adminValidation.getPositionNumbersSchema), adminController.getPositionNumbers);
 
+
+
 module.exports = router;

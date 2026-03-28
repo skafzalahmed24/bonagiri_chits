@@ -133,7 +133,7 @@ module.exports = {
         type: Sequelize.TEXT
       },
       address_info_city_id: {
-        type: Sequelize.INTEGER
+        type: Sequelize.UUID
       },
       address_info_phone: {
         type: Sequelize.STRING
@@ -151,7 +151,7 @@ module.exports = {
         type: Sequelize.TEXT
       },
       address_info_office_city_id: {
-        type: Sequelize.INTEGER
+        type: Sequelize.UUID
       },
       address_info_office_phone: {
         type: Sequelize.STRING
