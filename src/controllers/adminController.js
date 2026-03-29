@@ -213,6 +213,7 @@ const deleteArea = async (req, res) => {
 const storeOrUpdateChitsGroup = async (req, res) => {
   try {
     const data = { ...req.body };
+
     if (req.user && req.user.role === 'company' && req.user.id) {
       data.company_id = req.user.id;
     }

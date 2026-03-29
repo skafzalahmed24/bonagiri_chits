@@ -42,7 +42,7 @@ router.post('/area/get-all', authMiddleware.authenticateToken, validate(adminVal
 router.post('/area/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAreaSchema), adminController.deleteArea);
 
 // chits-group management
-router.post('/chits-group/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.chitsGroupValidator), adminController.storeOrUpdateChitsGroup);
+router.post('/chits-group/store-or-update', validate(adminValidation.chitsGroupValidator), adminController.storeOrUpdateChitsGroup);
 router.post('/chits-group/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllChitsGroupSchema), adminController.getAllChitsGroupDetails);
 router.post('/chits-group/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteChitsGroupSchema), adminController.deleteChitsGroup);
 

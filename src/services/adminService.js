@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, Enrollment, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, Enrollment, ChitsInstallment, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -360,6 +360,74 @@ const deleteAreaService = async (res, id) => {
   }
 };
 
+const createInstallaments = async (chits_group_id, chits_group_status) => {
+  try {
+    if (Number(chits_group_status) === 1) {
+      const group = await ChitsGroup.findByPk(chits_group_id);
+      if (!group) {
+        console.error('Chits Group not found for createInstallaments');
+        return;
+      }
+
+      const enrollments = await Enrollment.findAll({
+        where: { group_id: chits_group_id, delete_status: 0 },
+        include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }]
+      });
+
+      const noOfInstallments = group.no_of_installments || 1;
+      const initialDateStr = group.chit_start_date || group.commencement_date || new Date().toISOString().split('T')[0];
+      const chitAmount = parseFloat(group.chit_amount) || 0;
+      const payableAmount = parseFloat((chitAmount / noOfInstallments).toFixed(2));
+
+      for (const e of enrollments) {
+        const data = e.toJSON();
+        const modeName = data.payment_mode ? data.payment_mode.dropdown_name : 'Unknown';
+        
+        let mappedType = null;
+        if (modeName.toLowerCase() === 'monthly') mappedType = 1;
+        else if (modeName.toLowerCase() === 'weekly') mappedType = 2;
+        else if (modeName.toLowerCase() === 'daily') mappedType = 3;
+
+        // Skip if installments data already generated for this enrollment
+        const existingInstallmentRecord = await ChitsInstallment.findOne({ where: { enrollment_id: data.id } });
+        if (existingInstallmentRecord) continue;
+
+        const dateIterator = new Date(initialDateStr);
+        const installmentsJsonArray = [];
+
+        // Generate JSON data array directly
+        for (let i = 1; i <= noOfInstallments; i++) {
+          installmentsJsonArray.push({
+            enrollment_id: data.id,
+            type: mappedType || 1, // Fallback to 1
+            installment_no: i,
+            due_date: new Date(dateIterator.getTime() - (dateIterator.getTimezoneOffset() * 60000)).toISOString().split('T')[0],
+            over_due_days_count: 0,
+            penalty_amount: 0.00,
+            payable_amount: payableAmount
+          });
+
+          // Move iterator forward to the next due date based on schedule type
+          if (mappedType === 1) {
+            dateIterator.setMonth(dateIterator.getMonth() + 1); // 1 = Monthly
+          } else if (mappedType === 2) {
+            dateIterator.setDate(dateIterator.getDate() + 7); // 2 = Weekly
+          } else if (mappedType === 3) {
+            dateIterator.setDate(dateIterator.getDate() + 1); // 3 = Daily
+          }
+        }
+
+        // Create individual relational rows for each installment month/week
+        await ChitsInstallment.bulkCreate(installmentsJsonArray);
+      }
+
+      console.log(`\n--- Set up Installments data in DB for Chits Group ${chits_group_id} (Status: 1) ---`);
+    }
+  } catch (error) {
+    console.error('Error in createInstallaments:', error);
+  }
+};
+
 const storeOrUpdateChitsGroupService = async (res, data = {}) => {
   try {
     const { id, ...chitsGroupData } = data;
@@ -367,6 +435,10 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
       const chitsGroup = await ChitsGroup.findByPk(id);
       if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
       await chitsGroup.update(chitsGroupData);
+      
+      // Step case: Trigger createInstallaments on update
+      await createInstallaments(chitsGroup.id, chitsGroup.chits_group_status);
+      
       return successResponse(res, statusCodes.OK, 'Chits group updated successfully', chitsGroup);
     } else {
       console.log('Creating new ChitsGroup with data:', chitsGroupData);
@@ -416,10 +488,13 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
             console.log('Enrollment created:', enrollment.id);
           }
         }
-   else {
+        else {
           console.log('Skipping enrollment: targetCompanyId is missing');
         }
       }
+
+      // Step case: Trigger createInstallaments on create
+      await createInstallaments(newChitsGroup.id, newChitsGroup.chits_group_status);
 
       return successResponse(res, statusCodes.CREATED, 'Chits group created successfully', newChitsGroup);
     }

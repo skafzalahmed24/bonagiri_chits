@@ -3,13 +3,38 @@ const cors = require('cors');
 const path = require('path');
 const adminRoutes = require('./routes/adminRoutes');
 const userRoutes = require('./routes/userRoutes');
+const { startDailyPenaltyCron } = require('./utils/cronJobs');
 
 const app = express();
+
+// Start Background Jobs immediately automatically
+startDailyPenaltyCron();
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Global middleware to convert empty strings to null
+app.use((req, res, next) => {
+  const sanitizeEmptyStrings = (obj) => {
+    if (obj && typeof obj === 'object') {
+      for (const key in obj) {
+        if (obj[key] === '') {
+          obj[key] = null;
+        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+          sanitizeEmptyStrings(obj[key]);
+        }
+      }
+    }
+  };
+
+  if (req.body) {
+    sanitizeEmptyStrings(req.body);
+  }
+  
+  next();
+});
 
 // Routes
 app.use('/api', adminRoutes);

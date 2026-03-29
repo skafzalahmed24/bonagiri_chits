@@ -76,6 +76,14 @@ module.exports = (sequelize, DataTypes) => {
     bank_branch: DataTypes.STRING,
     asset_description: DataTypes.TEXT,
     asset_value: DataTypes.DECIMAL(15, 2),
+    chits_group_status: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+      comment: '0 - Not started, 1 - started, 2 - completed'
+    },
+    chit_start_date: DataTypes.DATEONLY,
+    chit_end_date: DataTypes.DATEONLY,
+    due_date_number_count: DataTypes.INTEGER,
     running_status: {
       type: DataTypes.INTEGER,
       defaultValue: 1

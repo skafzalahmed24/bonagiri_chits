@@ -326,7 +326,11 @@ const chitsGroupValidator = Joi.object({
   asset_description: Joi.string().allow('', null).optional(),
   asset_value: Joi.number().precision(2).allow(null).optional(),
   company_id: Joi.string().uuid().allow('', null).optional(),
-  running_status: Joi.number().integer().valid(1, 2, 3).optional()
+  running_status: Joi.number().integer().valid(1, 2, 3).optional(),
+  chits_group_status: Joi.number().integer().valid(0, 1, 2).optional(),
+  chit_start_date: Joi.date().iso().allow('', null).optional(),
+  chit_end_date: Joi.date().iso().allow('', null).optional(),
+  due_date_number_count: Joi.number().integer().allow(null).optional()
 });
 
 const getAllChitsGroupSchema = Joi.object({

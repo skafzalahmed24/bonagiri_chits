@@ -83,6 +83,7 @@ module.exports = {
       // type id 12 - Payment Mode
       { id: uuidv4(), dropdown_name: 'Monthly', type_id: 12, status: 1, createdAt: new Date(), updatedAt: new Date() },
       { id: uuidv4(), dropdown_name: 'Daily', type_id: 12, status: 1, createdAt: new Date(), updatedAt: new Date() },
+      { id: uuidv4(), dropdown_name: 'Weekly', type_id: 12, status: 1, createdAt: new Date(), updatedAt: new Date() },
 
       // type id 13 - Intimation Card
       { id: uuidv4(), dropdown_name: 'Post', type_id: 13, status: 1, createdAt: new Date(), updatedAt: new Date() },
