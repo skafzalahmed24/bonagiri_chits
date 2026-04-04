@@ -12,6 +12,17 @@ const getHomeRecord = async (req, res) => {
   }
 };
 
+const getAllHomeRecords = async (req, res) => {
+  try {
+    const { subscriber_id, type, min, max } = req.body;
+    return await userService.getAllHomeRecordsService(res, subscriber_id, type, min, max);
+  } catch (error) {
+    console.error('Error in getAllHomeRecords:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
-  getHomeRecord
+  getHomeRecord,
+  getAllHomeRecords
 };

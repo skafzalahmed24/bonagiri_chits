@@ -6,6 +6,8 @@ const authMiddleware = require('../middlewares/authMiddleware');
 const userValidation = require('../validations/userValidation');
 
 // get home record based on subscriber_id
-router.post('/home',  validate(userValidation.getHomeRecordSchema), userController.getHomeRecord);
+router.post('/home', authMiddleware.authenticateToken, validate(userValidation.getHomeRecordSchema), userController.getHomeRecord);
+router.post('/all-chits-groups',  validate(userValidation.getAllHomeRecordsSchema), userController.getAllHomeRecords);
+
 
 module.exports = router;
