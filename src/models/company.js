@@ -107,6 +107,10 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: 1,
       allowNull: false
     },
+    is_favorites: {
+      type: DataTypes.JSON,
+      allowNull: true
+    }
   }, {
     sequelize,
     modelName: 'Company',

@@ -384,6 +384,55 @@ const getPositionNumbers = async (req, res) => {
   }
 };
 
+const storeOrUpdateUpcomingChit = async (req, res) => {
+  try {
+    return await adminService.storeOrUpdateUpcomingChitService(res, req.body);
+  } catch (error) {
+    console.error('Error in storeOrUpdateUpcomingChit:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllUpcomingChits = async (req, res) => {
+  try {
+    const { company_id, status, chit_date, min, max } = req.body || {};
+    return await adminService.getAllUpcomingChitsService(res, company_id, status, chit_date, min, max);
+  } catch (error) {
+    console.error('Error in getAllUpcomingChits:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteUpcomingChit = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteUpcomingChitService(res, id);
+  } catch (error) {
+    console.error('Error in deleteUpcomingChit:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateFavorites = async (req, res) => {
+  try {
+    const { user_id, type, is_favorites } = req.body || {};
+    return await adminService.updateFavoritesService(res, user_id, type, is_favorites);
+  } catch (error) {
+    console.error('Error in updateFavorites:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getGroupMembers = async (req, res) => {
+  try {
+    const { group_id, min, max } = req.body || {};
+    return await adminService.getGroupMembersService(res, group_id, min, max);
+  } catch (error) {
+    console.error('Error in getGroupMembers:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -420,5 +469,10 @@ module.exports = {
   storeOrUpdateEnrollment,
   getAllEnrollmentDetails,
   deleteEnrollment,
-  getPositionNumbers
+  getPositionNumbers,
+  storeOrUpdateUpcomingChit,
+  getAllUpcomingChits,
+  deleteUpcomingChit,
+  updateFavorites,
+  getGroupMembers
 };

@@ -480,5 +480,41 @@ module.exports = {
   }),
   getPositionNumbersSchema: Joi.object({
     group_id: Joi.string().uuid().required()
+  }),
+  upcomingChitValidator: Joi.object({
+    id: Joi.string().uuid().optional(),
+    company_id: Joi.string().uuid().required().messages({
+      'any.required': 'Company ID is required',
+      'string.uuid': 'Invalid Company ID format'
+    }),
+    group_name: Joi.string().allow('', null).optional(),
+    chit_date: Joi.date().iso().allow('', null).optional(),
+    status: Joi.number().integer().valid(0, 1).optional()
+  }),
+  getAllUpcomingChitSchema: Joi.object({
+    company_id: Joi.string().uuid().allow('', null).optional(),
+    status: Joi.number().integer().valid(0, 1).allow('', null).optional(),
+    chit_date: Joi.date().iso().allow('', null).optional(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
+  }),
+  deleteUpcomingChitSchema: Joi.object({
+    id: Joi.string().uuid().required().messages({
+      'any.required': 'Upcoming Chit ID is required',
+      'string.uuid': 'Invalid Upcoming Chit ID format'
+    })
+  }),
+  updateFavoritesSchema: Joi.object({
+    user_id: Joi.string().required(),
+    type: Joi.number().integer().valid(1, 2).required(),
+    is_favorites: Joi.array().items(Joi.alternatives().try(Joi.number(), Joi.string())).required()
+  }),
+  getGroupMembersSchema: Joi.object({
+    group_id: Joi.string().uuid().required().messages({
+      'any.required': 'Group ID is required',
+      'string.uuid': 'Invalid Group ID format'
+    }),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
   })
 };

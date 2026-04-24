@@ -114,6 +114,10 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: 2,
       allowNull: false
     },
+    is_favorites: {
+      type: DataTypes.JSON,
+      allowNull: true
+    }
   }, {
     sequelize,
     modelName: 'Member',

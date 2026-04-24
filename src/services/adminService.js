@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, Enrollment, ChitsInstallment, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, Enrollment, ChitsInstallment, UpcomingChit, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -12,7 +12,7 @@ const loginAdminService = async (res, email, password) => {
     const tokens = generateTokens(user);
     return successResponse(res, statusCodes.OK, 'Login success', { user, tokens });
   }
-  return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid email or password');
+  return errorResponse(res, statusCodes.NOT_FOUND, 'Invalid email or password');
 };
 
 const loginCompanyService = async (res, user_code, password, type, deviceInfo = {}) => {
@@ -27,7 +27,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       role = 'member';
     }
 
-    if (!user) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid credentials');
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Invalid credentials');
 
     // Update device information
     const { device_id, device_unique_id, platform_type, device_details } = deviceInfo;
@@ -47,7 +47,13 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     const tokens = generateTokens(payload);
     
     return successResponse(res, statusCodes.OK, 'Login success', {
-      user: { id: user.id, user_id: payload.user_id, name: user.company_name || user.name, type: user.type },
+      user: { 
+        id: user.id, 
+        user_id: payload.user_id, 
+        name: user.company_name || user.name, 
+        type: user.type,
+        is_favorites: user.is_favorites || []
+      },
       tokens
     });
   } catch (error) {
@@ -749,6 +755,124 @@ const getPositionNumbersService = async (res, group_id) => {
   }
 };
 
+const storeOrUpdateUpcomingChitService = async (res, data = {}) => {
+  try {
+    const { id, ...upcomingChitData } = data;
+    if (id) {
+      const upcomingChit = await UpcomingChit.findByPk(id);
+      if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Upcoming chit not found');
+      await upcomingChit.update(upcomingChitData);
+      return successResponse(res, statusCodes.OK, 'Upcoming chit updated successfully', upcomingChit);
+    } else {
+      const newUpcomingChit = await UpcomingChit.create(upcomingChitData);
+      return successResponse(res, statusCodes.CREATED, 'Upcoming chit created successfully', newUpcomingChit);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateUpcomingChitService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllUpcomingChitsService = async (res, company_id, status, chit_date, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(status !== undefined && status !== null && status !== '' && { status })
+    };
+
+    if (chit_date && chit_date !== '' && chit_date !== null) {
+      where.chit_date = chit_date;
+    }
+
+    const upcomingChits = await UpcomingChit.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['chit_date', 'ASC']]
+    });
+    return successResponse(res, statusCodes.OK, 'Upcoming chits retrieved successfully', upcomingChits);
+  } catch (error) {
+    console.error('Error in getAllUpcomingChitsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteUpcomingChitService = async (res, id) => {
+  try {
+    const upcomingChit = await UpcomingChit.findByPk(id);
+    if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Upcoming chit not found');
+    await upcomingChit.destroy();
+    return successResponse(res, statusCodes.OK, 'Upcoming chit deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteUpcomingChitService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateFavoritesService = async (res, user_id, type, is_favorites) => {
+  try {
+    let user;
+    const typeNum = Number(type);
+
+    if (typeNum === 1) {
+      // Company lookup (usually UUID)
+      user = await Company.findOne({ where: { id: user_id, is_deleted_status: 0 } });
+    } else if (typeNum === 2) {
+      // Member lookup (Integer ID)
+      // Check if user_id is a valid integer string or number
+      if (!isNaN(user_id) && !user_id.toString().includes('-')) {
+        user = await Member.findOne({ where: { id: parseInt(user_id, 10), is_deleted_status: 0 } });
+      } else {
+        // If it looks like a UUID but they passed type 2
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid ID format for Member type. Provided UUID but Member IDs are Integers.');
+      }
+    }
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
+
+    await user.update({ is_favorites });
+    return successResponse(res, statusCodes.OK, 'Favorites updated successfully', { is_favorites });
+  } catch (error) {
+    console.error('Error in updateFavoritesService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to update favorites');
+  }
+};
+
+const getGroupMembersService = async (res, group_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const { count, rows: enrollments } = await Enrollment.findAndCountAll({
+      where: { group_id, delete_status: 0 },
+      include: [
+        {
+          model: Member,
+          as: 'subscriber',
+          attributes: ['id', 'name']
+        }
+      ],
+      limit,
+      offset,
+      order: [['group_position_number', 'ASC']]
+    });
+
+    const members = enrollments.map(e => ({
+      id: e.subscriber ? e.subscriber.id : null,
+      name: e.subscriber ? e.subscriber.name : null,
+      position: e.group_position_number
+    }));
+
+    return successResponse(res, statusCodes.OK, 'Group members retrieved successfully', { count, rows: members });
+  } catch (error) {
+    console.error('Error in getGroupMembersService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to fetch group members');
+  }
+};
+
 module.exports = {
   loginAdminService,
   storeOrUpdateCompanyService,
@@ -786,5 +910,10 @@ module.exports = {
   storeOrUpdateEnrollmentService,
   getAllEnrollmentDetailsService,
   deleteEnrollmentService,
-  getPositionNumbersService
+  getPositionNumbersService,
+  storeOrUpdateUpcomingChitService,
+  getAllUpcomingChitsService,
+  deleteUpcomingChitService,
+  updateFavoritesService,
+  getGroupMembersService
 };

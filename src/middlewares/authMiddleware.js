@@ -13,7 +13,7 @@ const authenticateDefaultToken = (req, res, next) => {
   }
 
   if (!token || token !== DEFAULT_API_TOKEN) {
-    return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid or missing default token');
+    return errorResponse(res, statusCodes.NOT_FOUND, 'Invalid or missing default token');
   }
 
   next();
@@ -29,7 +29,7 @@ const authenticateToken = (req, res, next) => {
   }
 
   if (!token) {
-    return errorResponse(res, statusCodes.UNAUTHORIZED, 'Access token is missing or invalid');
+    return errorResponse(res, statusCodes.NOT_FOUND, 'Access token is missing or invalid');
   }
 
   try {
@@ -38,7 +38,7 @@ const authenticateToken = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (error) {
-    return errorResponse(res, statusCodes.FORBIDDEN, 'Invalid or expired access token');
+    return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid or expired access token');
   }
 };
 
