@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, Enrollment, ChitsInstallment, UpcomingChit, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -215,10 +215,11 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
       where,
       include: [
         { model: StaticDropdownsList, as: 'title', attributes: ['dropdown_name'] },
-        { model: StaticDropdownsList, as: 'parental_title', attributes: ['dropdown_name'] },
+        { model: StaticDropdownSubcategoryList, as: 'parental_title', attributes: ['subcategory_name'] },
         { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['dropdown_name'] },
         { model: StaticDropdownsList, as: 'occupation', attributes: ['dropdown_name'] },
-        { model: StaticDropdownsList, as: 'emp_type', attributes: ['dropdown_name'] }
+        { model: StaticDropdownsList, as: 'emp_type', attributes: ['dropdown_name'] },
+        { model: StaticDropdownSubcategoryList, as: 'business_type_details', attributes: ['subcategory_name'] }
       ],
       order: [['createdAt', 'DESC']]
     });
@@ -873,6 +874,154 @@ const getGroupMembersService = async (res, group_id, min, max) => {
   }
 };
 
+const storeOrUpdateSuitFileInformationService = async (res, data = {}) => {
+  try {
+    const { id, ...suitData } = data;
+    if (id) {
+      const suitInfo = await SuitFileInformation.findByPk(id);
+      if (!suitInfo) return errorResponse(res, statusCodes.NOT_FOUND, 'Suit File Information not found');
+      await suitInfo.update(suitData);
+      return successResponse(res, statusCodes.OK, 'Suit File Information updated successfully', suitInfo);
+    } else {
+      const newSuitInfo = await SuitFileInformation.create(suitData);
+      return successResponse(res, statusCodes.CREATED, 'Suit File Information created successfully', newSuitInfo);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateSuitFileInformationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllSuitFileInformationService = async (res, company_id, group_id, subscriber_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    
+    const where = {
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(group_id && group_id !== '' && { group_id }),
+      ...(subscriber_id && subscriber_id !== '' && { subscriber_id })
+    };
+
+    const suitInfos = await SuitFileInformation.findAndCountAll({
+      limit,
+      offset,
+      where,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const formattedData = {
+      total_count: suitInfos.count,
+      rows: suitInfos.rows
+    };
+
+    return successResponse(res, statusCodes.OK, 'Suit File Information retrieved successfully', formattedData);
+  } catch (error) {
+    console.error('Error in getAllSuitFileInformationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteSuitFileInformationService = async (res, id) => {
+  try {
+    const suitInfo = await SuitFileInformation.findByPk(id);
+    if (!suitInfo) return errorResponse(res, statusCodes.NOT_FOUND, 'Suit File Information not found');
+    await suitInfo.destroy();
+    return successResponse(res, statusCodes.OK, 'Suit File Information deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteSuitFileInformationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAuctionService = async (res, data = {}) => {
+  try {
+    const { id, ...auctionData } = data;
+    if (id) {
+      const auction = await Auction.findByPk(id);
+      if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+      await auction.update(auctionData);
+      return successResponse(res, statusCodes.OK, 'Auction updated successfully', auction);
+    } else {
+      const newAuction = await Auction.create(auctionData);
+      return successResponse(res, statusCodes.CREATED, 'Auction created successfully', newAuction);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateAuctionService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(group_id && group_id !== '' && { group_id }),
+      ...(bidder_id && bidder_id !== '' && { bidder_id })
+    };
+
+    const auctions = await Auction.findAndCountAll({
+      limit,
+      offset,
+      where,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'bidder', attributes: ['name', 'member_id'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const formattedData = {
+      total_count: auctions.count,
+      rows: auctions.rows
+    };
+
+    return successResponse(res, statusCodes.OK, 'Auctions retrieved successfully', formattedData);
+  } catch (error) {
+    console.error('Error in getAllAuctionsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteAuctionService = async (res, id) => {
+  try {
+    const auction = await Auction.findByPk(id);
+    if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+    await auction.destroy();
+    return successResponse(res, statusCodes.OK, 'Auction deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteAuctionService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllSubcategoriesService = async (res, category_id) => {
+  try {
+    if (category_id === undefined || category_id === null) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'category_id is required');
+    }
+    const subcategories = await StaticDropdownSubcategoryList.findAll({
+      where: {
+        category_id,
+        status: 1
+      },
+      order: [['is_default', 'DESC'], ['subcategory_name', 'ASC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Subcategories retrieved successfully', subcategories);
+  } catch (error) {
+    console.error('Error in getAllSubcategoriesService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdminService,
   storeOrUpdateCompanyService,
@@ -915,5 +1064,12 @@ module.exports = {
   getAllUpcomingChitsService,
   deleteUpcomingChitService,
   updateFavoritesService,
-  getGroupMembersService
+  getGroupMembersService,
+  storeOrUpdateSuitFileInformationService,
+  getAllSuitFileInformationService,
+  deleteSuitFileInformationService,
+  storeOrUpdateAuctionService,
+  getAllAuctionsService,
+  deleteAuctionService,
+  getAllSubcategoriesService
 };

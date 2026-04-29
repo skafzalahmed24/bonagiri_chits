@@ -64,6 +64,7 @@ router.post('/city/get-all', authMiddleware.authenticateToken, validate(adminVal
 router.post('/city/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteCitySchema), adminController.deleteCity);
 
 router.post('/fetch-static-dropdown', authMiddleware.authenticateToken, validate(adminValidation.fetchStaticDropdownSchema), adminController.fetchStaticDropdown);
+router.post('/fetch-static-dropdown-subcategory', authMiddleware.authenticateToken, adminController.getAllSubcategories);
 
 // Enrollment Routes
 router.post('/enrollment/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.enrollmentValidator), adminController.storeOrUpdateEnrollment);
@@ -77,12 +78,17 @@ router.post('/upcoming-chit/get-all', authMiddleware.authenticateToken, validate
 router.post('/upcoming-chit/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteUpcomingChitSchema), adminController.deleteUpcomingChit);
  
 router.post('/favorite/update', authMiddleware.authenticateToken, validate(adminValidation.updateFavoritesSchema), adminController.updateFavorites);
- 
+
+//fetch members by group id 
 router.post('/group/members', authMiddleware.authenticateToken, validate(adminValidation.getGroupMembersSchema), adminController.getGroupMembers);
 
-
-
-
-
+// suit-file-information routes
+router.post('/suit-file-information/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.suitFileInformationValidator), adminController.storeOrUpdateSuitFileInformation);
+router.post('/suit-file-information/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllSuitFileInformationSchema), adminController.getAllSuitFileInformation);
+router.post('/suit-file-information/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteSuitFileInformationSchema), adminController.deleteSuitFileInformation);
+// auction routes
+router.post('/auction/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.auctionValidator), adminController.storeOrUpdateAuction);
+router.post('/auction/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllAuctionsSchema), adminController.getAllAuctions);
+router.post('/auction/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAuctionSchema), adminController.deleteAuction);
 
 module.exports = router;

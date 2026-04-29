@@ -15,8 +15,8 @@ module.exports = (sequelize, DataTypes) => {
   }
   StaticDropdownsList.init({
     id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
       primaryKey: true
     },
     dropdown_name: {
@@ -30,6 +30,10 @@ module.exports = (sequelize, DataTypes) => {
     type_id: {
       type: DataTypes.INTEGER,
       allowNull: false
+    },
+    is_default: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0
     }
   }, {
     sequelize,

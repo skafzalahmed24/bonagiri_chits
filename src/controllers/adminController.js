@@ -433,6 +433,82 @@ const getGroupMembers = async (req, res) => {
   }
 };
 
+const storeOrUpdateSuitFileInformation = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    if (req.user && req.user.role === 'company' && req.user.id) {
+      data.company_id = req.user.id;
+    }
+    return await adminService.storeOrUpdateSuitFileInformationService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateSuitFileInformation:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllSuitFileInformation = async (req, res) => {
+  try {
+    const { company_id, group_id, subscriber_id, min, max } = req.body || {};
+    return await adminService.getAllSuitFileInformationService(res, company_id, group_id, subscriber_id, min, max);
+  } catch (error) {
+    console.error('Error in getAllSuitFileInformation:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteSuitFileInformation = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteSuitFileInformationService(res, id);
+  } catch (error) {
+    console.error('Error in deleteSuitFileInformation:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAuction = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    if (req.user && req.user.role === 'company' && req.user.id) {
+      data.company_id = req.user.id;
+    }
+    return await adminService.storeOrUpdateAuctionService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateAuction:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAuctions = async (req, res) => {
+  try {
+    const { company_id, group_id, bidder_id, min, max } = req.body || {};
+    return await adminService.getAllAuctionsService(res, company_id, group_id, bidder_id, min, max);
+  } catch (error) {
+    console.error('Error in getAllAuctions:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteAuction = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteAuctionService(res, id);
+  } catch (error) {
+    console.error('Error in deleteAuction:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllSubcategories = async (req, res) => {
+  try {
+    const { category_id } = req.body;
+    return await adminService.getAllSubcategoriesService(res, category_id);
+  } catch (error) {
+    console.error('Error in getAllSubcategories:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -474,5 +550,12 @@ module.exports = {
   getAllUpcomingChits,
   deleteUpcomingChit,
   updateFavorites,
-  getGroupMembers
+  getGroupMembers,
+  storeOrUpdateSuitFileInformation,
+  getAllSuitFileInformation,
+  deleteSuitFileInformation,
+  storeOrUpdateAuction,
+  getAllAuctions,
+  deleteAuction,
+  getAllSubcategories
 };

@@ -11,26 +11,27 @@ module.exports = (sequelize, DataTypes) => {
      */
     static associate(models) {
       Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'name_prefix', as: 'title', targetKey: 'id' });
-      Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'parental_prefix', as: 'parental_title', targetKey: 'id' });
+      Member.belongsTo(models.StaticDropdownSubcategoryList, { foreignKey: 'parental_prefix', as: 'parental_title', targetKey: 'id' });
       Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'gender', as: 'gender_dropdown', targetKey: 'id' });
       Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'employee_occupation', as: 'occupation', targetKey: 'id' });
       Member.belongsTo(models.StaticDropdownsList, { foreignKey: 'employee_type', as: 'emp_type', targetKey: 'id' });
+      Member.belongsTo(models.StaticDropdownSubcategoryList, { foreignKey: 'business_type', as: 'business_type_details', targetKey: 'id' });
     }
   }
   Member.init({
     member_id: DataTypes.STRING,
-    name_prefix: DataTypes.UUID,
+    name_prefix: DataTypes.INTEGER,
     rep_by_first_name: DataTypes.STRING,
     sur_name: DataTypes.STRING,
     name: DataTypes.STRING,
     date_of_birth: DataTypes.DATEONLY,
     age: DataTypes.INTEGER,
     registration_date: DataTypes.DATEONLY,
-    parental_prefix: DataTypes.UUID,
+    parental_prefix: DataTypes.INTEGER,
     parental_name: DataTypes.STRING,
     guardian_name: DataTypes.STRING,
     relation: DataTypes.STRING,
-    gender: DataTypes.UUID,
+    gender: DataTypes.INTEGER,
     mobile_number: DataTypes.STRING,
     email: DataTypes.STRING,
     gst_number: DataTypes.STRING,
@@ -45,8 +46,8 @@ module.exports = (sequelize, DataTypes) => {
     upload_image: DataTypes.STRING,
     upload_signature: DataTypes.STRING,
     passbook_details: DataTypes.STRING,
-    employee_occupation: DataTypes.UUID,
-    employee_type: DataTypes.UUID,
+    employee_occupation: DataTypes.INTEGER,
+    employee_type: DataTypes.INTEGER,
     employee_organisation: DataTypes.STRING,
     employee_designation: DataTypes.STRING,
     employee_department: DataTypes.STRING,
@@ -54,7 +55,7 @@ module.exports = (sequelize, DataTypes) => {
     employee_date_of_joining: DataTypes.DATEONLY,
     employee_retirement_date: DataTypes.DATEONLY,
     employee_net_salary: DataTypes.DECIMAL,
-    business_type: DataTypes.STRING,
+    business_type: DataTypes.INTEGER,
     business_firm_name: DataTypes.STRING,
     business_capital: DataTypes.DECIMAL,
     business_income: DataTypes.DECIMAL,
