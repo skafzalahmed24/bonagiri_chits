@@ -86,6 +86,7 @@ router.post('/group/members', authMiddleware.authenticateToken, validate(adminVa
 router.post('/suit-file-information/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.suitFileInformationValidator), adminController.storeOrUpdateSuitFileInformation);
 router.post('/suit-file-information/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllSuitFileInformationSchema), adminController.getAllSuitFileInformation);
 router.post('/suit-file-information/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteSuitFileInformationSchema), adminController.deleteSuitFileInformation);
+
 // auction routes
 router.post('/auction/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.auctionValidator), adminController.storeOrUpdateAuction);
 router.post('/auction/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllAuctionsSchema), adminController.getAllAuctions);

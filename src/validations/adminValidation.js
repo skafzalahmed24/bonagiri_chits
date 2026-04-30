@@ -507,7 +507,11 @@ module.exports = {
   updateFavoritesSchema: Joi.object({
     user_id: Joi.string().required(),
     type: Joi.number().integer().valid(1, 2).required(),
-    is_favorites: Joi.array().items(Joi.alternatives().try(Joi.number(), Joi.string())).required()
+    is_favorites: Joi.alternatives().try(
+      Joi.array().items(Joi.alternatives().try(Joi.number(), Joi.string())),
+      Joi.number(),
+      Joi.string()
+    ).required()
   }),
   getGroupMembersSchema: Joi.object({
     group_id: Joi.string().uuid().required().messages({

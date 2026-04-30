@@ -230,22 +230,30 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
 
       // Resolve introduced_as
       if (Array.isArray(memberData.introduced_as)) {
-        console.log(`Resolving introduced_as for member ${memberData.id}:`, memberData.introduced_as);
-        const labels = await StaticDropdownsList.findAll({
-          where: { id: { [Op.in]: memberData.introduced_as } },
-          attributes: ['id', 'dropdown_name']
-        });
-        console.log(`Found labels:`, labels.map(l => l.toJSON()));
-        memberData.introduced_as_dropdown = labels;
+        const intIds = memberData.introduced_as.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+        if (intIds.length > 0) {
+          const labels = await StaticDropdownsList.findAll({
+            where: { id: { [Op.in]: intIds } },
+            attributes: ['id', 'dropdown_name']
+          });
+          memberData.introduced_as_dropdown = labels;
+        } else {
+          memberData.introduced_as_dropdown = [];
+        }
       }
 
       // Resolve other_info_kyc_details
       if (Array.isArray(memberData.other_info_kyc_details)) {
-        const labels = await StaticDropdownsList.findAll({
-          where: { id: { [Op.in]: memberData.other_info_kyc_details } },
-          attributes: ['id', 'dropdown_name']
-        });
-        memberData.kyc_type = labels;
+        const intIds = memberData.other_info_kyc_details.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+        if (intIds.length > 0) {
+          const labels = await StaticDropdownsList.findAll({
+            where: { id: { [Op.in]: intIds } },
+            attributes: ['id', 'dropdown_name']
+          });
+          memberData.kyc_type = labels;
+        } else {
+          memberData.kyc_type = [];
+        }
       }
 
       return memberData;
@@ -670,7 +678,7 @@ const deleteCityService = async (res, id) => {
 
 const fetchStaticDropdownService = async (res, type_id, search) => {
   try {
-    const dropdowns = await StaticDropdownsList.findAll({ where: { type_id, status: 1, dropdown_name: { [Op.like]: `%${search || ''}%` } }, attributes: ['id', 'dropdown_name', 'type_id'], order: [['dropdown_name', 'ASC']] });
+    const dropdowns = await StaticDropdownsList.findAll({ where: { type_id, status: 1, dropdown_name: { [Op.like]: `%${search || ''}%` } }, attributes: ['id', 'dropdown_name', 'type_id','is_default'], order: [['dropdown_name', 'ASC']] });
     return successResponse(res, statusCodes.OK, 'Dropdown values retrieved successfully', dropdowns);
   } catch (error) {
     console.error('Error in fetchStaticDropdownService:', error);
@@ -813,29 +821,54 @@ const deleteUpcomingChitService = async (res, id) => {
   }
 };
 
-const updateFavoritesService = async (res, user_id, type, is_favorites) => {
+const updateFavoritesService = async (res, user_id, type, is_favorites_input) => {
   try {
     let user;
     const typeNum = Number(type);
 
     if (typeNum === 1) {
-      // Company lookup (usually UUID)
       user = await Company.findOne({ where: { id: user_id, is_deleted_status: 0 } });
     } else if (typeNum === 2) {
-      // Member lookup (Integer ID)
-      // Check if user_id is a valid integer string or number
       if (!isNaN(user_id) && !user_id.toString().includes('-')) {
         user = await Member.findOne({ where: { id: parseInt(user_id, 10), is_deleted_status: 0 } });
       } else {
-        // If it looks like a UUID but they passed type 2
-        return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid ID format for Member type. Provided UUID but Member IDs are Integers.');
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid ID format for Member type. Member IDs are Integers.');
       }
     }
 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
 
-    await user.update({ is_favorites });
-    return successResponse(res, statusCodes.OK, 'Favorites updated successfully', { is_favorites });
+    // Get current favorites and ensure it's an array
+    let currentFavorites = user.is_favorites || [];
+    if (typeof currentFavorites === 'string') {
+      try {
+        currentFavorites = JSON.parse(currentFavorites);
+      } catch (e) {
+        currentFavorites = [];
+      }
+    }
+    if (!Array.isArray(currentFavorites)) currentFavorites = [];
+
+    // Convert input to array if it's a string
+    let incomingItems = Array.isArray(is_favorites_input) ? is_favorites_input : [is_favorites_input];
+
+    // Toggle Logic: Remove if exists, Add if not exists
+    let updatedFavorites = [...currentFavorites];
+    incomingItems.forEach(item => {
+      if (item && typeof item === 'string') {
+        const index = updatedFavorites.indexOf(item);
+        if (index > -1) {
+          // Item exists, so remove it
+          updatedFavorites.splice(index, 1);
+        } else {
+          // Item doesn't exist, so add it
+          updatedFavorites.push(item);
+        }
+      }
+    });
+
+    await user.update({ is_favorites: updatedFavorites });
+    return successResponse(res, statusCodes.OK, 'Favorites updated successfully', { is_favorites: updatedFavorites });
   } catch (error) {
     console.error('Error in updateFavoritesService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to update favorites');
