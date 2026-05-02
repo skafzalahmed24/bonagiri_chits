@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -323,9 +323,10 @@ const uploadDocumentService = async (res, type, files) => {
   return successResponse(res, statusCodes.OK, 'Documents uploaded successfully');
 };
 
-const storeOrUpdateRouteService = async (res, data = {}) => {
+const storeOrUpdateRouteService = async (res, comp_id, data = {}) => {
   try {
     const { id, ...routeData } = data;
+    if (comp_id) routeData.company_id = comp_id;
     if (id) {
       const route = await Route.findByPk(id);
       if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
@@ -370,9 +371,10 @@ const deleteRouteService = async (res, id) => {
   }
 };
 
-const storeOrUpdateAreaService = async (res, data = {}) => {
+const storeOrUpdateAreaService = async (res, comp_id, data = {}) => {
   try {
     const { id, ...areaData } = data;
+    if (comp_id) areaData.company_id = comp_id;
     if (id) {
       const area = await Area.findByPk(id);
       if (!area) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
@@ -644,9 +646,10 @@ const getStatesListService = async (res, country_id, search) => {
   }
 };
 
-const storeOrUpdateDistrictService = async (res, data = {}) => {
+const storeOrUpdateDistrictService = async (res, comp_id, data = {}) => {
   try {
     const { id, ...districtData } = data;
+    if (comp_id) districtData.company_id = comp_id;
     if (id) {
       const district = await District.findByPk(id);
       if (!district) return errorResponse(res, statusCodes.NOT_FOUND, 'District not found');
@@ -679,9 +682,10 @@ const getAllDistrictDetailsService = async (res, company_id, min, max, search) =
   }
 };
 
-const storeOrUpdateCityService = async (res, data = {}) => {
+const storeOrUpdateCityService = async (res, comp_id, data = {}) => {
   try {
     const { id, ...cityData } = data;
+    if (comp_id) cityData.company_id = comp_id;
     if (id) {
       const city = await City.findByPk(id);
       if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
@@ -1483,7 +1487,7 @@ const transferAgentUpdateService = async (res, member_id, agent_type_id, new_age
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
-const getAllGroupUnderStaticListsService = async (res, min, max, search) => {
+const getAllGroupUnderStaticListsService = async (res, comp_id, min, max, search) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
@@ -1492,6 +1496,13 @@ const getAllGroupUnderStaticListsService = async (res, min, max, search) => {
       is_deleted_status: 0,
       ...(search && { name: { [Op.iLike]: `%${search}%` } })
     };
+
+    if (comp_id) {
+      whereClause[Op.or] = [
+        { type: 1 },
+        { company_id: comp_id }
+      ];
+    }
 
     const { count, rows } = await GroupUnderStaticList.findAndCountAll({
       where: whereClause,
@@ -1506,6 +1517,137 @@ const getAllGroupUnderStaticListsService = async (res, min, max, search) => {
     });
   } catch (error) {
     console.error('Error in getAllGroupUnderStaticListsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateGroupUnderStaticListService = async (res, comp_id, data = {}) => {
+  try {
+    const { id, ...restData } = data;
+    restData.type = 2;
+    if (comp_id) {
+      restData.company_id = comp_id;
+    }
+    if (id) {
+      const existing = await GroupUnderStaticList.findByPk(id);
+      if (!existing) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Group under static list not found');
+      }
+      await existing.update(restData);
+      return successResponse(res, statusCodes.OK, 'Group under static list updated successfully', existing);
+    } else {
+      await sequelize.query(`SELECT setval(pg_get_serial_sequence('group_under_static_lists', 'id'), coalesce(max(id), 0) + 1, false) FROM "group_under_static_lists";`);
+      const created = await GroupUnderStaticList.create(restData);
+      return successResponse(res, statusCodes.CREATED, 'Group under static list created successfully', created);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateGroupUnderStaticListService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteGroupUnderStaticListService = async (res, id) => {
+  try {
+    const existing = await GroupUnderStaticList.findByPk(id);
+    if (!existing) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Group under static list not found');
+    }
+    await existing.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Group under static list deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteGroupUnderStaticListService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getGroupUnderStaticListByIdService = async (res, id) => {
+  try {
+    const record = await GroupUnderStaticList.findOne({ where: { id, is_deleted_status: 0 } });
+    if (!record) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Group under static list not found');
+    }
+    return successResponse(res, statusCodes.OK, 'Group under static list retrieved successfully', record);
+  } catch (error) {
+    console.error('Error in getGroupUnderStaticListByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAccountCreationDetailService = async (res, comp_id, login_user_id, data = {}) => {
+  try {
+    const { id, ...restData } = data;
+    if (comp_id) restData.company_id = comp_id;
+    if (id) {
+      if (login_user_id) restData.updated_by = String(login_user_id);
+      const existing = await AccountCreationDetail.findByPk(id);
+      if (!existing) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
+      }
+      await existing.update(restData);
+      return successResponse(res, statusCodes.OK, 'Account creation detail updated successfully', existing);
+    } else {
+      if (login_user_id) restData.created_by = String(login_user_id);
+      const created = await AccountCreationDetail.create(restData);
+      return successResponse(res, statusCodes.CREATED, 'Account creation detail created successfully', created);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateAccountCreationDetailService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAccountCreationDetailsService = async (res, comp_id, min, max, search, account_group_id) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      is_deleted_status: 0,
+      ...(comp_id && { company_id: comp_id }),
+      ...(account_group_id && { account_group_id }),
+      ...(search && { account_name: { [Op.iLike]: `%${search}%` } })
+    };
+
+    const { count, rows } = await AccountCreationDetail.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['id', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Account creation details retrieved successfully', {
+      total_count: count,
+      rows
+    });
+  } catch (error) {
+    console.error('Error in getAllAccountCreationDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAccountCreationDetailByIdService = async (res, id) => {
+  try {
+    const record = await AccountCreationDetail.findOne({ where: { id, is_deleted_status: 0 } });
+    if (!record) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
+    }
+    return successResponse(res, statusCodes.OK, 'Account creation detail retrieved successfully', record);
+  } catch (error) {
+    console.error('Error in getAccountCreationDetailByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteAccountCreationDetailService = async (res, id) => {
+  try {
+    const existing = await AccountCreationDetail.findByPk(id);
+    if (!existing) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
+    }
+    await existing.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Account creation detail deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteAccountCreationDetailService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1814,5 +1956,12 @@ module.exports = {
   getUpcomingChitByIdService,
   getSuitFileInformationByIdService,
   getAuctionByIdService,
-  getCompanyIdFromUser
+  getCompanyIdFromUser,
+  storeOrUpdateGroupUnderStaticListService,
+  deleteGroupUnderStaticListService,
+  getGroupUnderStaticListByIdService,
+  storeOrUpdateAccountCreationDetailService,
+  getAllAccountCreationDetailsService,
+  getAccountCreationDetailByIdService,
+  deleteAccountCreationDetailService
 };

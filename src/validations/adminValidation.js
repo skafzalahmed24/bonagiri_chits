@@ -627,10 +627,50 @@ module.exports = {
   getAllGroupUnderStaticListsSchema: Joi.object({
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional(),
-    search: Joi.string().allow('', null).optional()
+    search: Joi.string().allow('', null).optional(),
+    account_group_id: Joi.number().integer().allow(null).optional()
   }),
   getByIdSchema: Joi.object({
     id: Joi.any().required()
+  }),
+  groupUnderStaticListValidator: Joi.object({
+    id: Joi.number().integer().optional(),
+    name: Joi.string().required(),
+    group_under_id: Joi.number().integer().allow(null).optional(),
+    account_order: Joi.number().integer().allow(null).optional(),
+    type: Joi.number().integer().optional()
+  }),
+  deleteGroupUnderStaticListSchema: Joi.object({
+    id: Joi.number().integer().required()
+  }),
+  storeOrUpdateAccountCreationDetailSchema: Joi.object({
+    id: Joi.number().integer().optional(),
+    company_id: Joi.string().uuid().allow('', null).optional(),
+    account_name: Joi.string().required(),
+    account_group_id: Joi.number().integer().allow(null).optional(),
+    person_name: Joi.string().allow('', null).optional(),
+    address_line_one: Joi.string().allow('', null).optional(),
+    address_line_two: Joi.string().allow('', null).optional(),
+    address_line_three: Joi.string().allow('', null).optional(),
+    pin_code: Joi.string().allow('', null).optional(),
+    mobile: Joi.string().allow('', null).optional(),
+    email: Joi.string().email().allow('', null).optional(),
+    hsn_code: Joi.string().allow('', null).optional(),
+    tin_number: Joi.string().allow('', null).optional(),
+    mfl_number: Joi.string().allow('', null).optional(),
+    gst_number: Joi.string().allow('', null).optional(),
+    pan_number: Joi.string().allow('', null).optional(),
+    igst_percentage: Joi.number().precision(2).allow(null).optional(),
+    cgst_percentage: Joi.number().precision(2).allow(null).optional(),
+    sgst_percentage: Joi.number().precision(2).allow(null).optional(),
+    opening_balance: Joi.number().precision(2).allow(null).optional(),
+    cr_dr_status: Joi.number().integer().allow(null).optional(),
+    action_status: Joi.number().integer().allow(null).optional(),
+    created_by: Joi.string().allow('', null).optional(),
+    updated_by: Joi.string().allow('', null).optional()
+  }),
+  deleteAccountCreationDetailSchema: Joi.object({
+    id: Joi.number().integer().required()
   })
 };
 

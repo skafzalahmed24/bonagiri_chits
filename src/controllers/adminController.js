@@ -151,7 +151,8 @@ const uploadDocument = async (req, res) => {
 
 const storeOrUpdateRoute = async (req, res) => {
   try {
-    return await adminService.storeOrUpdateRouteService(res, req.body);
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    return await adminService.storeOrUpdateRouteService(res, comp_id, req.body);
   } catch (error) {
     console.error('Error in storeOrUpdateRoute:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -181,7 +182,8 @@ const deleteRoute = async (req, res) => {
 
 const storeOrUpdateArea = async (req, res) => {
   try {
-    return await adminService.storeOrUpdateAreaService(res, req.body);
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    return await adminService.storeOrUpdateAreaService(res, comp_id, req.body);
   } catch (error) {
     console.error('Error in storeOrUpdateArea:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -275,7 +277,8 @@ const getStatesList = async (req, res) => {
 
 const storeOrUpdateDistrict = async (req, res) => {
   try {
-    return await adminService.storeOrUpdateDistrictService(res, req.body);
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    return await adminService.storeOrUpdateDistrictService(res, comp_id, req.body);
   } catch (error) {
     console.error('Error in storeOrUpdateDistrict:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -295,7 +298,8 @@ const getAllDistrictDetails = async (req, res) => {
 
 const storeOrUpdateCity = async (req, res) => {
   try {
-    return await adminService.storeOrUpdateCityService(res, req.body);
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    return await adminService.storeOrUpdateCityService(res, comp_id, req.body);
   } catch (error) {
     console.error('Error in storeOrUpdateCity:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -572,8 +576,9 @@ const storeOrUpdateAgentTargetEntry = async (req, res) => {
 
 const getAllGroupUnderStaticLists = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { min, max, search } = req.body || {};
-    return await adminService.getAllGroupUnderStaticListsService(res, min, max, search);
+    return await adminService.getAllGroupUnderStaticListsService(res, comp_id, min, max, search);
   } catch (error) {
     console.error('Error in getAllGroupUnderStaticLists:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -710,6 +715,78 @@ const getAuctionById = async (req, res) => {
   }
 };
 
+const storeOrUpdateGroupUnderStaticList = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    return await adminService.storeOrUpdateGroupUnderStaticListService(res, comp_id, req.body);
+  } catch (error) {
+    console.error('Error in storeOrUpdateGroupUnderStaticList:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteGroupUnderStaticList = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteGroupUnderStaticListService(res, id);
+  } catch (error) {
+    console.error('Error in deleteGroupUnderStaticList:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getGroupUnderStaticListById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getGroupUnderStaticListByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getGroupUnderStaticListById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAccountCreationDetail = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const login_user_id = req.user ? req.user.id : null;
+    return await adminService.storeOrUpdateAccountCreationDetailService(res, comp_id, login_user_id, req.body);
+  } catch (error) {
+    console.error('Error in storeOrUpdateAccountCreationDetail:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAccountCreationDetails = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { min, max, search, account_group_id } = req.body || {};
+    return await adminService.getAllAccountCreationDetailsService(res, comp_id, min, max, search, account_group_id);
+  } catch (error) {
+    console.error('Error in getAllAccountCreationDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAccountCreationDetailById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getAccountCreationDetailByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getAccountCreationDetailById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteAccountCreationDetail = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteAccountCreationDetailService(res, id);
+  } catch (error) {
+    console.error('Error in deleteAccountCreationDetail:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -777,5 +854,12 @@ module.exports = {
   getEnrollmentById,
   getUpcomingChitById,
   getSuitFileInformationById,
-  getAuctionById
+  getAuctionById,
+  storeOrUpdateGroupUnderStaticList,
+  deleteGroupUnderStaticList,
+  getGroupUnderStaticListById,
+  storeOrUpdateAccountCreationDetail,
+  getAllAccountCreationDetails,
+  getAccountCreationDetailById,
+  deleteAccountCreationDetail
 };

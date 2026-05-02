@@ -116,5 +116,13 @@ router.post('/auction/get-by-id', authMiddleware.authenticateToken, validate(adm
 
 
 router.post('/group-under-static-list/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllGroupUnderStaticListsSchema), adminController.getAllGroupUnderStaticLists);
+router.post('/group-under-static-list/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.groupUnderStaticListValidator), adminController.storeOrUpdateGroupUnderStaticList);
+router.post('/group-under-static-list/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteGroupUnderStaticListSchema), adminController.deleteGroupUnderStaticList);
+router.post('/group-under-static-list/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getGroupUnderStaticListById);
+
+router.post('/account-creation-details/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.storeOrUpdateAccountCreationDetailSchema), adminController.storeOrUpdateAccountCreationDetail);
+router.post('/account-creation-details/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllGroupUnderStaticListsSchema), adminController.getAllAccountCreationDetails);
+router.post('/account-creation-details/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getAccountCreationDetailById);
+router.post('/account-creation-details/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAccountCreationDetailSchema), adminController.deleteAccountCreationDetail);
 
 module.exports = router;
