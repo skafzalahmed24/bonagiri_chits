@@ -5,10 +5,7 @@ const statusCodes = require('../utils/statusCodes');
 const loginAdmin = async (req, res) => {
   try {
     const { email, password } = req.body;
-
-    // Call service layer and pass res for it to handle responses
     return await adminService.loginAdminService(res, email, password);
-
   } catch (error) {
     console.error('Error in adminLogin:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -17,7 +14,6 @@ const loginAdmin = async (req, res) => {
 
 const storeOrUpdateCompanyRegistraction = async (req, res) => {
   try {
-    // Pass the request body exactly as it is to the service layer
     return await adminService.storeOrUpdateCompanyService(res, req.body);
   } catch (error) {
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -509,6 +505,39 @@ const getAllSubcategories = async (req, res) => {
   }
 };
 
+const getAgentByAgentType = async (req, res) => {
+  try {
+    const { agent_type_id, min, max, search } = req.body || {};
+    return await adminService.getAgentByAgentTypeService(res, agent_type_id, min, max, search);
+  } catch (error) {
+    console.error('Error in getAgentByAgentType:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAgentEnrollments = async (req, res) => {
+  try {
+    const { agent_type_id, agent_id, min, max, search } = req.body || {};
+    return await adminService.getAgentEnrollmentsService(res, agent_type_id, agent_id, min, max, search);
+  } catch (error) {
+    console.error('Error in getAgentEnrollments:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAgentTargetEntry = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    if (req.user && req.user.role === 'company' && req.user.id) {
+      data.company_id = req.user.id;
+    }
+    return await adminService.storeOrUpdateAgentTargetEntryService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateAgentTargetEntry:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -557,5 +586,8 @@ module.exports = {
   storeOrUpdateAuction,
   getAllAuctions,
   deleteAuction,
-  getAllSubcategories
+  getAllSubcategories,
+  getAgentByAgentType,
+  getAgentEnrollments,
+  storeOrUpdateAgentTargetEntry
 };

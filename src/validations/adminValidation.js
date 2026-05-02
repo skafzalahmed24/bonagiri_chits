@@ -138,7 +138,7 @@ const memberValidator = Joi.object({
   mobile_number: Joi.string().allow('', null).optional(),
   email: Joi.string().email().allow('', null).optional(),
   gst_number: Joi.string().allow('', null).optional(),
-  marital_status: Joi.string().allow('', null).optional(),
+  marital_status: Joi.number().integer().allow('', null).optional(),
   married_date: Joi.date().iso().allow('', null).optional(),
   introduced_as: Joi.any().optional(),
   account_number: Joi.string().allow('', null).optional(),
@@ -585,5 +585,32 @@ module.exports = {
   deleteAuctionSchema: Joi.object({
     id: Joi.string().uuid().required(),
     company_id: Joi.string().uuid().allow('', null).optional()
+  }),
+  getAgentTargetSchema: Joi.object({
+    agent_type_id: Joi.number().integer().valid(16, 18).required().messages({
+      'any.required': 'Type ID is required (16 - Business Agent, 18 - Collection Agent)',
+      'any.only': 'Invalid agent type ID. Must be 16 or 18.'
+    }),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
+  }),
+  getAgentEnrollmentsSchema: Joi.object({
+    agent_type_id: Joi.number().integer().valid(16, 18).required(),
+    agent_id: Joi.number().integer().required(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
+  }),
+  storeOrUpdateAgentTargetEntrySchema: Joi.object({
+    id: Joi.string().uuid().optional(),
+    company_id: Joi.string().uuid().allow('', null).optional(),
+    agent_type_id: Joi.number().integer().valid(16, 18).required(),
+    agent_id: Joi.number().integer().required(),
+    target_amount: Joi.number().precision(2).required(),
+    from_date: Joi.date().iso().allow('', null).optional(),
+    to_date: Joi.date().iso().allow('', null).optional(),
+    due_amount: Joi.number().precision(2).allow('', null).optional()
   })
 };
+

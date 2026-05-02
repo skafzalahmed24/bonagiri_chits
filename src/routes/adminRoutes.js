@@ -92,4 +92,9 @@ router.post('/auction/store-or-update', authMiddleware.authenticateToken, valida
 router.post('/auction/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllAuctionsSchema), adminController.getAllAuctions);
 router.post('/auction/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAuctionSchema), adminController.deleteAuction);
 
+// agent by type routes
+router.post('/agent/get-by-type', authMiddleware.authenticateToken, validate(adminValidation.getAgentTargetSchema), adminController.getAgentByAgentType);
+router.post('/agent/get-enrollments', authMiddleware.authenticateToken, validate(adminValidation.getAgentEnrollmentsSchema), adminController.getAgentEnrollments);
+router.post('/agent-target-entry/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.storeOrUpdateAgentTargetEntrySchema), adminController.storeOrUpdateAgentTargetEntry);
+
 module.exports = router;

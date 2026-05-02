@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -1055,17 +1055,269 @@ const getAllSubcategoriesService = async (res, category_id) => {
   }
 };
 
+
+const getAgentByAgentTypeService = async (res, agent_type_id, min, max, search) => {
+  try {
+    if (agent_type_id !== 16 && agent_type_id !== 18) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid agent type ID. Must be 16 or 18.');
+    }
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      is_deleted_status: 0,
+      ...(search && {
+        [Op.or]: [
+          { name: { [Op.like]: `%${search}%` } },
+          { member_id: { [Op.like]: `%${search}%` } }
+        ]
+      })
+    };
+
+    const allMembers = await Member.findAll({ where });
+
+    const agents = allMembers.filter(m => {
+      if (!m.introduced_as) return false;
+      let intro = m.introduced_as;
+      if (typeof intro === 'string') {
+        try {
+          intro = JSON.parse(intro);
+        } catch (e) {
+          return intro.includes(String(agent_type_id)) || intro.includes(Number(agent_type_id));
+        }
+      }
+      if (Array.isArray(intro)) {
+        return intro.map(Number).includes(Number(agent_type_id)) || intro.map(String).includes(String(agent_type_id));
+      }
+      return false;
+    });
+
+    const total_count = agents.length;
+    const paginatedAgents = agents.slice(offset, offset + limit);
+
+    const now = new Date();
+    const endOfCurrentMonthStr = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).toISOString().split('T')[0];
+
+    const result = [];
+
+    for (const agent of paginatedAgents) {
+      const whereClause = { delete_status: 0 };
+      if (agent_type_id === 16) {
+        whereClause.business_agent_id = agent.id;
+      } else if (agent_type_id === 18) {
+        whereClause.collection_agent_id = agent.id;
+      }
+
+      const enrollments = await Enrollment.findAll({
+        where: whereClause
+      });
+
+      let total_target_amount = 0;
+      let total_due_amount = 0;
+
+      for (const e of enrollments) {
+        const installments = await ChitsInstallment.findAll({
+          where: {
+            enrollment_id: e.id,
+            due_date: { [Op.lte]: endOfCurrentMonthStr }
+          },
+          include: [
+            { model: sequelize.models.CustomerPayment, as: 'payments', attributes: ['received_amount'] }
+          ]
+        });
+
+        for (const inst of installments) {
+          const instData = inst.toJSON();
+          const payable = parseFloat(instData.payable_amount) || 0;
+          const received = instData.payments ? instData.payments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0) : 0;
+          
+          total_target_amount += payable;
+          total_due_amount += (payable - received);
+        }
+      }
+
+      const storedEntry = await AgentTargetEntry.findOne({
+        where: { agent_id: agent.id, agent_type_id }
+      });
+
+      result.push({
+        agent_id: agent.id,
+        agent_name: agent.name,
+        agent_member_id: agent.member_id,
+        company_id: agent.company_id,
+        total_target_amount,
+        total_due_amount,
+        stored_target_amount: storedEntry ? parseFloat(storedEntry.target_amount) || 0 : null,
+        stored_due_amount: storedEntry ? parseFloat(storedEntry.due_amount) || 0 : null
+      });
+    }
+
+    return successResponse(res, statusCodes.OK, 'Agent target details retrieved successfully', {
+      total_count,
+      rows: result
+    });
+
+  } catch (error) {
+    console.error('Error in getAgentByAgentTypeService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAgentEnrollmentsService = async (res, agent_type_id, agent_id, min, max, search) => {
+  try {
+    const type_id = parseInt(agent_type_id, 10);
+    const ag_id = parseInt(agent_id, 10);
+
+    if (type_id !== 16 && type_id !== 18) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid agent type ID. Must be 16 or 18.');
+    }
+    if (isNaN(ag_id)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Agent ID is required and must be a number.');
+    }
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      delete_status: 0,
+      ...(type_id === 16 ? { business_agent_id: ag_id } : { collection_agent_id: ag_id })
+    };
+
+    const enrollments = await Enrollment.findAll({
+      where: whereClause,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] }
+      ]
+    });
+
+    let filteredEnrollments = enrollments;
+    if (search) {
+      filteredEnrollments = enrollments.filter(e => {
+        const groupMatch = e.group && e.group.group_name && e.group.group_name.toLowerCase().includes(search.toLowerCase());
+        const subMatch = e.subscriber && (
+          (e.subscriber.name && e.subscriber.name.toLowerCase().includes(search.toLowerCase())) ||
+          (e.subscriber.member_id && e.subscriber.member_id.toLowerCase().includes(search.toLowerCase()))
+        );
+        return groupMatch || subMatch;
+      });
+    }
+
+    const now = new Date();
+    const endOfCurrentMonthStr = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).toISOString().split('T')[0];
+
+    const allInstallments = [];
+
+    for (const e of filteredEnrollments) {
+      const installments = await ChitsInstallment.findAll({
+        where: {
+          enrollment_id: e.id,
+          due_date: { [Op.lte]: endOfCurrentMonthStr }
+        },
+        include: [
+          { model: sequelize.models.CustomerPayment, as: 'payments', attributes: ['received_amount'] }
+        ]
+      });
+
+      for (const inst of installments) {
+        const instData = inst.toJSON();
+        const payable = parseFloat(instData.payable_amount) || 0;
+        const received = instData.payments ? instData.payments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0) : 0;
+        
+        allInstallments.push({
+          id: instData.id,
+          enrollment_id: e.id,
+          group_id: e.group_id,
+          group_name: e.group ? e.group.group_name : null,
+          chit_amount: e.group ? e.group.chit_amount : null,
+          subscriber_id: e.subscriber_id,
+          subscriber_name: e.subscriber ? e.subscriber.name : null,
+          subscriber_member_id: e.subscriber ? e.subscriber.member_id : null,
+          type: instData.type,
+          installment_no: instData.installment_no,
+          due_date: instData.due_date,
+          over_due_days_count: instData.over_due_days_count,
+          penalty_amount: instData.penalty_amount,
+          payable_amount: payable,
+          createdAt: instData.createdAt,
+          updatedAt: instData.updatedAt,
+          payments: instData.payments || [],
+          received_amount: received,
+          due_amount: Math.max(0, payable - received)
+        });
+      }
+    }
+
+    const total_count = allInstallments.length;
+    const paginated = allInstallments.slice(offset, offset + limit);
+
+    return successResponse(res, statusCodes.OK, 'Agent enrollments retrieved successfully', {
+      total_count,
+      rows: paginated
+    });
+
+  } catch (error) {
+    console.error('Error in getAgentEnrollmentsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAgentTargetEntryService = async (res, data = {}) => {
+  try {
+    const { id, company_id, agent_type_id, agent_id, target_amount, from_date, to_date, due_amount } = data;
+
+    if (!agent_type_id || !agent_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'agent_type_id and agent_id are required.');
+    }
+
+    if (id) {
+      const existing = await AgentTargetEntry.findByPk(id);
+      if (!existing) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'AgentTargetEntry not found');
+      }
+
+      await existing.update({
+        company_id,
+        agent_type_id,
+        agent_id,
+        target_amount,
+        from_date,
+        to_date,
+        due_amount
+      });
+
+      return successResponse(res, statusCodes.OK, 'Agent target entry updated successfully', existing);
+    } else {
+      const newEntry = await AgentTargetEntry.create({
+        company_id,
+        agent_type_id,
+        agent_id,
+        target_amount,
+        from_date,
+        to_date,
+        due_amount
+      });
+
+      return successResponse(res, statusCodes.CREATED, 'Agent target entry created successfully', newEntry);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateAgentTargetEntryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdminService,
-  storeOrUpdateCompanyService,
-  getAllCompanyDetailsService,
-  deleteCompanyService,
   loginCompanyService,
-  refreshTokenService,
   forgotPasswordService,
   verifyOtpService,
   resetPasswordService,
+  refreshTokenService,
   generateUniqueUserCode,
+  storeOrUpdateCompanyService,
+  getAllCompanyDetailsService,
+  deleteCompanyService,
   storeOrUpdateMemberService,
   getAllMemberDetailsService,
   deleteMemberService,
@@ -1104,5 +1356,8 @@ module.exports = {
   storeOrUpdateAuctionService,
   getAllAuctionsService,
   deleteAuctionService,
-  getAllSubcategoriesService
+  getAllSubcategoriesService,
+  getAgentByAgentTypeService,
+  getAgentEnrollmentsService,
+  storeOrUpdateAgentTargetEntryService
 };

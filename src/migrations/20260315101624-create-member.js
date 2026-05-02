@@ -43,7 +43,7 @@ module.exports = {
         type: Sequelize.STRING
       },
       marital_status: {
-        type: Sequelize.STRING
+        type: Sequelize.INTEGER
       },
       married_date: {
         type: Sequelize.DATEONLY
