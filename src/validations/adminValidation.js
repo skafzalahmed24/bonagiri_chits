@@ -176,7 +176,7 @@ const memberValidator = Joi.object({
   address_info_office_address: Joi.string().allow('', null).optional(),
   address_info_office_city_id: Joi.string().uuid().allow('', null).optional(),
   address_info_office_phone: Joi.string().allow('', null).optional(),
-  address_info_corresponding_address_status: Joi.boolean().allow('', null).optional(),
+  address_info_corresponding_address_status: Joi.number().integer().default(0),
   other_info_kyc_details: Joi.any().optional(),
   other_info_reference: Joi.string().allow('', null).optional(),
   other_info_remarks: Joi.string().allow('', null).optional(),
@@ -598,6 +598,8 @@ module.exports = {
   getAgentEnrollmentsSchema: Joi.object({
     agent_type_id: Joi.number().integer().valid(16, 18).required(),
     agent_id: Joi.number().integer().required(),
+    group_id: Joi.string().uuid().allow('', null).optional(),
+    position: Joi.string().valid('PS', 'NPS').allow('', null).optional(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional(),
     search: Joi.string().allow('', null).optional()
@@ -611,6 +613,18 @@ module.exports = {
     from_date: Joi.date().iso().allow('', null).optional(),
     to_date: Joi.date().iso().allow('', null).optional(),
     due_amount: Joi.number().precision(2).allow('', null).optional()
+  }),
+  getFilteredMembersByGroupAndAgentSchema: Joi.object({
+    agent_type_id: Joi.number().integer().valid(16, 18).required(),
+    agent_id: Joi.number().integer().allow('', null).optional(),
+    group_id: Joi.string().uuid().allow('', null).optional(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
+  }),
+  transferAgentUpdateSchema: Joi.object({
+    member_id: Joi.any().required(),
+    agent_type_id: Joi.number().integer().valid(16, 18).required(),
+    new_agent_id: Joi.number().integer().required()
   })
 };
 

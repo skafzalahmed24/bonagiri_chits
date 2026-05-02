@@ -1164,7 +1164,7 @@ const getAgentByAgentTypeService = async (res, agent_type_id, min, max, search) 
   }
 };
 
-const getAgentEnrollmentsService = async (res, agent_type_id, agent_id, min, max, search) => {
+const getAgentEnrollmentsService = async (res, agent_type_id, agent_id, group_id, position, min, max, search) => {
   try {
     const type_id = parseInt(agent_type_id, 10);
     const ag_id = parseInt(agent_id, 10);
@@ -1181,7 +1181,8 @@ const getAgentEnrollmentsService = async (res, agent_type_id, agent_id, min, max
 
     const whereClause = {
       delete_status: 0,
-      ...(type_id === 16 ? { business_agent_id: ag_id } : { collection_agent_id: ag_id })
+      ...(type_id === 16 ? { business_agent_id: ag_id } : { collection_agent_id: ag_id }),
+      ...(group_id && { group_id })
     };
 
     const enrollments = await Enrollment.findAll({
@@ -1210,6 +1211,16 @@ const getAgentEnrollmentsService = async (res, agent_type_id, agent_id, min, max
     const allInstallments = [];
 
     for (const e of filteredEnrollments) {
+      const isPrized = await Auction.findOne({
+        where: {
+          group_id: e.group_id,
+          bidder_id: e.subscriber_id
+        }
+      });
+      const pos = isPrized ? 'PS' : 'NPS';
+
+      if (position && position !== pos) continue;
+
       const installments = await ChitsInstallment.findAll({
         where: {
           enrollment_id: e.id,
@@ -1234,6 +1245,7 @@ const getAgentEnrollmentsService = async (res, agent_type_id, agent_id, min, max
           subscriber_id: e.subscriber_id,
           subscriber_name: e.subscriber ? e.subscriber.name : null,
           subscriber_member_id: e.subscriber ? e.subscriber.member_id : null,
+          position: pos,
           type: instData.type,
           installment_no: instData.installment_no,
           due_date: instData.due_date,
@@ -1307,6 +1319,104 @@ const storeOrUpdateAgentTargetEntryService = async (res, data = {}) => {
   }
 };
 
+const getFilteredMembersByGroupAndAgentService = async (res, agent_type_id, agent_id, group_id, min, max) => {
+  try {
+    const type_id = parseInt(agent_type_id, 10);
+    const ag_id = parseInt(agent_id, 10);
+
+    if (type_id !== 16 && type_id !== 18) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid agent type ID. Must be 16 or 18.');
+    }
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      delete_status: 0,
+      ...(group_id && group_id !== '' && { group_id }),
+      ...(!isNaN(ag_id) && (type_id === 16 ? { business_agent_id: ag_id } : { collection_agent_id: ag_id }))
+    };
+
+    const enrollments = await Enrollment.findAll({
+      where: whereClause,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] },
+        { model: Member, as: 'business_agent', attributes: ['name'] },
+        { model: Member, as: 'collection_agent', attributes: ['name'] }
+      ]
+    });
+
+    const result = [];
+    for (const e of enrollments) {
+      const isPrized = await Auction.findOne({
+        where: {
+          group_id: e.group_id,
+          bidder_id: e.subscriber_id
+        }
+      });
+
+      result.push({
+        subscriber_id: e.subscriber_id,
+        subscriber_name: e.subscriber ? e.subscriber.name : null,
+        group_name: e.group ? e.group.group_name : null,
+        group_position: e.group_position_number,
+        position: isPrized ? 'PS' : 'NPS',
+        agent_name: type_id === 16 ? (e.business_agent ? e.business_agent.name : null) : (e.collection_agent ? e.collection_agent.name : null),
+        business_agent_name: e.business_agent ? e.business_agent.name : null,
+        collection_agent_name: e.collection_agent ? e.collection_agent.name : null
+      });
+    }
+
+    const total_count = result.length;
+    const paginated = result.slice(offset, offset + limit);
+
+    return successResponse(res, statusCodes.OK, 'Filtered members retrieved successfully', {
+      total_count,
+      rows: paginated
+    });
+  } catch (error) {
+    console.error('Error in getFilteredMembersByGroupAndAgentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const transferAgentUpdateService = async (res, member_id, agent_type_id, new_agent_id) => {
+  try {
+    const type_id = parseInt(agent_type_id, 10);
+    const new_ag_id = parseInt(new_agent_id, 10);
+
+    if (type_id !== 16 && type_id !== 18) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid agent type ID. Must be 16 or 18.');
+    }
+    if (isNaN(new_ag_id)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'New Agent ID is required and must be a number.');
+    }
+
+    const memberIds = Array.isArray(member_id) ? member_id : [parseInt(member_id, 10)].filter(Boolean);
+    if (!memberIds.length) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Member ID is required.');
+    }
+
+    if (type_id === 16) {
+      await Enrollment.update(
+        { business_agent_id: new_ag_id },
+        { where: { subscriber_id: { [Op.in]: memberIds }, delete_status: 0 } }
+      );
+    } else if (type_id === 18) {
+      await Enrollment.update(
+        { collection_agent_id: new_ag_id },
+        { where: { subscriber_id: { [Op.in]: memberIds }, delete_status: 0 } }
+      );
+    }
+
+    return successResponse(res, statusCodes.OK, 'Agent transferred successfully');
+  } catch (error) {
+    console.error('Error in transferAgentUpdateService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdminService,
   loginCompanyService,
@@ -1359,5 +1469,7 @@ module.exports = {
   getAllSubcategoriesService,
   getAgentByAgentTypeService,
   getAgentEnrollmentsService,
-  storeOrUpdateAgentTargetEntryService
+  storeOrUpdateAgentTargetEntryService,
+  getFilteredMembersByGroupAndAgentService,
+  transferAgentUpdateService
 };

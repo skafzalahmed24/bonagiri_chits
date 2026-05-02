@@ -157,7 +157,8 @@ module.exports = {
         type: Sequelize.STRING
       },
       address_info_corresponding_address_status: {
-        type: Sequelize.BOOLEAN
+        type: Sequelize.INTEGER,
+        defaultValue: 0
       },
       other_info_kyc_details: {
         type: Sequelize.JSON

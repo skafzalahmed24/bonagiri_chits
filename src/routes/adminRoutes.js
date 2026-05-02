@@ -96,5 +96,7 @@ router.post('/auction/delete', authMiddleware.authenticateToken, validate(adminV
 router.post('/agent/get-by-type', authMiddleware.authenticateToken, validate(adminValidation.getAgentTargetSchema), adminController.getAgentByAgentType);
 router.post('/agent/get-enrollments', authMiddleware.authenticateToken, validate(adminValidation.getAgentEnrollmentsSchema), adminController.getAgentEnrollments);
 router.post('/agent-target-entry/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.storeOrUpdateAgentTargetEntrySchema), adminController.storeOrUpdateAgentTargetEntry);
+router.post('/member/get-filtered-by-group-agent', authMiddleware.authenticateToken, validate(adminValidation.getFilteredMembersByGroupAndAgentSchema), adminController.getFilteredMembersByGroupAndAgent);
+router.post('/agent/transfer-agent', authMiddleware.authenticateToken, validate(adminValidation.transferAgentUpdateSchema), adminController.transferAgentUpdate);
 
 module.exports = router;

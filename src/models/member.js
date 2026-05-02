@@ -73,7 +73,7 @@ module.exports = (sequelize, DataTypes) => {
     address_info_office_address: DataTypes.TEXT,
     address_info_office_city_id: DataTypes.UUID,
     address_info_office_phone: DataTypes.STRING,
-    address_info_corresponding_address_status: DataTypes.BOOLEAN,
+    address_info_corresponding_address_status: DataTypes.INTEGER,
     other_info_kyc_details: DataTypes.JSON,
     other_info_reference: DataTypes.STRING,
     other_info_remarks: DataTypes.TEXT,

@@ -517,10 +517,30 @@ const getAgentByAgentType = async (req, res) => {
 
 const getAgentEnrollments = async (req, res) => {
   try {
-    const { agent_type_id, agent_id, min, max, search } = req.body || {};
-    return await adminService.getAgentEnrollmentsService(res, agent_type_id, agent_id, min, max, search);
+    const { agent_type_id, agent_id, group_id, position, min, max, search } = req.body || {};
+    return await adminService.getAgentEnrollmentsService(res, agent_type_id, agent_id, group_id, position, min, max, search);
   } catch (error) {
     console.error('Error in getAgentEnrollments:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getFilteredMembersByGroupAndAgent = async (req, res) => {
+  try {
+    const { agent_type_id, agent_id, group_id, min, max } = req.body || {};
+    return await adminService.getFilteredMembersByGroupAndAgentService(res, agent_type_id, agent_id, group_id, min, max);
+  } catch (error) {
+    console.error('Error in getFilteredMembersByGroupAndAgent:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const transferAgentUpdate = async (req, res) => {
+  try {
+    const { member_id, agent_type_id, new_agent_id } = req.body || {};
+    return await adminService.transferAgentUpdateService(res, member_id, agent_type_id, new_agent_id);
+  } catch (error) {
+    console.error('Error in transferAgentUpdate:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -589,5 +609,7 @@ module.exports = {
   getAllSubcategories,
   getAgentByAgentType,
   getAgentEnrollments,
-  storeOrUpdateAgentTargetEntry
+  storeOrUpdateAgentTargetEntry,
+  getFilteredMembersByGroupAndAgent,
+  transferAgentUpdate
 };
