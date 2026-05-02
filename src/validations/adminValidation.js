@@ -277,12 +277,10 @@ const chitsGroupValidator = Joi.object({
     'string.uuid': 'Invalid Chits Group ID format'
   }),
   group_name: Joi.string().allow('', null).optional(),
-  chit_series_term: Joi.number().integer().valid(1, 2, 3).required().messages({
-    'any.only': 'Chit series term must be 1 (short term), 2 (mid term), or 3 (long term)',
+  chit_series_term: Joi.number().integer().required().messages({
     'any.required': 'Chit series term is required'
   }),
-  auction_type: Joi.number().integer().valid(1, 2, 3, 4).required().messages({
-    'any.only': 'Auction type must be 1 (monthly), 2 (bi-monthly), 3 (weekly), or 4 (daily)',
+  auction_type: Joi.number().integer().required().messages({
     'any.required': 'Auction type is required'
   }),
   chit_amount: Joi.number().precision(2).required().messages({
@@ -625,6 +623,14 @@ module.exports = {
     member_id: Joi.any().required(),
     agent_type_id: Joi.number().integer().valid(16, 18).required(),
     new_agent_id: Joi.number().integer().required()
+  }),
+  getAllGroupUnderStaticListsSchema: Joi.object({
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
+  }),
+  getByIdSchema: Joi.object({
+    id: Joi.any().required()
   })
 };
 

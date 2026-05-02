@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -38,19 +38,19 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       device_details
     });
 
-    const payload = { 
-      id: user.id, 
-      user_id: type === 1 ? user.company_id : user.other_info_user_code, 
-      role, 
-      device_unique_id 
+    const payload = {
+      id: user.id,
+      user_id: type === 1 ? user.company_id : user.other_info_user_code,
+      role,
+      device_unique_id
     };
     const tokens = generateTokens(payload);
-    
+
     return successResponse(res, statusCodes.OK, 'Login success', {
-      user: { 
-        id: user.id, 
-        user_id: payload.user_id, 
-        name: user.company_name || user.name, 
+      user: {
+        id: user.id,
+        user_id: payload.user_id,
+        name: user.company_name || user.name,
         type: user.type,
         is_favorites: user.is_favorites || []
       },
@@ -397,7 +397,7 @@ const createInstallaments = async (chits_group_id, chits_group_status) => {
       for (const e of enrollments) {
         const data = e.toJSON();
         const modeName = data.payment_mode ? data.payment_mode.dropdown_name : 'Unknown';
-        
+
         let mappedType = null;
         if (modeName.toLowerCase() === 'monthly') mappedType = 1;
         else if (modeName.toLowerCase() === 'weekly') mappedType = 2;
@@ -450,10 +450,10 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
       const chitsGroup = await ChitsGroup.findByPk(id);
       if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
       await chitsGroup.update(chitsGroupData);
-      
+
       // Step case: Trigger createInstallaments on update
       await createInstallaments(chitsGroup.id, chitsGroup.chits_group_status);
-      
+
       return successResponse(res, statusCodes.OK, 'Chits group updated successfully', chitsGroup);
     } else {
       console.log('Creating new ChitsGroup with data:', chitsGroupData);
@@ -678,7 +678,7 @@ const deleteCityService = async (res, id) => {
 
 const fetchStaticDropdownService = async (res, type_id, search) => {
   try {
-    const dropdowns = await StaticDropdownsList.findAll({ where: { type_id, status: 1, dropdown_name: { [Op.like]: `%${search || ''}%` } }, attributes: ['id', 'dropdown_name', 'type_id','is_default'], order: [['dropdown_name', 'ASC']] });
+    const dropdowns = await StaticDropdownsList.findAll({ where: { type_id, status: 1, dropdown_name: { [Op.like]: `%${search || ''}%` } }, attributes: ['id', 'dropdown_name', 'type_id', 'is_default'], order: [['dropdown_name', 'ASC']] });
     return successResponse(res, statusCodes.OK, 'Dropdown values retrieved successfully', dropdowns);
   } catch (error) {
     console.error('Error in fetchStaticDropdownService:', error);
@@ -929,7 +929,7 @@ const getAllSuitFileInformationService = async (res, company_id, group_id, subsc
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
-    
+
     const where = {
       ...(company_id && company_id !== '' && { company_id }),
       ...(group_id && group_id !== '' && { group_id }),
@@ -1131,7 +1131,7 @@ const getAgentByAgentTypeService = async (res, agent_type_id, min, max, search) 
           const instData = inst.toJSON();
           const payable = parseFloat(instData.payable_amount) || 0;
           const received = instData.payments ? instData.payments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0) : 0;
-          
+
           total_target_amount += payable;
           total_due_amount += (payable - received);
         }
@@ -1235,7 +1235,7 @@ const getAgentEnrollmentsService = async (res, agent_type_id, agent_id, group_id
         const instData = inst.toJSON();
         const payable = parseFloat(instData.payable_amount) || 0;
         const received = instData.payments ? instData.payments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0) : 0;
-        
+
         allInstallments.push({
           id: instData.id,
           enrollment_id: e.id,
@@ -1416,6 +1416,267 @@ const transferAgentUpdateService = async (res, member_id, agent_type_id, new_age
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
+const getAllGroupUnderStaticListsService = async (res, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      is_deleted_status: 0,
+      ...(search && { name: { [Op.iLike]: `%${search}%` } })
+    };
+
+    const { count, rows } = await GroupUnderStaticList.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['account_order', 'ASC'], ['id', 'ASC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Group under static list retrieved successfully', {
+      total_count: count,
+      rows
+    });
+  } catch (error) {
+    console.error('Error in getAllGroupUnderStaticListsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCompanyByIdService = async (res, id) => {
+  try {
+    const company = await Company.findByPk(id);
+    if (!company) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+    }
+    const data = company.toJSON();
+    if (data.country_id) data.country = await Country.findByPk(data.country_id);
+    if (data.state_id) data.state = await State.findByPk(data.state_id);
+    if (data.district_id) data.district = await District.findByPk(data.district_id);
+    if (data.city_id) data.city = await City.findByPk(data.city_id);
+
+    return successResponse(res, statusCodes.OK, 'Company retrieved successfully', data);
+  } catch (error) {
+    console.error('Error in getCompanyByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMemberByIdService = async (res, id) => {
+  try {
+    const member = await Member.findByPk(id, {
+      include: [
+        { model: StaticDropdownsList, as: 'title' },
+        { model: StaticDropdownSubcategoryList, as: 'parental_title' },
+        { model: StaticDropdownsList, as: 'gender_dropdown' },
+        { model: StaticDropdownsList, as: 'occupation' },
+        { model: StaticDropdownsList, as: 'emp_type' },
+        { model: StaticDropdownSubcategoryList, as: 'business_type_details' }
+      ]
+    });
+    if (!member) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+    }
+
+    const memberData = member.toJSON();
+
+    if (memberData.address_info_permanent_country_id) memberData.permanent_country = await Country.findByPk(memberData.address_info_permanent_country_id);
+    if (memberData.address_info_permanent_state_id) memberData.permanent_state = await State.findByPk(memberData.address_info_permanent_state_id);
+    if (memberData.address_info_permanent_district_id) memberData.permanent_district = await District.findByPk(memberData.address_info_permanent_district_id);
+    if (memberData.address_info_permanent_city_id) memberData.permanent_city = await City.findByPk(memberData.address_info_permanent_city_id);
+
+    if (memberData.address_info_office_country_id) memberData.office_country = await Country.findByPk(memberData.address_info_office_country_id);
+    if (memberData.address_info_office_state_id) memberData.office_state = await State.findByPk(memberData.address_info_office_state_id);
+    if (memberData.address_info_office_district_id) memberData.office_district = await District.findByPk(memberData.address_info_office_district_id);
+    if (memberData.address_info_office_city_id) memberData.office_city = await City.findByPk(memberData.address_info_office_city_id);
+
+    if (Array.isArray(memberData.introduced_as)) {
+      const intIds = memberData.introduced_as.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+      if (intIds.length > 0) {
+        memberData.introduced_as_dropdown = await StaticDropdownsList.findAll({ where: { id: { [Op.in]: intIds } } });
+      } else {
+        memberData.introduced_as_dropdown = [];
+      }
+    }
+
+    if (Array.isArray(memberData.other_info_kyc_details)) {
+      const intIds = memberData.other_info_kyc_details.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+      if (intIds.length > 0) {
+        memberData.kyc_details_dropdown = await StaticDropdownsList.findAll({ where: { id: { [Op.in]: intIds } } });
+      } else {
+        memberData.kyc_details_dropdown = [];
+      }
+    }
+
+    return successResponse(res, statusCodes.OK, 'Member retrieved successfully', memberData);
+  } catch (error) {
+    console.error('Error in getMemberByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getRouteByIdService = async (res, id) => {
+  try {
+    const route = await Route.findByPk(id);
+    if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
+    return successResponse(res, statusCodes.OK, 'Route retrieved successfully', route);
+  } catch (error) {
+    console.error('Error in getRouteByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAreaByIdService = async (res, id) => {
+  try {
+    const area = await Area.findByPk(id, {
+      include: [{ model: Route, as: 'route' }]
+    });
+    if (!area) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
+    return successResponse(res, statusCodes.OK, 'Area retrieved successfully', area);
+  } catch (error) {
+    console.error('Error in getAreaByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getChitsGroupByIdService = async (res, id) => {
+  try {
+    const group = await ChitsGroup.findByPk(id, {
+      include: [
+        { model: StaticDropdownsList, as: 'chits_series_details' },
+        { model: StaticDropdownsList, as: 'auction_type_details' },
+        { model: StaticDropdownsList, as: 'auction_date_details' },
+        { model: StaticDropdownsList, as: 'fdr_type_details' }
+      ]
+    });
+    if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'ChitsGroup not found');
+    return successResponse(res, statusCodes.OK, 'ChitsGroup retrieved successfully', group);
+  } catch (error) {
+    console.error('Error in getChitsGroupByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCountryByIdService = async (res, id) => {
+  try {
+    const country = await Country.findByPk(id);
+    if (!country) return errorResponse(res, statusCodes.NOT_FOUND, 'Country not found');
+    return successResponse(res, statusCodes.OK, 'Country retrieved successfully', country);
+  } catch (error) {
+    console.error('Error in getCountryByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStateByIdService = async (res, id) => {
+  try {
+    const state = await State.findByPk(id, {
+      include: [{ model: Country, as: 'country' }]
+    });
+    if (!state) return errorResponse(res, statusCodes.NOT_FOUND, 'State not found');
+    return successResponse(res, statusCodes.OK, 'State retrieved successfully', state);
+  } catch (error) {
+    console.error('Error in getStateByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getDistrictByIdService = async (res, id) => {
+  try {
+    const district = await District.findByPk(id, {
+      include: [{ model: State, as: 'state' }]
+    });
+    if (!district) return errorResponse(res, statusCodes.NOT_FOUND, 'District not found');
+    return successResponse(res, statusCodes.OK, 'District retrieved successfully', district);
+  } catch (error) {
+    console.error('Error in getDistrictByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCityByIdService = async (res, id) => {
+  try {
+    const city = await City.findByPk(id, {
+      include: [{ model: District, as: 'district' }]
+    });
+    if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
+    return successResponse(res, statusCodes.OK, 'City retrieved successfully', city);
+  } catch (error) {
+    console.error('Error in getCityByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getEnrollmentByIdService = async (res, id) => {
+  try {
+    const enrollment = await Enrollment.findByPk(id, {
+      include: [
+        { model: ChitsGroup, as: 'group' },
+        { model: Member, as: 'subscriber' },
+        { model: Member, as: 'business_agent' },
+        { model: Member, as: 'collection_agent' },
+        { model: StaticDropdownSubcategoryList, as: 'ps_details' },
+        { model: StaticDropdownSubcategoryList, as: 'nps_details' }
+      ]
+    });
+    if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+    return successResponse(res, statusCodes.OK, 'Enrollment retrieved successfully', enrollment);
+  } catch (error) {
+    console.error('Error in getEnrollmentByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getUpcomingChitByIdService = async (res, id) => {
+  try {
+    const upcomingChit = await UpcomingChit.findByPk(id, {
+      include: [
+        { model: StaticDropdownsList, as: 'chit_series_details' },
+        { model: StaticDropdownsList, as: 'auction_type_details' },
+        { model: StaticDropdownsList, as: 'auction_date_details' }
+      ]
+    });
+    if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'UpcomingChit not found');
+    return successResponse(res, statusCodes.OK, 'UpcomingChit retrieved successfully', upcomingChit);
+  } catch (error) {
+    console.error('Error in getUpcomingChitByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSuitFileInformationByIdService = async (res, id) => {
+  try {
+    const info = await SuitFileInformation.findByPk(id, {
+      include: [
+        { model: Member, as: 'subscriber' },
+        { model: ChitsGroup, as: 'group' },
+        { model: StaticDropdownSubcategoryList, as: 'district' },
+        { model: StaticDropdownSubcategoryList, as: 'court' }
+      ]
+    });
+    if (!info) return errorResponse(res, statusCodes.NOT_FOUND, 'SuitFileInformation not found');
+    return successResponse(res, statusCodes.OK, 'SuitFileInformation retrieved successfully', info);
+  } catch (error) {
+    console.error('Error in getSuitFileInformationByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAuctionByIdService = async (res, id) => {
+  try {
+    const auction = await Auction.findByPk(id, {
+      include: [
+        { model: ChitsGroup, as: 'group' },
+        { model: Member, as: 'bidder' }
+      ]
+    });
+    if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+    return successResponse(res, statusCodes.OK, 'Auction retrieved successfully', auction);
+  } catch (error) {
+    console.error('Error in getAuctionByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
 
 module.exports = {
   loginAdminService,
@@ -1471,5 +1732,19 @@ module.exports = {
   getAgentEnrollmentsService,
   storeOrUpdateAgentTargetEntryService,
   getFilteredMembersByGroupAndAgentService,
-  transferAgentUpdateService
+  transferAgentUpdateService,
+  getAllGroupUnderStaticListsService,
+  getCompanyByIdService,
+  getMemberByIdService,
+  getRouteByIdService,
+  getAreaByIdService,
+  getChitsGroupByIdService,
+  getCountryByIdService,
+  getStateByIdService,
+  getDistrictByIdService,
+  getCityByIdService,
+  getEnrollmentByIdService,
+  getUpcomingChitByIdService,
+  getSuitFileInformationByIdService,
+  getAuctionByIdService
 };

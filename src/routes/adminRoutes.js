@@ -99,4 +99,22 @@ router.post('/agent-target-entry/store-or-update', authMiddleware.authenticateTo
 router.post('/member/get-filtered-by-group-agent', authMiddleware.authenticateToken, validate(adminValidation.getFilteredMembersByGroupAndAgentSchema), adminController.getFilteredMembersByGroupAndAgent);
 router.post('/agent/transfer-agent', authMiddleware.authenticateToken, validate(adminValidation.transferAgentUpdateSchema), adminController.transferAgentUpdate);
 
+//get by id routes 
+router.post('/company/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCompanyById);
+router.post('/member/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getMemberById);
+router.post('/route/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getRouteById);
+router.post('/area/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getAreaById);
+router.post('/chits-group/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getChitsGroupById);
+router.post('/country/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCountryById);
+router.post('/state/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getStateById);
+router.post('/district/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getDistrictById);
+router.post('/city/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCityById);
+router.post('/enrollment/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getEnrollmentById);
+router.post('/upcoming-chit/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getUpcomingChitById);
+router.post('/suit-file-information/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getSuitFileInformationById);
+router.post('/auction/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getAuctionById);
+
+
+router.post('/group-under-static-list/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllGroupUnderStaticListsSchema), adminController.getAllGroupUnderStaticLists);
+
 module.exports = router;

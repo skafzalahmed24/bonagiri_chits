@@ -558,6 +558,146 @@ const storeOrUpdateAgentTargetEntry = async (req, res) => {
   }
 };
 
+const getAllGroupUnderStaticLists = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllGroupUnderStaticListsService(res, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllGroupUnderStaticLists:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCompanyById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getCompanyByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getCompanyById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMemberById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getMemberByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getMemberById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getRouteById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getRouteByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getRouteById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAreaById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getAreaByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getAreaById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getChitsGroupById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getChitsGroupByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getChitsGroupById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCountryById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getCountryByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getCountryById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStateById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getStateByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getStateById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getDistrictById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getDistrictByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getDistrictById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCityById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getCityByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getCityById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getEnrollmentById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getEnrollmentByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getEnrollmentById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getUpcomingChitById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getUpcomingChitByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getUpcomingChitById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSuitFileInformationById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getSuitFileInformationByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getSuitFileInformationById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAuctionById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getAuctionByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getAuctionById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -611,5 +751,19 @@ module.exports = {
   getAgentEnrollments,
   storeOrUpdateAgentTargetEntry,
   getFilteredMembersByGroupAndAgent,
-  transferAgentUpdate
+  transferAgentUpdate,
+  getAllGroupUnderStaticLists,
+  getCompanyById,
+  getMemberById,
+  getRouteById,
+  getAreaById,
+  getChitsGroupById,
+  getCountryById,
+  getStateById,
+  getDistrictById,
+  getCityById,
+  getEnrollmentById,
+  getUpcomingChitById,
+  getSuitFileInformationById,
+  getAuctionById
 };
