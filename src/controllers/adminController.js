@@ -106,8 +106,9 @@ const storeOrUpdateMember = async (req, res) => {
 
 const getAllMemberDetails = async (req, res) => {
   try {
-    const { company_id, introduced_as, min, max, search } = req.body || {};
-    return await adminService.getAllMemberDetailsService(res, company_id, introduced_as, min, max, search);
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { introduced_as, min, max, search } = req.body || {};
+    return await adminService.getAllMemberDetailsService(res, comp_id, introduced_as, min, max, search);
   } catch (error) {
     console.error('Error in getAllMemberDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -159,8 +160,9 @@ const storeOrUpdateRoute = async (req, res) => {
 
 const getAllRouteDetails = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { min, max, search } = req.body || {};
-    return await adminService.getAllRouteDetailsService(res, min, max, search);
+    return await adminService.getAllRouteDetailsService(res, comp_id, min, max, search);
   } catch (error) {
     console.error('Error in getAllRouteDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -188,8 +190,9 @@ const storeOrUpdateArea = async (req, res) => {
 
 const getAllAreaDetails = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { min, max, search } = req.body || {};
-    return await adminService.getAllAreaDetailsService(res, min, max, search);
+    return await adminService.getAllAreaDetailsService(res, comp_id, min, max, search);
   } catch (error) {
     console.error('Error in getAllAreaDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -222,8 +225,9 @@ const storeOrUpdateChitsGroup = async (req, res) => {
 
 const getAllChitsGroupDetails = async (req, res) => {
   try {
-    const { company_id, min, max, search } = req.body || {};
-    return await adminService.getAllChitsGroupDetailsService(res, company_id, min, max, search);
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllChitsGroupDetailsService(res, comp_id, min, max, search);
   } catch (error) {
     console.error('Error in getAllChitsGroupDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -280,8 +284,9 @@ const storeOrUpdateDistrict = async (req, res) => {
 
 const getAllDistrictDetails = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { min, max, search } = req.body || {};
-    return await adminService.getAllDistrictDetailsService(res, min, max, search);
+    return await adminService.getAllDistrictDetailsService(res, comp_id, min, max, search);
   } catch (error) {
     console.error('Error in getAllDistrictDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -299,8 +304,9 @@ const storeOrUpdateCity = async (req, res) => {
 
 const getAllCityDetails = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { min, max, search } = req.body || {};
-    return await adminService.getAllCityDetailsService(res, min, max, search);
+    return await adminService.getAllCityDetailsService(res, comp_id, min, max, search);
   } catch (error) {
     console.error('Error in getAllCityDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -391,8 +397,9 @@ const storeOrUpdateUpcomingChit = async (req, res) => {
 
 const getAllUpcomingChits = async (req, res) => {
   try {
-    const { company_id, status, chit_date, min, max } = req.body || {};
-    return await adminService.getAllUpcomingChitsService(res, company_id, status, chit_date, min, max);
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { status, chit_date, min, max } = req.body || {};
+    return await adminService.getAllUpcomingChitsService(res, comp_id, status, chit_date, min, max);
   } catch (error) {
     console.error('Error in getAllUpcomingChits:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -421,8 +428,9 @@ const updateFavorites = async (req, res) => {
 
 const getGroupMembers = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { group_id, min, max } = req.body || {};
-    return await adminService.getGroupMembersService(res, group_id, min, max);
+    return await adminService.getGroupMembersService(res, comp_id, group_id, min, max);
   } catch (error) {
     console.error('Error in getGroupMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -444,8 +452,9 @@ const storeOrUpdateSuitFileInformation = async (req, res) => {
 
 const getAllSuitFileInformation = async (req, res) => {
   try {
-    const { company_id, group_id, subscriber_id, min, max } = req.body || {};
-    return await adminService.getAllSuitFileInformationService(res, company_id, group_id, subscriber_id, min, max);
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { group_id, subscriber_id, min, max } = req.body || {};
+    return await adminService.getAllSuitFileInformationService(res, comp_id, group_id, subscriber_id, min, max);
   } catch (error) {
     console.error('Error in getAllSuitFileInformation:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -477,8 +486,9 @@ const storeOrUpdateAuction = async (req, res) => {
 
 const getAllAuctions = async (req, res) => {
   try {
-    const { company_id, group_id, bidder_id, min, max } = req.body || {};
-    return await adminService.getAllAuctionsService(res, company_id, group_id, bidder_id, min, max);
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { group_id, bidder_id, min, max } = req.body || {};
+    return await adminService.getAllAuctionsService(res, comp_id, group_id, bidder_id, min, max);
   } catch (error) {
     console.error('Error in getAllAuctions:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -507,8 +517,9 @@ const getAllSubcategories = async (req, res) => {
 
 const getAgentByAgentType = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { agent_type_id, min, max, search } = req.body || {};
-    return await adminService.getAgentByAgentTypeService(res, agent_type_id, min, max, search);
+    return await adminService.getAgentByAgentTypeService(res, comp_id, agent_type_id, min, max, search);
   } catch (error) {
     console.error('Error in getAgentByAgentType:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -517,8 +528,9 @@ const getAgentByAgentType = async (req, res) => {
 
 const getAgentEnrollments = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { agent_type_id, agent_id, group_id, position, min, max, search } = req.body || {};
-    return await adminService.getAgentEnrollmentsService(res, agent_type_id, agent_id, group_id, position, min, max, search);
+    return await adminService.getAgentEnrollmentsService(res, comp_id, agent_type_id, agent_id, group_id, position, min, max, search);
   } catch (error) {
     console.error('Error in getAgentEnrollments:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

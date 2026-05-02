@@ -19,6 +19,7 @@ module.exports = (sequelize, DataTypes) => {
   Area.init({
     route_id: DataTypes.INTEGER,
     area_name: DataTypes.STRING,
+    company_id: DataTypes.UUID,
     is_deleted_status: {
       type: DataTypes.INTEGER,
       defaultValue: 0

@@ -34,6 +34,7 @@ const authenticateToken = (req, res, next) => {
 
   try {
     const decoded = verifyAccessToken(token);
+    console.log("=== Decoded User Token Payload ===", decoded);
     // Attach the decoded token payload to the request object so downstream controllers can use it
     req.user = decoded;
     next();

@@ -68,8 +68,8 @@ const deleteCompanySchema = Joi.object({
 
 const companyLoginSchema = Joi.object({
   user_code: Joi.string().required().messages({
-    'any.required': 'User ID is required',
-    'string.empty': 'User ID cannot be empty'
+    'any.required': 'User Code is required',
+    'string.empty': 'User Code cannot be empty'
   }),
   company_password: Joi.string().required().messages({
     'any.required': 'Password is required',

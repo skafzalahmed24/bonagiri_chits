@@ -39,7 +39,8 @@ module.exports = (sequelize, DataTypes) => {
     is_deleted_status: {
       type: DataTypes.INTEGER,
       defaultValue: 0
-    }
+    },
+    company_id: DataTypes.UUID
   }, {
     sequelize,
     modelName: 'City',

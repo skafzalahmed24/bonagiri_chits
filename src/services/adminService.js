@@ -6,6 +6,29 @@ const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
+const getCompanyIdFromUser = async (userPayload, reqBody = {}) => {
+  if (reqBody && reqBody.company_id) {
+    return reqBody.company_id;
+  }
+  if (!userPayload) return null;
+
+  if (userPayload.role === 'company') {
+    return userPayload.id;
+  }
+  if (userPayload.role === 'member') {
+    const mem = await Member.findByPk(userPayload.id);
+    return mem ? mem.company_id : null;
+  }
+
+  if (userPayload.company_id) {
+    return userPayload.company_id;
+  }
+  if (userPayload.user_id && userPayload.user_id.length > 20) {
+    return userPayload.user_id;
+  }
+  return null;
+};
+
 const loginAdminService = async (res, email, password) => {
   if (email === 'superadmin@gmail.com' && password === 'superadmin@123') {
     const user = { email: 'superadmin@gmail.com', role: 'superadmin' };
@@ -166,9 +189,26 @@ const generateUniqueUserCode = async () => {
   return code;
 };
 
+const generateUniqueMemberId = async () => {
+  let memberId;
+  let isUnique = false;
+  while (!isUnique) {
+    memberId = 'MEM' + Math.floor(100000 + Math.random() * 900000);
+    const existing = await Member.findOne({ where: { member_id: memberId } });
+    if (!existing) isUnique = true;
+  }
+  return memberId;
+};
+
 const storeOrUpdateMemberService = async (res, data = {}) => {
   try {
     const { id, ...memberData } = data;
+    if (!memberData.member_id) {
+      memberData.member_id = await generateUniqueMemberId();
+    } else {
+      const existing = await Member.findOne({ where: { member_id: memberData.member_id, ...(id && { id: { [Op.ne]: id } }) } });
+      if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Member ID already exists');
+    }
     if (!memberData.other_info_user_code) memberData.other_info_user_code = await generateUniqueUserCode();
     else {
       const existing = await Member.findOne({ where: { other_info_user_code: memberData.other_info_user_code, ...(id && { id: { [Op.ne]: id } }) } });
@@ -301,11 +341,16 @@ const storeOrUpdateRouteService = async (res, data = {}) => {
   }
 };
 
-const getAllRouteDetailsService = async (res, min, max, search) => {
+const getAllRouteDetailsService = async (res, company_id, min, max, search) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
-    const routes = await Route.findAndCountAll({ limit, offset, where: { is_deleted_status: 0, ...(search && { route_name: { [Op.like]: `%${search}%` } }) }, order: [['createdAt', 'DESC']] });
+    const where = {
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { route_name: { [Op.like]: `%${search}%` } })
+    };
+    const routes = await Route.findAndCountAll({ limit, offset, where, order: [['createdAt', 'DESC']] });
     return successResponse(res, statusCodes.OK, 'Routes retrieved successfully', routes);
   } catch (error) {
     console.error('Error in getAllRouteDetailsService:', error);
@@ -343,12 +388,17 @@ const storeOrUpdateAreaService = async (res, data = {}) => {
   }
 };
 
-const getAllAreaDetailsService = async (res, min, max, search) => {
+const getAllAreaDetailsService = async (res, company_id, min, max, search) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { area_name: { [Op.like]: `%${search}%` } })
+    };
     const areas = await Area.findAndCountAll({
-      limit, offset, where: { is_deleted_status: 0, ...(search && { area_name: { [Op.like]: `%${search}%` } }) },
+      limit, offset, where,
       include: [{ model: Route, as: 'route', attributes: ['id', 'route_name'] }],
       order: [['createdAt', 'DESC']]
     });
@@ -612,11 +662,16 @@ const storeOrUpdateDistrictService = async (res, data = {}) => {
   }
 };
 
-const getAllDistrictDetailsService = async (res, min, max, search) => {
+const getAllDistrictDetailsService = async (res, company_id, min, max, search) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
-    const districts = await District.findAndCountAll({ limit, offset, where: { is_deleted_status: 0, ...(search && { district_name: { [Op.like]: `%${search}%` } }) }, include: [{ model: Country, attributes: ['country_name'] }, { model: State, attributes: ['state_name'] }], order: [['createdAt', 'DESC']] });
+    const where = {
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { district_name: { [Op.like]: `%${search}%` } })
+    };
+    const districts = await District.findAndCountAll({ limit, offset, where, include: [{ model: Country, attributes: ['country_name'] }, { model: State, attributes: ['state_name'] }], order: [['createdAt', 'DESC']] });
     return successResponse(res, statusCodes.OK, 'Districts retrieved successfully', districts);
   } catch (error) {
     console.error('Error in getAllDistrictDetailsService:', error);
@@ -642,11 +697,16 @@ const storeOrUpdateCityService = async (res, data = {}) => {
   }
 };
 
-const getAllCityDetailsService = async (res, min, max, search) => {
+const getAllCityDetailsService = async (res, company_id, min, max, search) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
-    const cities = await City.findAndCountAll({ limit, offset, where: { is_deleted_status: 0, ...(search && { city_name: { [Op.like]: `%${search}%` } }) }, include: [{ model: Country, attributes: ['country_name'] }, { model: State, attributes: ['state_name'] }, { model: District, attributes: ['district_name'] }], order: [['createdAt', 'DESC']] });
+    const where = {
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { city_name: { [Op.like]: `%${search}%` } })
+    };
+    const cities = await City.findAndCountAll({ limit, offset, where, include: [{ model: Country, attributes: ['country_name'] }, { model: State, attributes: ['state_name'] }, { model: District, attributes: ['district_name'] }], order: [['createdAt', 'DESC']] });
     return successResponse(res, statusCodes.OK, 'Cities retrieved successfully', cities);
   } catch (error) {
     console.error('Error in getAllCityDetailsService:', error);
@@ -875,13 +935,18 @@ const updateFavoritesService = async (res, user_id, type, is_favorites_input) =>
   }
 };
 
-const getGroupMembersService = async (res, group_id, min, max) => {
+const getGroupMembersService = async (res, company_id, group_id, min, max) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
+    const whereClause = { group_id, delete_status: 0 };
+    if (company_id && company_id !== '') {
+      whereClause.company_id = company_id;
+    }
+
     const { count, rows: enrollments } = await Enrollment.findAndCountAll({
-      where: { group_id, delete_status: 0 },
+      where: whereClause,
       include: [
         {
           model: Member,
@@ -1056,7 +1121,7 @@ const getAllSubcategoriesService = async (res, category_id) => {
 };
 
 
-const getAgentByAgentTypeService = async (res, agent_type_id, min, max, search) => {
+const getAgentByAgentTypeService = async (res, company_id, agent_type_id, min, max, search) => {
   try {
     if (agent_type_id !== 16 && agent_type_id !== 18) {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid agent type ID. Must be 16 or 18.');
@@ -1067,6 +1132,7 @@ const getAgentByAgentTypeService = async (res, agent_type_id, min, max, search) 
 
     const where = {
       is_deleted_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
       ...(search && {
         [Op.or]: [
           { name: { [Op.like]: `%${search}%` } },
@@ -1164,7 +1230,7 @@ const getAgentByAgentTypeService = async (res, agent_type_id, min, max, search) 
   }
 };
 
-const getAgentEnrollmentsService = async (res, agent_type_id, agent_id, group_id, position, min, max, search) => {
+const getAgentEnrollmentsService = async (res, company_id, agent_type_id, agent_id, group_id, position, min, max, search) => {
   try {
     const type_id = parseInt(agent_type_id, 10);
     const ag_id = parseInt(agent_id, 10);
@@ -1181,6 +1247,7 @@ const getAgentEnrollmentsService = async (res, agent_type_id, agent_id, group_id
 
     const whereClause = {
       delete_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
       ...(type_id === 16 ? { business_agent_id: ag_id } : { collection_agent_id: ag_id }),
       ...(group_id && { group_id })
     };
@@ -1746,5 +1813,6 @@ module.exports = {
   getEnrollmentByIdService,
   getUpcomingChitByIdService,
   getSuitFileInformationByIdService,
-  getAuctionByIdService
+  getAuctionByIdService,
+  getCompanyIdFromUser
 };
