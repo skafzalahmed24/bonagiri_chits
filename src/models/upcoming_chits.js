@@ -30,6 +30,15 @@ module.exports = (sequelize, DataTypes) => {
     status: {
       type: DataTypes.INTEGER,
       defaultValue: 0
+    },
+    chit_amount: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: true,
+      defaultValue: 0
+    },
+    remarks: {
+      type: DataTypes.STRING,
+      allowNull: true
     }
   }, {
     sequelize,
