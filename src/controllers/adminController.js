@@ -787,6 +787,18 @@ const deleteAccountCreationDetail = async (req, res) => {
   }
 };
 
+const bulkEditAccountCreationDetails = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const login_user_id = req.user ? req.user.id : null;
+    const { accounts } = req.body || {};
+    return await adminService.bulkEditAccountCreationDetailsService(res, comp_id, login_user_id, accounts);
+  } catch (error) {
+    console.error('Error in bulkEditAccountCreationDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
@@ -861,5 +873,6 @@ module.exports = {
   storeOrUpdateAccountCreationDetail,
   getAllAccountCreationDetails,
   getAccountCreationDetailById,
-  deleteAccountCreationDetail
+  deleteAccountCreationDetail,
+  bulkEditAccountCreationDetails
 };

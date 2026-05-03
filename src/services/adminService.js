@@ -1612,11 +1612,40 @@ const getAllAccountCreationDetailsService = async (res, comp_id, min, max, searc
       where: whereClause,
       limit,
       offset,
+      include: [{
+        model: GroupUnderStaticList,
+        as: 'account_group',
+        attributes: ['id', 'name']
+      }],
       order: [['id', 'DESC']]
     });
 
+    const allRecords = await AccountCreationDetail.findAll({
+      where: whereClause
+    });
+
+    let total_credit = 0;
+    let total_debit = 0;
+    let opening_balance_total = 0;
+
+    allRecords.forEach(record => {
+      const balance = parseFloat(record.opening_balance) || 0;
+      opening_balance_total += balance;
+      if (record.cr_dr_status === 1) {
+        total_credit += balance;
+      } else if (record.cr_dr_status === 2) {
+        total_debit += balance;
+      }
+    });
+
+    const difference_total = total_credit - total_debit;
+
     return successResponse(res, statusCodes.OK, 'Account creation details retrieved successfully', {
       total_count: count,
+      total_credit,
+      total_debit,
+      opening_balance_total,
+      difference_total,
       rows
     });
   } catch (error) {
@@ -1627,7 +1656,14 @@ const getAllAccountCreationDetailsService = async (res, comp_id, min, max, searc
 
 const getAccountCreationDetailByIdService = async (res, id) => {
   try {
-    const record = await AccountCreationDetail.findOne({ where: { id, is_deleted_status: 0 } });
+    const record = await AccountCreationDetail.findOne({
+      where: { id, is_deleted_status: 0 },
+      include: [{
+        model: GroupUnderStaticList,
+        as: 'account_group',
+        attributes: ['id', 'name']
+      }]
+    });
     if (!record) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
     }
@@ -1648,6 +1684,30 @@ const deleteAccountCreationDetailService = async (res, id) => {
     return successResponse(res, statusCodes.OK, 'Account creation detail deleted successfully');
   } catch (error) {
     console.error('Error in deleteAccountCreationDetailService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const bulkEditAccountCreationDetailsService = async (res, comp_id, login_user_id, accounts = []) => {
+  try {
+    if (!Array.isArray(accounts)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'accounts must be an array');
+    }
+    const results = [];
+    for (const data of accounts) {
+      const { id, ...restData } = data;
+      if (!id) continue;
+      if (comp_id) restData.company_id = comp_id;
+      if (login_user_id) restData.updated_by = String(login_user_id);
+      const existing = await AccountCreationDetail.findByPk(id);
+      if (existing) {
+        await existing.update(restData);
+        results.push(existing);
+      }
+    }
+    return successResponse(res, statusCodes.OK, 'Account creation details edited successfully', results);
+  } catch (error) {
+    console.error('Error in bulkEditAccountCreationDetailsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1963,5 +2023,6 @@ module.exports = {
   storeOrUpdateAccountCreationDetailService,
   getAllAccountCreationDetailsService,
   getAccountCreationDetailByIdService,
-  deleteAccountCreationDetailService
+  deleteAccountCreationDetailService,
+  bulkEditAccountCreationDetailsService
 };

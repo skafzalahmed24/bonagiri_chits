@@ -4,7 +4,10 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class AccountCreationDetail extends Model {
     static associate(models) {
-      // Any associations go here
+      AccountCreationDetail.belongsTo(models.GroupUnderStaticList, {
+        foreignKey: 'account_group_id',
+        as: 'account_group'
+      });
     }
   }
   AccountCreationDetail.init({
