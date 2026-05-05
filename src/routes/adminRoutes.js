@@ -125,5 +125,6 @@ router.post('/account-creation-details/get-all', authMiddleware.authenticateToke
 router.post('/account-creation-details/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getAccountCreationDetailById);
 router.post('/account-creation-details/bulk-edit', authMiddleware.authenticateToken, validate(adminValidation.bulkEditAccountCreationDetailsSchema), adminController.bulkEditAccountCreationDetails);
 router.post('/account-creation-details/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAccountCreationDetailSchema), adminController.deleteAccountCreationDetail);
+router.post('/account-tree/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllAccountTreeSchema), adminController.getAllAccountTree);
 
 module.exports = router;

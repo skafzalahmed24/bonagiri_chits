@@ -767,6 +767,17 @@ const getAllAccountCreationDetails = async (req, res) => {
   }
 };
 
+const getAllAccountTree = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { group_under_id, search } = req.body || {};
+    return await adminService.getAllAccountTreeService(res, comp_id, group_under_id, search);
+  } catch (error) {
+    console.error('Error in getAllAccountTree:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getAccountCreationDetailById = async (req, res) => {
   try {
     const { id } = req.body || {};
@@ -872,6 +883,7 @@ module.exports = {
   getGroupUnderStaticListById,
   storeOrUpdateAccountCreationDetail,
   getAllAccountCreationDetails,
+  getAllAccountTree,
   getAccountCreationDetailById,
   deleteAccountCreationDetail,
   bulkEditAccountCreationDetails

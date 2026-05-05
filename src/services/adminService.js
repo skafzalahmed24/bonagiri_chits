@@ -1654,6 +1654,35 @@ const getAllAccountCreationDetailsService = async (res, comp_id, min, max, searc
   }
 };
 
+const getAllAccountTreeService = async (res, comp_id, group_under_id, search) => {
+  try {
+    const whereClause = {
+      is_deleted_status: 0,
+      ...(search && { name: { [Op.iLike]: `%${search}%` } }),
+      ...(group_under_id ? { group_under_id } : { type: 1 }),
+      ...(comp_id && {
+        [Op.or]: [
+          { type: 1 },
+          { company_id: comp_id }
+        ]
+      })
+    };
+
+    const rows = await GroupUnderStaticList.findAll({
+      where: whereClause,
+      order: [['account_order', 'ASC'], ['id', 'ASC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Account tree retrieved successfully', {
+      total_count: rows.length,
+      rows
+    });
+  } catch (error) {
+    console.error('Error in getAllAccountTreeService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getAccountCreationDetailByIdService = async (res, id) => {
   try {
     const record = await AccountCreationDetail.findOne({
@@ -2022,6 +2051,7 @@ module.exports = {
   getGroupUnderStaticListByIdService,
   storeOrUpdateAccountCreationDetailService,
   getAllAccountCreationDetailsService,
+  getAllAccountTreeService,
   getAccountCreationDetailByIdService,
   deleteAccountCreationDetailService,
   bulkEditAccountCreationDetailsService

@@ -190,7 +190,7 @@ const memberValidator = Joi.object({
 
 const getAllMemberSchema = Joi.object({
   company_id: Joi.string().uuid().allow('', null).optional(),
-  introduced_as: Joi.string().uuid().allow('', null).optional(),
+  introduced_as: Joi.alternatives().try(Joi.string(), Joi.number()).allow('', null).optional(),
   min: Joi.number().integer().min(0).optional().messages({
     'number.min': 'Min must be greater than or equal to 0'
   }),
@@ -632,6 +632,11 @@ module.exports = {
     max: Joi.number().integer().min(1).optional(),
     search: Joi.string().allow('', null).optional(),
     account_group_id: Joi.number().integer().allow(null).optional()
+  }),
+  getAllAccountTreeSchema: Joi.object({
+    group_under_id: Joi.number().integer().allow(null).optional(),
+    search: Joi.string().allow('', null).optional(),
+    company_id: Joi.string().uuid().allow('', null).optional()
   }),
   getByIdSchema: Joi.object({
     id: Joi.any().required()
