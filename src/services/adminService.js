@@ -1673,9 +1673,27 @@ const getAllAccountTreeService = async (res, comp_id, group_under_id, search) =>
       order: [['account_order', 'ASC'], ['id', 'ASC']]
     });
 
+    let accounts = [];
+    if (group_under_id) {
+      const accountsWhereClause = {
+        is_deleted_status: 0,
+        account_group_id: group_under_id,
+        ...(comp_id && { company_id: comp_id })
+      };
+      if (search) {
+        accountsWhereClause.account_name = { [Op.iLike]: `%${search}%` };
+      }
+      accounts = await AccountCreationDetail.findAll({
+        where: accountsWhereClause,
+        order: [['id', 'DESC']]
+      });
+    }
+
     return successResponse(res, statusCodes.OK, 'Account tree retrieved successfully', {
       total_count: rows.length,
-      rows
+      rows,
+      accounts_count: accounts.length,
+      accounts
     });
   } catch (error) {
     console.error('Error in getAllAccountTreeService:', error);
@@ -1839,14 +1857,7 @@ const getAreaByIdService = async (res, id) => {
 
 const getChitsGroupByIdService = async (res, id) => {
   try {
-    const group = await ChitsGroup.findByPk(id, {
-      include: [
-        { model: StaticDropdownsList, as: 'chits_series_details' },
-        { model: StaticDropdownsList, as: 'auction_type_details' },
-        { model: StaticDropdownsList, as: 'auction_date_details' },
-        { model: StaticDropdownsList, as: 'fdr_type_details' }
-      ]
-    });
+    const group = await ChitsGroup.findByPk(id);
     if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'ChitsGroup not found');
     return successResponse(res, statusCodes.OK, 'ChitsGroup retrieved successfully', group);
   } catch (error) {
@@ -1869,7 +1880,7 @@ const getCountryByIdService = async (res, id) => {
 const getStateByIdService = async (res, id) => {
   try {
     const state = await State.findByPk(id, {
-      include: [{ model: Country, as: 'country' }]
+      include: [{ model: Country }]
     });
     if (!state) return errorResponse(res, statusCodes.NOT_FOUND, 'State not found');
     return successResponse(res, statusCodes.OK, 'State retrieved successfully', state);
@@ -1882,7 +1893,7 @@ const getStateByIdService = async (res, id) => {
 const getDistrictByIdService = async (res, id) => {
   try {
     const district = await District.findByPk(id, {
-      include: [{ model: State, as: 'state' }]
+      include: [{ model: State }]
     });
     if (!district) return errorResponse(res, statusCodes.NOT_FOUND, 'District not found');
     return successResponse(res, statusCodes.OK, 'District retrieved successfully', district);
@@ -1895,7 +1906,7 @@ const getDistrictByIdService = async (res, id) => {
 const getCityByIdService = async (res, id) => {
   try {
     const city = await City.findByPk(id, {
-      include: [{ model: District, as: 'district' }]
+      include: [{ model: District }]
     });
     if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
     return successResponse(res, statusCodes.OK, 'City retrieved successfully', city);
@@ -1912,9 +1923,7 @@ const getEnrollmentByIdService = async (res, id) => {
         { model: ChitsGroup, as: 'group' },
         { model: Member, as: 'subscriber' },
         { model: Member, as: 'business_agent' },
-        { model: Member, as: 'collection_agent' },
-        { model: StaticDropdownSubcategoryList, as: 'ps_details' },
-        { model: StaticDropdownSubcategoryList, as: 'nps_details' }
+        { model: Member, as: 'collection_agent' }
       ]
     });
     if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
@@ -1927,13 +1936,7 @@ const getEnrollmentByIdService = async (res, id) => {
 
 const getUpcomingChitByIdService = async (res, id) => {
   try {
-    const upcomingChit = await UpcomingChit.findByPk(id, {
-      include: [
-        { model: StaticDropdownsList, as: 'chit_series_details' },
-        { model: StaticDropdownsList, as: 'auction_type_details' },
-        { model: StaticDropdownsList, as: 'auction_date_details' }
-      ]
-    });
+    const upcomingChit = await UpcomingChit.findByPk(id);
     if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'UpcomingChit not found');
     return successResponse(res, statusCodes.OK, 'UpcomingChit retrieved successfully', upcomingChit);
   } catch (error) {
@@ -1947,9 +1950,7 @@ const getSuitFileInformationByIdService = async (res, id) => {
     const info = await SuitFileInformation.findByPk(id, {
       include: [
         { model: Member, as: 'subscriber' },
-        { model: ChitsGroup, as: 'group' },
-        { model: StaticDropdownSubcategoryList, as: 'district' },
-        { model: StaticDropdownSubcategoryList, as: 'court' }
+        { model: ChitsGroup, as: 'group' }
       ]
     });
     if (!info) return errorResponse(res, statusCodes.NOT_FOUND, 'SuitFileInformation not found');

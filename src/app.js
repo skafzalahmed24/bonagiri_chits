@@ -41,7 +41,8 @@ app.use('/api', adminRoutes);
 app.use('/api/user', userRoutes);
 
 // Static file routing for global uploaded documents
-app.use('/uploads', express.static(path.join(__dirname, '../../uploads')));
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use('/api/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Basic health check route
 app.get('/', (req, res) => {
