@@ -810,7 +810,146 @@ const bulkEditAccountCreationDetails = async (req, res) => {
   }
 };
 
+const changePassword = async (req, res) => {
+  try {
+    const { old_password, new_password } = req.body;
+    return await adminService.changePasswordService(res, req.user, old_password, new_password);
+  } catch (error) {
+    console.error('Error in changePassword:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateContactUs = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const data = { ...req.body };
+    if (comp_id) data.company_id = comp_id;
+    return await adminService.storeOrUpdateContactUsService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateContactUs:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllContactUs = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllContactUsService(res, comp_id, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllContactUs:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getContactUsById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getContactUsByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getContactUsById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteContactUs = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteContactUsService(res, id);
+  } catch (error) {
+    console.error('Error in deleteContactUs:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateFAQ = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const data = { ...req.body };
+    if (comp_id) data.company_id = comp_id;
+    return await adminService.storeOrUpdateFAQService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateFAQ:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllFAQ = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { min, max, search } = req.body || {};
+    return await adminService.getAllFAQService(res, comp_id, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllFAQ:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getFAQById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getFAQByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getFAQById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteFAQ = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteFAQService(res, id);
+  } catch (error) {
+    console.error('Error in deleteFAQ:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateTermsPrivacy = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { type, content } = req.body;
+    return await adminService.storeOrUpdateTermsPrivacyService(res, comp_id, type, content);
+  } catch (error) {
+    console.error('Error in storeOrUpdateTermsPrivacy:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTermsPrivacy = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { type } = req.body;
+    return await adminService.getTermsPrivacyService(res, comp_id, type);
+  } catch (error) {
+    console.error('Error in getTermsPrivacy:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const logout = async (req, res) => {
+  try {
+    return await adminService.logoutService(res, req.user);
+  } catch (error) {
+    console.error('Error in logout:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
+  storeOrUpdateFAQ,
+  getAllFAQ,
+  getFAQById,
+  deleteFAQ,
+  storeOrUpdateTermsPrivacy,
+  getTermsPrivacy,
+  logout,
+  storeOrUpdateContactUs,
+  getAllContactUs,
+  getContactUsById,
+  deleteContactUs,
+  changePassword,
   loginAdmin,
   storeOrUpdateCompanyRegistraction,
   getAllCompanyDetails,

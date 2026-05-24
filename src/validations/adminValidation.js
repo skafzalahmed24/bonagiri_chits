@@ -349,7 +349,114 @@ const deleteChitsGroupSchema = Joi.object({
   })
 });
 
+const changePasswordSchema = Joi.object({
+  old_password: Joi.string().required().messages({
+    'any.required': 'Old password is required',
+    'string.empty': 'Old password cannot be empty'
+  }),
+  new_password: Joi.string().required().messages({
+    'any.required': 'New password is required',
+    'string.empty': 'New password cannot be empty'
+  })
+});
+
+const storeOrUpdateContactUsSchema = Joi.object({
+  id: Joi.number().integer().optional(),
+  company_id: Joi.string().uuid().allow('', null).optional().messages({
+    'string.uuid': 'Invalid Company ID format'
+  }),
+  address: Joi.string().allow('', null).optional(),
+  phone_numbers: Joi.array().items(Joi.string()).allow(null).optional(),
+  emails: Joi.array().items(Joi.string().email().messages({
+    'string.email': 'Each email must be a valid email address'
+  })).allow(null).optional(),
+  website_link: Joi.string().allow('', null).optional(),
+  social_media_links: Joi.object().allow(null).optional()
+});
+
+const getAllContactUsSchema = Joi.object({
+  company_id: Joi.string().uuid().allow('', null).optional(),
+  min: Joi.number().integer().min(0).optional().messages({
+    'number.min': 'Min must be greater than or equal to 0'
+  }),
+  max: Joi.number().integer().min(1).optional().messages({
+    'number.min': 'Max must be greater than or equal to 1'
+  }),
+  search: Joi.string().allow('', null).optional()
+});
+
+const deleteContactUsSchema = Joi.object({
+  id: Joi.number().integer().required().messages({
+    'any.required': 'Contact ID is required'
+  })
+});
+
+const storeOrUpdateFAQSchema = Joi.object({
+  id: Joi.number().integer().optional(),
+  company_id: Joi.string().uuid().allow('', null).optional().messages({
+    'string.uuid': 'Invalid Company ID format'
+  }),
+  question: Joi.string().required().messages({
+    'any.required': 'Question is required',
+    'string.empty': 'Question cannot be empty'
+  }),
+  answer: Joi.string().required().messages({
+    'any.required': 'Answer is required',
+    'string.empty': 'Answer cannot be empty'
+  })
+});
+
+const getAllFAQSchema = Joi.object({
+  company_id: Joi.string().uuid().allow('', null).optional(),
+  min: Joi.number().integer().min(0).optional().messages({
+    'number.min': 'Min must be greater than or equal to 0'
+  }),
+  max: Joi.number().integer().min(1).optional().messages({
+    'number.min': 'Max must be greater than or equal to 1'
+  }),
+  search: Joi.string().allow('', null).optional()
+});
+
+const deleteFAQSchema = Joi.object({
+  id: Joi.number().integer().required().messages({
+    'any.required': 'FAQ ID is required'
+  })
+});
+
+const storeOrUpdateTermsPrivacySchema = Joi.object({
+  company_id: Joi.string().uuid().allow('', null).optional().messages({
+    'string.uuid': 'Invalid Company ID format'
+  }),
+  type: Joi.number().integer().valid(1, 2).required().messages({
+    'any.required': 'Type is required (1 - Terms and Conditions, 2 - Privacy Policy)',
+    'any.only': 'Invalid type. Must be 1 or 2.'
+  }),
+  content: Joi.string().required().messages({
+    'any.required': 'Content is required',
+    'string.empty': 'Content cannot be empty'
+  })
+});
+
+const getTermsPrivacySchema = Joi.object({
+  company_id: Joi.string().uuid().allow('', null).optional().messages({
+    'string.uuid': 'Invalid Company ID format'
+  }),
+  type: Joi.number().integer().valid(1, 2).required().messages({
+    'any.required': 'Type is required (1 - Terms and Conditions, 2 - Privacy Policy)',
+    'any.only': 'Invalid type. Must be 1 or 2.'
+  })
+});
+
 module.exports = {
+  storeOrUpdateFAQSchema,
+  getAllFAQSchema,
+  deleteFAQSchema,
+  storeOrUpdateTermsPrivacySchema,
+  getTermsPrivacySchema,
+  storeOrUpdateContactUsSchema,
+  getAllContactUsSchema,
+  deleteContactUsSchema,
+  changePasswordSchema,
   loginAdminSchema,
   companyValidator,
   getAllCompanySchema,

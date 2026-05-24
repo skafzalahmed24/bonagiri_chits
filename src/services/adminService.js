@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -1977,7 +1977,266 @@ const getAuctionByIdService = async (res, id) => {
   }
 };
 
+const changePasswordService = async (res, userPayload, old_password, new_password) => {
+  try {
+    const { id, role } = userPayload;
+    let user;
+
+    if (role === 'company') {
+      user = await Company.findOne({ where: { id, is_deleted_status: 0 } });
+      if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+      if (user.company_password !== old_password) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Incorrect old password');
+      }
+      await user.update({ company_password: new_password });
+    } else if (role === 'member') {
+      user = await Member.findOne({ where: { id, is_deleted_status: 0 } });
+      if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      if (user.other_info_user_password !== old_password) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Incorrect old password');
+      }
+      await user.update({ other_info_user_password: new_password });
+    } else {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Unsupported user role');
+    }
+
+    return successResponse(res, statusCodes.OK, 'Password updated successfully');
+  } catch (error) {
+    console.error('Error in changePasswordService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to change password');
+  }
+};
+
+const storeOrUpdateContactUsService = async (res, data = {}) => {
+  try {
+    const { id, ...contactData } = data;
+    if (!contactData.company_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company ID is required');
+    }
+    if (id) {
+      const contact = await ContactUs.findOne({ where: { id, is_deleted_status: 0 } });
+      if (!contact) return errorResponse(res, statusCodes.NOT_FOUND, 'Contact record not found');
+      await contact.update(contactData);
+      return successResponse(res, statusCodes.OK, 'Contact record updated successfully', contact);
+    } else {
+      const newContact = await ContactUs.create(contactData);
+      return successResponse(res, statusCodes.CREATED, 'Contact record created successfully', newContact);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateContactUsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllContactUsService = async (res, company_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && {
+        [Op.or]: [
+          { address: { [Op.like]: `%${search}%` } },
+          { website_link: { [Op.like]: `%${search}%` } }
+        ]
+      })
+    };
+
+    const contacts = await ContactUs.findAndCountAll({
+      limit,
+      offset,
+      where,
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Contact records retrieved successfully', contacts);
+  } catch (error) {
+    console.error('Error in getAllContactUsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getContactUsByIdService = async (res, id) => {
+  try {
+    const contact = await ContactUs.findOne({
+      where: { id, is_deleted_status: 0 },
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }]
+    });
+    if (!contact) return errorResponse(res, statusCodes.NOT_FOUND, 'Contact record not found');
+    return successResponse(res, statusCodes.OK, 'Contact record retrieved successfully', contact);
+  } catch (error) {
+    console.error('Error in getContactUsByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteContactUsService = async (res, id) => {
+  try {
+    const contact = await ContactUs.findOne({ where: { id, is_deleted_status: 0 } });
+    if (!contact) return errorResponse(res, statusCodes.NOT_FOUND, 'Contact record not found');
+    await contact.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Contact record deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteContactUsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateFAQService = async (res, data = {}) => {
+  try {
+    const { id, ...faqData } = data;
+    if (!faqData.company_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company ID is required');
+    }
+    if (id) {
+      const faq = await FAQ.findOne({ where: { id, is_deleted_status: 0 } });
+      if (!faq) return errorResponse(res, statusCodes.NOT_FOUND, 'FAQ not found');
+      await faq.update(faqData);
+      return successResponse(res, statusCodes.OK, 'FAQ updated successfully', faq);
+    } else {
+      const newFaq = await FAQ.create(faqData);
+      return successResponse(res, statusCodes.CREATED, 'FAQ created successfully', newFaq);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateFAQService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllFAQService = async (res, company_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && {
+        [Op.or]: [
+          { question: { [Op.like]: `%${search}%` } },
+          { answer: { [Op.like]: `%${search}%` } }
+        ]
+      })
+    };
+    const faqs = await FAQ.findAndCountAll({
+      limit,
+      offset,
+      where,
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }],
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'FAQs retrieved successfully', faqs);
+  } catch (error) {
+    console.error('Error in getAllFAQService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getFAQByIdService = async (res, id) => {
+  try {
+    const faq = await FAQ.findOne({
+      where: { id, is_deleted_status: 0 },
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }]
+    });
+    if (!faq) return errorResponse(res, statusCodes.NOT_FOUND, 'FAQ not found');
+    return successResponse(res, statusCodes.OK, 'FAQ retrieved successfully', faq);
+  } catch (error) {
+    console.error('Error in getFAQByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteFAQService = async (res, id) => {
+  try {
+    const faq = await FAQ.findOne({ where: { id, is_deleted_status: 0 } });
+    if (!faq) return errorResponse(res, statusCodes.NOT_FOUND, 'FAQ not found');
+    await faq.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'FAQ deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteFAQService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateTermsPrivacyService = async (res, company_id, type, content) => {
+  try {
+    if (!company_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company ID is required');
+    }
+    const existing = await TermsPrivacy.findOne({
+      where: { company_id, type, is_deleted_status: 0 }
+    });
+
+    if (existing) {
+      await existing.update({ content });
+      return successResponse(res, statusCodes.OK, 'Terms/Privacy record updated successfully', existing);
+    } else {
+      const newRecord = await TermsPrivacy.create({ company_id, type, content });
+      return successResponse(res, statusCodes.CREATED, 'Terms/Privacy record created successfully', newRecord);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateTermsPrivacyService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTermsPrivacyService = async (res, company_id, type) => {
+  try {
+    if (!company_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company ID is required');
+    }
+    const record = await TermsPrivacy.findOne({
+      where: { company_id, type, is_deleted_status: 0 },
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }]
+    });
+    if (!record) {
+      const label = type === 1 ? 'Terms & Conditions' : 'Privacy Policy';
+      return errorResponse(res, statusCodes.NOT_FOUND, `${label} record not found for this company`);
+    }
+    return successResponse(res, statusCodes.OK, 'Terms/Privacy record retrieved successfully', record);
+  } catch (error) {
+    console.error('Error in getTermsPrivacyService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const logoutService = async (res, userPayload) => {
+  try {
+    const { id, role } = userPayload;
+    if (role === 'company') {
+      const user = await Company.findByPk(id);
+      if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+      await user.update({ device_id: null, device_unique_id: null });
+    } else if (role === 'member') {
+      const user = await Member.findByPk(id);
+      if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      await user.update({ device_id: null, device_unique_id: null });
+    } else {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid user role for logout');
+    }
+
+    return successResponse(res, statusCodes.OK, 'Logged out successfully');
+  } catch (error) {
+    console.error('Error in logoutService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to log out');
+  }
+};
+
 module.exports = {
+  storeOrUpdateFAQService,
+  getAllFAQService,
+  getFAQByIdService,
+  deleteFAQService,
+  storeOrUpdateTermsPrivacyService,
+  getTermsPrivacyService,
+  logoutService,
+  storeOrUpdateContactUsService,
+  getAllContactUsService,
+  getContactUsByIdService,
+  deleteContactUsService,
+  changePasswordService,
   loginAdminService,
   loginCompanyService,
   forgotPasswordService,

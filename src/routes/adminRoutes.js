@@ -17,6 +17,26 @@ router.post('/user/login', authMiddleware.authenticateDefaultToken, validate(adm
 router.post('/forgot-password', authMiddleware.authenticateDefaultToken, validate(adminValidation.forgotPasswordSchema), adminController.forgotPassword);
 router.post('/verify-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyOtpSchema), adminController.verifyOtp);
 router.post('/reset-password', authMiddleware.authenticateDefaultToken, validate(adminValidation.resetPasswordSchema), adminController.resetPassword);
+router.post('/change-password', authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.changePassword);
+
+// Contact Us routes
+router.post('/contact-us/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.storeOrUpdateContactUsSchema), adminController.storeOrUpdateContactUs);
+router.post('/contact-us/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllContactUsSchema), adminController.getAllContactUs);
+router.post('/contact-us/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getContactUsById);
+router.post('/contact-us/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteContactUsSchema), adminController.deleteContactUs);
+
+// FAQ routes
+router.post('/faq/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.storeOrUpdateFAQSchema), adminController.storeOrUpdateFAQ);
+router.post('/faq/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllFAQSchema), adminController.getAllFAQ);
+router.post('/faq/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getFAQById);
+router.post('/faq/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteFAQSchema), adminController.deleteFAQ);
+
+// Terms & Privacy routes
+router.post('/terms-privacy/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.storeOrUpdateTermsPrivacySchema), adminController.storeOrUpdateTermsPrivacy);
+router.post('/terms-privacy/get', authMiddleware.authenticateToken, validate(adminValidation.getTermsPrivacySchema), adminController.getTermsPrivacy);
+
+// Logout route
+router.post('/logout', authMiddleware.authenticateToken, adminController.logout);
 
 // Protected company routes
 router.post('/company/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.companyValidator), adminController.storeOrUpdateCompanyRegistraction);
