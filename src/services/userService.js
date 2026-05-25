@@ -1,6 +1,6 @@
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Enrollment, Company, ChitsGroup, Member, StaticDropdownsList, Area, City, ChitsInstallment, sequelize } = require('../models');
+const { Enrollment, Company, ChitsGroup, Member, StaticDropdownsList, Area, City, ChitsInstallment, UpcomingChit, UpcomingChitInterest, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 const getHomeRecordService = async (res, subscriber_id) => {
@@ -155,7 +155,107 @@ const getAllHomeRecordsService = async (res, subscriber_id, type = 0, min = 0, m
   }
 };
 
+const getUpcomingChitsService = async (res, userPayload, min = 0, max = 10) => {
+  try {
+    const { id: user_id } = userPayload;
+
+    const member = await Member.findByPk(user_id);
+    if (!member) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+    }
+    const company_id = member.company_id;
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      status: 0
+    };
+    if (company_id) {
+      whereClause.company_id = company_id;
+    }
+
+    const { count, rows: chits } = await UpcomingChit.findAndCountAll({
+      where: whereClause,
+      include: [
+        {
+          model: UpcomingChitInterest,
+          as: 'interests',
+          where: { user_id },
+          required: false // LEFT JOIN
+        }
+      ],
+      limit,
+      offset,
+      order: [['chit_date', 'ASC']]
+    });
+
+    // Map through chits and resolve showing_interest status dynamically per user
+    const resolvedRows = chits.map((chit) => {
+      const chitJson = chit.toJSON();
+      const hasInterest = chitJson.interests && chitJson.interests.length > 0;
+      const showingInterestVal = hasInterest ? chitJson.interests[0].showing_interest : 0;
+      
+      delete chitJson.interests;
+
+      return {
+        ...chitJson,
+        showing_interest: showingInterestVal
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Upcoming chits retrieved successfully', {
+      count,
+      rows: resolvedRows
+    });
+  } catch (error) {
+    console.error('Error in getUpcomingChitsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const submitChitInterestService = async (res, userPayload, upcoming_chit_id, showing_interest) => {
+  try {
+    const { id: user_id } = userPayload;
+
+    const chit = await UpcomingChit.findByPk(upcoming_chit_id);
+    if (!chit) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Upcoming chit not found');
+    }
+
+    const interestInt = Number(showing_interest);
+
+    if (interestInt === 0) {
+      // If showing_interest is 0 (uninterested), delete the record from database
+      await UpcomingChitInterest.destroy({
+        where: { upcoming_chit_id, user_id }
+      });
+    } else if (interestInt === 1) {
+      // If showing_interest is 1 (interested), find or create the record
+      const [interestRecord] = await UpcomingChitInterest.findOrCreate({
+        where: { upcoming_chit_id, user_id },
+        defaults: { showing_interest: 1 }
+      });
+      if (interestRecord.showing_interest !== 1) {
+        await interestRecord.update({ showing_interest: 1 });
+      }
+    }
+
+    const responseChit = {
+      ...chit.toJSON(),
+      showing_interest: interestInt
+    };
+
+    return successResponse(res, statusCodes.OK, 'Upcoming chit interest updated successfully', responseChit);
+  } catch (error) {
+    console.error('Error in submitChitInterestService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecordService,
-  getAllHomeRecordsService
+  getAllHomeRecordsService,
+  getUpcomingChitsService,
+  submitChitInterestService
 };

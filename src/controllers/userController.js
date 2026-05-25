@@ -22,7 +22,29 @@ const getAllHomeRecords = async (req, res) => {
   }
 };
 
+const getUpcomingChits = async (req, res) => {
+  try {
+    const { min, max } = req.body || {};
+    return await userService.getUpcomingChitsService(res, req.user, min, max);
+  } catch (error) {
+    console.error('Error in getUpcomingChits:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const submitChitInterest = async (req, res) => {
+  try {
+    const { upcoming_chit_id, showing_interest } = req.body;
+    return await userService.submitChitInterestService(res, req.user, upcoming_chit_id, showing_interest);
+  } catch (error) {
+    console.error('Error in submitChitInterest:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecord,
-  getAllHomeRecords
+  getAllHomeRecords,
+  getUpcomingChits,
+  submitChitInterest
 };
