@@ -491,8 +491,8 @@ const storeOrUpdateAuction = async (req, res) => {
 const getAllAuctions = async (req, res) => {
   try {
     const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
-    const { group_id, bidder_id, min, max } = req.body || {};
-    return await adminService.getAllAuctionsService(res, comp_id, group_id, bidder_id, min, max);
+    const { group_id, bidder_id, min, max, search } = req.body || {};
+    return await adminService.getAllAuctionsService(res, comp_id, group_id, bidder_id, min, max, search);
   } catch (error) {
     console.error('Error in getAllAuctions:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

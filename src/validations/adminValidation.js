@@ -688,8 +688,10 @@ module.exports = {
     group_id: Joi.string().uuid().allow('', null).optional(),
     bidder_id: Joi.number().integer().allow(null).optional(),
     min: Joi.number().integer().min(0).optional(),
-    max: Joi.number().integer().min(1).optional()
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
   }),
+
   deleteAuctionSchema: Joi.object({
     id: Joi.string().uuid().required(),
     company_id: Joi.string().uuid().allow('', null).optional()

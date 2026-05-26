@@ -1058,7 +1058,7 @@ const storeOrUpdateAuctionService = async (res, data = {}) => {
   }
 };
 
-const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, max) => {
+const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, max, search) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
@@ -1068,6 +1068,14 @@ const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, 
       ...(group_id && group_id !== '' && { group_id }),
       ...(bidder_id && bidder_id !== '' && { bidder_id })
     };
+
+    if (search && search.trim() !== '') {
+      where[Op.or] = [
+        { '$group.group_name$': { [Op.like]: `%${search}%` } },
+        { '$bidder.name$': { [Op.like]: `%${search}%` } },
+        { '$bidder.member_id$': { [Op.like]: `%${search}%` } }
+      ];
+    }
 
     const auctions = await Auction.findAndCountAll({
       limit,
