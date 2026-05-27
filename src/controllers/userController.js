@@ -42,9 +42,53 @@ const submitChitInterest = async (req, res) => {
   }
 };
 
+const getPendingPayments = async (req, res) => {
+  try {
+    const { subscriber_id, min, max } = req.body || {};
+    return await userService.getPendingPaymentsService(res, req.user, subscriber_id, min, max);
+  } catch (error) {
+    console.error('Error in getPendingPayments:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBids = async (req, res) => {
+  try {
+    const { type, min, max } = req.body || {};
+    return await userService.getBidsService(res, req.user, type, min, max);
+  } catch (error) {
+    console.error('Error in getBids:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBidDetails = async (req, res) => {
+  try {
+    const { group_id } = req.body;
+    return await userService.getBidDetailsService(res, group_id);
+  } catch (error) {
+    console.error('Error in getBidDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getChitDetails = async (req, res) => {
+  try {
+    const { group_id } = req.body;
+    return await userService.getChitDetailsService(res, req.user, group_id);
+  } catch (error) {
+    console.error('Error in getChitDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecord,
   getAllHomeRecords,
   getUpcomingChits,
-  submitChitInterest
+  submitChitInterest,
+  getPendingPayments,
+  getBids,
+  getBidDetails,
+  getChitDetails
 };

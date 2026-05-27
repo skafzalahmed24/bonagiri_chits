@@ -718,9 +718,15 @@ const getAllCityDetailsService = async (res, company_id, min, max, search) => {
   }
 };
 
-const getDistrictsListService = async (res, state_id, search) => {
+const getDistrictsListService = async (res, company_id, state_id, search) => {
   try {
-    const districts = await District.findAll({ where: { state_id, is_deleted_status: 0, ...(search && { district_name: { [Op.like]: `%${search}%` } }) }, order: [['district_name', 'ASC']] });
+    const where = {
+      state_id,
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { district_name: { [Op.like]: `%${search}%` } })
+    };
+    const districts = await District.findAll({ where, order: [['district_name', 'ASC']] });
     return successResponse(res, statusCodes.OK, 'Districts retrieved successfully', districts);
   } catch (error) {
     console.error('Error in getDistrictsListService:', error);
@@ -846,7 +852,7 @@ const storeOrUpdateUpcomingChitService = async (res, data = {}) => {
   }
 };
 
-const getAllUpcomingChitsService = async (res, company_id, status, chit_date, min, max) => {
+const getAllUpcomingChitsService = async (res, company_id, status, chit_date, min, max, search) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
@@ -858,6 +864,13 @@ const getAllUpcomingChitsService = async (res, company_id, status, chit_date, mi
 
     if (chit_date && chit_date !== '' && chit_date !== null) {
       where.chit_date = chit_date;
+    }
+
+    if (search && search.trim() !== '') {
+      where[Op.or] = [
+        { group_name: { [Op.like]: `%${search}%` } },
+        { remarks: { [Op.like]: `%${search}%` } }
+      ];
     }
 
     const upcomingChits = await UpcomingChit.findAndCountAll({
@@ -994,7 +1007,7 @@ const storeOrUpdateSuitFileInformationService = async (res, data = {}) => {
   }
 };
 
-const getAllSuitFileInformationService = async (res, company_id, group_id, subscriber_id, min, max) => {
+const getAllSuitFileInformationService = async (res, company_id, group_id, subscriber_id, min, max, search) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
@@ -1004,6 +1017,17 @@ const getAllSuitFileInformationService = async (res, company_id, group_id, subsc
       ...(group_id && group_id !== '' && { group_id }),
       ...(subscriber_id && subscriber_id !== '' && { subscriber_id })
     };
+
+    if (search && search.trim() !== '') {
+      where[Op.or] = [
+        { '$group.group_name$': { [Op.like]: `%${search}%` } },
+        { '$subscriber.name$': { [Op.like]: `%${search}%` } },
+        { '$subscriber.member_id$': { [Op.like]: `%${search}%` } },
+        { advocate_name: { [Op.like]: `%${search}%` } },
+        { court_name: { [Op.like]: `%${search}%` } },
+        { suit_no: { [Op.like]: `%${search}%` } }
+      ];
+    }
 
     const suitInfos = await SuitFileInformation.findAndCountAll({
       limit,
@@ -1398,7 +1422,7 @@ const storeOrUpdateAgentTargetEntryService = async (res, data = {}) => {
   }
 };
 
-const getFilteredMembersByGroupAndAgentService = async (res, agent_type_id, agent_id, group_id, min, max) => {
+const getFilteredMembersByGroupAndAgentService = async (res, company_id, agent_type_id, agent_id, group_id, min, max) => {
   try {
     const type_id = parseInt(agent_type_id, 10);
     const ag_id = parseInt(agent_id, 10);
@@ -1412,6 +1436,7 @@ const getFilteredMembersByGroupAndAgentService = async (res, agent_type_id, agen
 
     const whereClause = {
       delete_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
       ...(group_id && group_id !== '' && { group_id }),
       ...(!isNaN(ag_id) && (type_id === 16 ? { business_agent_id: ag_id } : { collection_agent_id: ag_id }))
     };

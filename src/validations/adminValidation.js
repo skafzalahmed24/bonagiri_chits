@@ -529,6 +529,7 @@ module.exports = {
     search: Joi.string().allow('', null).optional()
   }),
   getDistrictsSchema: Joi.object({
+    company_id: Joi.string().uuid().allow('', null).optional(),
     state_id: Joi.number().integer().required().messages({
       'any.required': 'State ID is required'
     }),
@@ -604,7 +605,8 @@ module.exports = {
     status: Joi.number().integer().allow(null).optional(),
     chit_date: Joi.date().iso().allow('', null).optional(),
     min: Joi.number().integer().min(0).optional(),
-    max: Joi.number().integer().min(1).optional()
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
   }),
   deleteUpcomingChitSchema: Joi.object({
     id: Joi.string().uuid().required().messages({
@@ -652,7 +654,8 @@ module.exports = {
     group_id: Joi.string().uuid().allow('', null).optional(),
     subscriber_id: Joi.number().integer().allow(null).optional(),
     min: Joi.number().integer().min(0).optional(),
-    max: Joi.number().integer().min(1).optional()
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
   }),
   deleteSuitFileInformationSchema: Joi.object({
     id: Joi.string().uuid().required(),
@@ -725,6 +728,7 @@ module.exports = {
     due_amount: Joi.number().precision(2).allow('', null).optional()
   }),
   getFilteredMembersByGroupAndAgentSchema: Joi.object({
+    company_id: Joi.string().uuid().allow('', null).optional(),
     agent_type_id: Joi.number().integer().valid(16, 18).required(),
     agent_id: Joi.number().integer().allow('', null).optional(),
     group_id: Joi.string().uuid().allow('', null).optional(),

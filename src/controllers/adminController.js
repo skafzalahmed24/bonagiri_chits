@@ -339,8 +339,9 @@ const fetchStaticDropdown = async (req, res) => {
 
 const getDistrictsList = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { state_id, search } = req.body || {};
-    return await adminService.getDistrictsListService(res, state_id, search);
+    return await adminService.getDistrictsListService(res, comp_id, state_id, search);
   } catch (error) {
     console.error('Error in getDistrictsList:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -402,8 +403,8 @@ const storeOrUpdateUpcomingChit = async (req, res) => {
 const getAllUpcomingChits = async (req, res) => {
   try {
     const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
-    const { status, chit_date, min, max } = req.body || {};
-    return await adminService.getAllUpcomingChitsService(res, comp_id, status, chit_date, min, max);
+    const { status, chit_date, min, max, search } = req.body || {};
+    return await adminService.getAllUpcomingChitsService(res, comp_id, status, chit_date, min, max, search);
   } catch (error) {
     console.error('Error in getAllUpcomingChits:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -457,8 +458,8 @@ const storeOrUpdateSuitFileInformation = async (req, res) => {
 const getAllSuitFileInformation = async (req, res) => {
   try {
     const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
-    const { group_id, subscriber_id, min, max } = req.body || {};
-    return await adminService.getAllSuitFileInformationService(res, comp_id, group_id, subscriber_id, min, max);
+    const { group_id, subscriber_id, min, max, search } = req.body || {};
+    return await adminService.getAllSuitFileInformationService(res, comp_id, group_id, subscriber_id, min, max, search);
   } catch (error) {
     console.error('Error in getAllSuitFileInformation:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -543,8 +544,9 @@ const getAgentEnrollments = async (req, res) => {
 
 const getFilteredMembersByGroupAndAgent = async (req, res) => {
   try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
     const { agent_type_id, agent_id, group_id, min, max } = req.body || {};
-    return await adminService.getFilteredMembersByGroupAndAgentService(res, agent_type_id, agent_id, group_id, min, max);
+    return await adminService.getFilteredMembersByGroupAndAgentService(res, comp_id, agent_type_id, agent_id, group_id, min, max);
   } catch (error) {
     console.error('Error in getFilteredMembersByGroupAndAgent:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

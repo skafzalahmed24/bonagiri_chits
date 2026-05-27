@@ -13,4 +13,12 @@ router.post('/all-chits-groups',  validate(userValidation.getAllHomeRecordsSchem
 router.post('/upcoming-chits', authMiddleware.authenticateToken, validate(userValidation.getUpcomingChitsSchema), userController.getUpcomingChits);
 router.post('/upcoming-chit/interest', authMiddleware.authenticateToken, validate(userValidation.submitChitInterestSchema), userController.submitChitInterest);
 
+// pending payments route (authenticated)
+router.post('/pending-payments', authMiddleware.authenticateToken, validate(userValidation.getPendingPaymentsSchema), userController.getPendingPayments);
+
+// bids and bid-details routes (authenticated)
+router.post('/bids', authMiddleware.authenticateToken, validate(userValidation.getBidsSchema), userController.getBids);
+router.post('/bid-details', authMiddleware.authenticateToken, validate(userValidation.getBidDetailsSchema), userController.getBidDetails);
+router.post('/chit-details', authMiddleware.authenticateToken, validate(userValidation.getChitDetailsSchema), userController.getChitDetails);
+
 module.exports = router;

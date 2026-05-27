@@ -27,9 +27,42 @@ const submitChitInterestSchema = Joi.object({
   })
 });
 
+const getPendingPaymentsSchema = Joi.object({
+  subscriber_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10)
+});
+
+const getBidsSchema = Joi.object({
+  type: Joi.string().valid('ongoing', 'upcoming', 'history').required().messages({
+    'any.required': 'Type is required',
+    'any.only': 'Invalid type. Must be ongoing, upcoming, or history.'
+  }),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10)
+});
+
+const getBidDetailsSchema = Joi.object({
+  group_id: Joi.string().uuid().required().messages({
+    'any.required': 'Group ID is required',
+    'string.uuid': 'Invalid Group ID format'
+  })
+});
+
+const getChitDetailsSchema = Joi.object({
+  group_id: Joi.string().uuid().required().messages({
+    'any.required': 'Group ID is required',
+    'string.uuid': 'Invalid Group ID format'
+  })
+});
+
 module.exports = {  
   getHomeRecordSchema,
   getAllHomeRecordsSchema,
   getUpcomingChitsSchema,
-  submitChitInterestSchema
+  submitChitInterestSchema,
+  getPendingPaymentsSchema,
+  getBidsSchema,
+  getBidDetailsSchema,
+  getChitDetailsSchema
 };
