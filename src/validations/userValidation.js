@@ -34,9 +34,9 @@ const getPendingPaymentsSchema = Joi.object({
 });
 
 const getBidsSchema = Joi.object({
-  type: Joi.string().valid('ongoing', 'upcoming', 'history').required().messages({
+  type: Joi.number().integer().valid(1, 2, 3).required().messages({
     'any.required': 'Type is required',
-    'any.only': 'Invalid type. Must be ongoing, upcoming, or history.'
+    'any.only': 'Invalid type. Must be 1 (ongoing), 2 (upcoming), or 3 (history).'
   }),
   min: Joi.number().integer().min(0).optional().default(0),
   max: Joi.number().integer().min(1).optional().default(10)

@@ -52,6 +52,46 @@ const getHomeRecordService = async (res, subscriber_id) => {
       }
     ];
 
+    // 5. Fetch the latest upcoming chit record (same logic as getUpcomingChitsService, limit 1)
+    let latest_upcoming_chit = null;
+    try {
+      const member = await Member.findByPk(subscriber_id);
+      const company_id = member ? member.company_id : null;
+
+      const whereClause = { status: 0 };
+      if (company_id) {
+        whereClause.company_id = company_id;
+      }
+
+      const latestChit = await UpcomingChit.findOne({
+        where: whereClause,
+        include: [
+          {
+            model: UpcomingChitInterest,
+            as: 'interests',
+            where: { user_id: subscriber_id },
+            required: false // LEFT JOIN
+          }
+        ],
+        order: [['chit_date', 'ASC']]
+      });
+
+      if (latestChit) {
+        const chitJson = latestChit.toJSON();
+        const hasInterest = chitJson.interests && chitJson.interests.length > 0;
+        const showingInterestVal = hasInterest ? chitJson.interests[0].showing_interest : 0;
+        delete chitJson.interests;
+
+        latest_upcoming_chit = {
+          ...chitJson,
+          showing_interest: showingInterestVal
+        };
+      }
+    } catch (chitErr) {
+      console.error('Error fetching latest_upcoming_chit in getHomeRecordService:', chitErr);
+      // Non-blocking: keep latest_upcoming_chit as null
+    }
+
     const responseData = {
       id: enrollment.id,
       group_id: enrollment.group_id,
@@ -61,12 +101,13 @@ const getHomeRecordService = async (res, subscriber_id) => {
       upcoming_instalment_id: upcomingInstallment ? upcomingInstallment.id : null,
       enrollment_id: enrollment.id,
       next_due_date: upcomingInstallment ? upcomingInstallment.due_date : null,
-      payable_amount: upcomingInstallment ? upcomingInstallment.payable_amount : null,
+      payable_amount: upcomingInstallment ? (upcomingInstallment.payable_amount || 0) : 0,
       ...(upcomingInstallment && {
         createdAt: upcomingInstallment.createdAt,
         updatedAt: upcomingInstallment.updatedAt
       }),
-      upcoming_auction
+      upcoming_auction,
+      latest_upcoming_chit
     };
 
     return successResponse(res, statusCodes.OK, 'Latest home record and upcoming installment retrieved successfully', responseData);
@@ -94,7 +135,7 @@ const getAllHomeRecordsService = async (res, subscriber_id, type = 0, min = 0, m
     const resolvedData = await Promise.all(enrollments.map(async (enrollment) => {
       const group = await ChitsGroup.findOne({
         where: { id: enrollment.group_id },
-        attributes: ['id', 'group_name', 'chit_amount']
+        attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments']
       });
 
       const upcomingInstallment = await ChitsInstallment.findOne({
@@ -111,18 +152,24 @@ const getAllHomeRecordsService = async (res, subscriber_id, type = 0, min = 0, m
         where: { group_id: enrollment.group_id, delete_status: 0 }
       });
 
+      const totalAuctionsCount = await Auction.count({
+        where: { group_id: enrollment.group_id }
+      });
+
       return {
         id: enrollment.id,
         group_id: enrollment.group_id,
         subscriber_id: enrollment.subscriber_id,
         group_name: group ? group.group_name : null,
         chit_amount: group ? group.chit_amount : null,
+        no_of_installments: group ? group.no_of_installments : null,
+        completed_installments_count: totalAuctionsCount,
         positions_occupied_count: occupiedCount,
         total_positions: 20,
         upcoming_instalment_id: upcomingInstallment ? upcomingInstallment.id : null,
         enrollment_id: enrollment.id,
         next_due_date: upcomingInstallment ? upcomingInstallment.due_date : null,
-        payable_amount: upcomingInstallment ? upcomingInstallment.payable_amount : null,
+        payable_amount: upcomingInstallment ? (upcomingInstallment.payable_amount || 0) : 0,
         ...(upcomingInstallment && {
           createdAt: upcomingInstallment.createdAt,
           updatedAt: upcomingInstallment.updatedAt
@@ -133,7 +180,7 @@ const getAllHomeRecordsService = async (res, subscriber_id, type = 0, min = 0, m
     // Apply Filter logic dynamically based on group capacity
     let filteredData = resolvedData;
     const typeInt = Number(type);
-    
+
     if (typeInt === 1) { // Only fetch perfectly complete groups
       filteredData = resolvedData.filter(item => item.positions_occupied_count >= item.total_positions);
     } else if (typeInt === 2) { // Fetch explicitly incomplete active groups
@@ -195,7 +242,7 @@ const getUpcomingChitsService = async (res, userPayload, min = 0, max = 10) => {
       const chitJson = chit.toJSON();
       const hasInterest = chitJson.interests && chitJson.interests.length > 0;
       const showingInterestVal = hasInterest ? chitJson.interests[0].showing_interest : 0;
-      
+
       delete chitJson.interests;
 
       return {
@@ -341,12 +388,12 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
       const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
       const month = months[date.getMonth()];
       const year = date.getFullYear();
-      
+
       let suffix = 'th';
       if (day === 1 || day === 21 || day === 31) suffix = 'st';
       else if (day === 2 || day === 22) suffix = 'nd';
       else if (day === 3 || day === 23) suffix = 'rd';
-      
+
       return `${day}${suffix} ${month} ${year}`;
     };
 
@@ -356,10 +403,10 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
     const formattedRows = unpaidInstallments.map((installment) => {
       const group = installment.enrollment?.group;
       const groupName = group ? group.group_name : 'Unknown Chit';
-      
+
       const dueAmount = parseFloat(installment.payable_amount) || 0.00;
       const grossAmount = group ? (parseFloat(group.installment_amount) || 0.00) : dueAmount;
-      
+
       // Calculate dynamic over_due_days_count based on current date
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -405,12 +452,12 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
       }
 
       // Dynamic calculation of penalty_amount
-      const penaltyAmount = isOverdue 
-        ? parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2)) 
+      const penaltyAmount = isOverdue
+        ? parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2))
         : 0.00;
 
-      const penaltyText = isOverdue 
-        ? `Penalty ${displayPercentage}% per day x ${overDueDaysCount} days` 
+      const penaltyText = isOverdue
+        ? `Penalty ${displayPercentage}% per day x ${overDueDaysCount} days`
         : null;
 
       const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
@@ -488,12 +535,12 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
       const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
       const month = months[date.getMonth()];
       const year = date.getFullYear();
-      
+
       let suffix = 'th';
       if (day === 1 || day === 21 || day === 31) suffix = 'st';
       else if (day === 2 || day === 22) suffix = 'nd';
       else if (day === 3 || day === 23) suffix = 'rd';
-      
+
       return `${day}${suffix} ${month} ${year}`;
     };
 
@@ -502,29 +549,30 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
       if (!group) continue;
 
       let isMatch = false;
-      let badgeLabel = '';
+      let badgeLabel = 0;
       let timingLabel = '';
 
       const groupStatus = Number(group.chits_group_status); // 0 - Not started, 1 - started, 2 - completed
+      const typeInt = Number(type);
 
-      if (type === 'ongoing') {
+      if (typeInt === 1) {
         if (groupStatus === 1) {
           isMatch = true;
           // If auction is scheduled today, label it "Live Now" or "Today"
           const isAuctionToday = group.auction_date === todayStr;
-          badgeLabel = isAuctionToday ? 'Live Now' : 'Active';
+          badgeLabel = 1;
           timingLabel = isAuctionToday ? 'Today' : (group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Today');
         }
-      } else if (type === 'upcoming') {
+      } else if (typeInt === 2) {
         if (groupStatus === 0) {
           isMatch = true;
-          badgeLabel = 'Upcoming';
+          badgeLabel = 2;
           timingLabel = group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Soon';
         }
-      } else if (type === 'history') {
+      } else if (typeInt === 3) {
         if (groupStatus === 2) {
           isMatch = true;
-          badgeLabel = 'Completed';
+          badgeLabel = 3;
           timingLabel = group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Closed';
         }
       }
@@ -593,12 +641,9 @@ const getBidDetailsService = async (res, group_id) => {
     const currentMonthFormatted = `${currentInstallmentNo}/${totalInstallments}`;
 
     const bidWinningAmount = latestAuction ? parseFloat(latestAuction.bid_amount) : 0.00;
-    
-    // Status label mapping
+
+    // Status label mapping: 0 = Upcoming, 1 = Live Now, 2 = Completed
     const groupStatus = Number(group.chits_group_status);
-    let badgeLabel = 'Upcoming';
-    if (groupStatus === 1) badgeLabel = 'Live Now';
-    else if (groupStatus === 2) badgeLabel = 'Completed';
 
     const responseData = {
       bid_winning_amount: bidWinningAmount,
@@ -609,7 +654,7 @@ const getBidDetailsService = async (res, group_id) => {
         total_installments: totalInstallments,
         members_count: membersCount,
         current_month: currentMonthFormatted,
-        badge_label: badgeLabel
+        badge_label: groupStatus
       },
       winner_details: latestAuction && latestAuction.bidder ? {
         winner_name: latestAuction.bidder.name || 'N/A',
@@ -698,12 +743,12 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
       const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
       const month = months[date.getMonth()];
       const year = date.getFullYear();
-      
+
       let suffix = 'th';
       if (day === 1 || day === 21 || day === 31) suffix = 'st';
       else if (day === 2 || day === 22) suffix = 'nd';
       else if (day === 3 || day === 23) suffix = 'rd';
-      
+
       return `${day}${suffix} ${month} ${year}`;
     };
 
@@ -794,8 +839,8 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
       }
 
       // Find the winner ticket number formatted (e.g. "#12")
-      const winnerTicketFormatted = auction.ticket_number 
-        ? "#" + String(auction.ticket_number).padStart(2, '0') 
+      const winnerTicketFormatted = auction.ticket_number
+        ? "#" + String(auction.ticket_number).padStart(2, '0')
         : (auction.bidder && auction.bidder.member_id ? `#${auction.bidder.member_id}` : 'N/A');
 
       // Math card stats
@@ -817,7 +862,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
           }
         }
       }
-      
+
       const payableAmountVal = originalAmountVal - profitAmountVal;
 
       // 8. Build member-wise breakdown list for this specific auction/installment number

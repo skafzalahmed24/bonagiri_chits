@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
+const fixedSchemeController = require('../controllers/fixedSchemeController');
 const validate = require('../middlewares/validate');
 const authMiddleware = require('../middlewares/authMiddleware');
 const uploadMiddleware = require('../middlewares/uploadMiddleware');
@@ -146,5 +147,11 @@ router.post('/account-creation-details/get-by-id', authMiddleware.authenticateTo
 router.post('/account-creation-details/bulk-edit', authMiddleware.authenticateToken, validate(adminValidation.bulkEditAccountCreationDetailsSchema), adminController.bulkEditAccountCreationDetails);
 router.post('/account-creation-details/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAccountCreationDetailSchema), adminController.deleteAccountCreationDetail);
 router.post('/account-tree/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllAccountTreeSchema), adminController.getAllAccountTree);
+
+// fixed-scheme-chits-configuration routes
+router.post('/fixed-scheme/store-or-update', authMiddleware.authenticateToken, fixedSchemeController.storeOrUpdateFixedScheme);
+router.post('/fixed-scheme/get-all', authMiddleware.authenticateToken, fixedSchemeController.getAllFixedSchemes);
+router.post('/fixed-scheme/get-by-id', authMiddleware.authenticateToken, fixedSchemeController.getFixedSchemeById);
+router.post('/fixed-scheme/delete', authMiddleware.authenticateToken, fixedSchemeController.deleteFixedScheme);
 
 module.exports = router;

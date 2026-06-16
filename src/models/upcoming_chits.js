@@ -40,6 +40,11 @@ module.exports = (sequelize, DataTypes) => {
     remarks: {
       type: DataTypes.STRING,
       allowNull: true
+    },
+    no_of_installments: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0
     }
   }, {
     sequelize,
