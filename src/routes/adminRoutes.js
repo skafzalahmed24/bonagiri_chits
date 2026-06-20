@@ -148,6 +148,12 @@ router.post('/account-creation-details/bulk-edit', authMiddleware.authenticateTo
 router.post('/account-creation-details/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAccountCreationDetailSchema), adminController.deleteAccountCreationDetail);
 router.post('/account-tree/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllAccountTreeSchema), adminController.getAllAccountTree);
 
+// self-chit routes
+router.post('/self-chit/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.selfChitValidator), adminController.storeOrUpdateSelfChit);
+router.post('/self-chit/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllSelfChitSchema), adminController.getAllSelfChitDetails);
+router.post('/self-chit/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getSelfChitById);
+router.post('/self-chit/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteSelfChitSchema), adminController.deleteSelfChit);
+
 // fixed-scheme-chits-configuration routes
 router.post('/fixed-scheme/store-or-update', authMiddleware.authenticateToken, fixedSchemeController.storeOrUpdateFixedScheme);
 router.post('/fixed-scheme/get-all', authMiddleware.authenticateToken, fixedSchemeController.getAllFixedSchemes);

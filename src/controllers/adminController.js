@@ -939,6 +939,50 @@ const logout = async (req, res) => {
   }
 };
 
+const storeOrUpdateSelfChit = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    if (req.user && req.user.role === 'company' && req.user.id) {
+      data.company_id = req.user.id;
+    }
+    return await adminService.storeOrUpdateSelfChitService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateSelfChit:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllSelfChitDetails = async (req, res) => {
+  try {
+    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const { min, max } = req.body || {};
+    return await adminService.getAllSelfChitDetailsService(res, comp_id, min, max);
+  } catch (error) {
+    console.error('Error in getAllSelfChitDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSelfChitById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getSelfChitByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getSelfChitById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteSelfChit = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteSelfChitService(res, id);
+  } catch (error) {
+    console.error('Error in deleteSelfChit:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1027,5 +1071,9 @@ module.exports = {
   getAllAccountTree,
   getAccountCreationDetailById,
   deleteAccountCreationDetail,
-  bulkEditAccountCreationDetails
+  bulkEditAccountCreationDetails,
+  storeOrUpdateSelfChit,
+  getAllSelfChitDetails,
+  getSelfChitById,
+  deleteSelfChit
 };

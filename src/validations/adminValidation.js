@@ -820,6 +820,19 @@ module.exports = {
       created_by: Joi.string().allow('', null).optional(),
       updated_by: Joi.string().allow('', null).optional()
     })).required()
+  }),
+  selfChitValidator: Joi.object({
+    id: Joi.string().uuid().optional(),
+    group_id: Joi.string().uuid().required(),
+    slot_id: Joi.number().integer().required()
+  }),
+  getAllSelfChitSchema: Joi.object({
+    company_id: Joi.string().uuid().allow('', null).optional(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
+  }),
+  deleteSelfChitSchema: Joi.object({
+    id: Joi.string().uuid().required()
   })
 };
 

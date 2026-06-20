@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -553,6 +553,15 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
               delete_status: 0
             });
             console.log('Enrollment created:', enrollment.id);
+
+            const selfChit = await SelfChit.create({
+              company_id: targetCompanyId,
+              group_id: newChitsGroup.id,
+              subscriber_id: companyMember.id,
+              slot_id: chitsGroupData.company_chit_number,
+              is_deleted_status: 0
+            });
+            console.log('SelfChit created:', selfChit.id);
           }
         }
         else {
@@ -823,10 +832,20 @@ const deleteEnrollmentService = async (res, id) => {
 const getPositionNumbersService = async (res, group_id) => {
   try {
     const totalPositions = 20;
+    
     const enrollments = await Enrollment.findAll({ where: { group_id, delete_status: 0 }, attributes: ['group_position_number'] });
-    const takenPositions = enrollments.map(e => parseInt(e.group_position_number)).filter(n => !isNaN(n));
+    const takenFromEnrollments = enrollments.map(e => parseInt(e.group_position_number)).filter(n => !isNaN(n));
+    
+    const selfChits = await SelfChit.findAll({ where: { group_id, is_deleted_status: 0 }, attributes: ['slot_id'] });
+    const takenFromSelfChits = selfChits.map(s => parseInt(s.slot_id)).filter(n => !isNaN(n));
+    
+    const takenPositions = [...new Set([...takenFromEnrollments, ...takenFromSelfChits])];
+    
     const availablePositions = [];
-    for (let i = 1; i <= totalPositions; i++) if (!takenPositions.includes(i)) availablePositions.push(i);
+    for (let i = 1; i <= totalPositions; i++) {
+      if (!takenPositions.includes(i)) availablePositions.push(i);
+    }
+    
     return successResponse(res, statusCodes.OK, 'Available position numbers retrieved successfully', availablePositions);
   } catch (error) {
     console.error('Error in getPositionNumbersService:', error);
@@ -1792,6 +1811,78 @@ const bulkEditAccountCreationDetailsService = async (res, comp_id, login_user_id
   }
 };
 
+const storeOrUpdateSelfChitService = async (res, data = {}) => {
+  try {
+    const { id, ...selfChitData } = data;
+    if (id) {
+      const selfChit = await SelfChit.findByPk(id);
+      if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
+      await selfChit.update(selfChitData);
+      return successResponse(res, statusCodes.OK, 'Self chit updated successfully', selfChit);
+    } else {
+      const newSelfChit = await SelfChit.create(selfChitData);
+      return successResponse(res, statusCodes.CREATED, 'Self chit created successfully', newSelfChit);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateSelfChitService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllSelfChitDetailsService = async (res, company_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' && { company_id })
+    };
+    const selfChits = await SelfChit.findAndCountAll({
+      limit, offset, where,
+      include: [
+        { model: Company, as: 'company', attributes: ['company_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'Self chits retrieved successfully', selfChits);
+  } catch (error) {
+    console.error('Error in getAllSelfChitDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSelfChitByIdService = async (res, id) => {
+  try {
+    const selfChit = await SelfChit.findOne({
+      where: { id, is_deleted_status: 0 },
+      include: [
+        { model: Company, as: 'company', attributes: ['company_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] }
+      ]
+    });
+    if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
+    return successResponse(res, statusCodes.OK, 'Self chit retrieved successfully', selfChit);
+  } catch (error) {
+    console.error('Error in getSelfChitByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteSelfChitService = async (res, id) => {
+  try {
+    const selfChit = await SelfChit.findByPk(id);
+    if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
+    await selfChit.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Self chit deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteSelfChitService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getCompanyByIdService = async (res, id) => {
   try {
     const company = await Company.findByPk(id);
@@ -2347,5 +2438,9 @@ module.exports = {
   getAllAccountTreeService,
   getAccountCreationDetailByIdService,
   deleteAccountCreationDetailService,
-  bulkEditAccountCreationDetailsService
+  bulkEditAccountCreationDetailsService,
+  storeOrUpdateSelfChitService,
+  getAllSelfChitDetailsService,
+  getSelfChitByIdService,
+  deleteSelfChitService
 };
