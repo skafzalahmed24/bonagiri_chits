@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -1883,6 +1883,389 @@ const deleteSelfChitService = async (res, id) => {
   }
 };
 
+const storeOrUpdateConfigureBusinessAgentCommissionService = async (res, data = {}) => {
+  try {
+    const { id, ...configData } = data;
+    if (id) {
+      const config = await ConfigureBusinessAgentCommission.findByPk(id);
+      if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+
+      const existing = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          group_id: configData.group_id || config.group_id,
+          business_agent_id: configData.business_agent_id || config.business_agent_id,
+          member_id: configData.member_id || config.member_id,
+          is_deleted_status: 0,
+          id: { [Op.ne]: id }
+        }
+      });
+      if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration already exists for this group, business agent, and member');
+
+      await config.update(configData);
+      return successResponse(res, statusCodes.OK, 'Configuration updated successfully', config);
+    } else {
+      const existing = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          group_id: configData.group_id,
+          business_agent_id: configData.business_agent_id,
+          member_id: configData.member_id,
+          is_deleted_status: 0
+        }
+      });
+      if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration already exists for this group, business agent, and member');
+
+      const newConfig = await ConfigureBusinessAgentCommission.create(configData);
+      return successResponse(res, statusCodes.CREATED, 'Configuration created successfully', newConfig);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateConfigureBusinessAgentCommissionService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllConfigureBusinessAgentCommissionsService = async (res, filters = {}, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = { is_deleted_status: 0 };
+    if (filters.group_id) where.group_id = filters.group_id;
+    if (filters.business_agent_id) where.business_agent_id = filters.business_agent_id;
+
+    const records = await ConfigureBusinessAgentCommission.findAndCountAll({
+      where,
+      limit,
+      offset,
+      include: [
+        { model: Company, as: 'company', attributes: ['company_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
+        { model: Member, as: 'business_agent', attributes: ['name', 'member_id'] },
+        { model: Member, as: 'member', attributes: ['name', 'member_id'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const configIds = records.rows.map(r => r.id);
+    let totalMap = {};
+    if (configIds.length > 0) {
+      const totals = await HistoryBusinessAgent.findAll({
+        where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+        attributes: ['configure_business_agent_id', [sequelize.fn('sum', sequelize.col('paid_amount')), 'total_paid']],
+        group: ['configure_business_agent_id'],
+        raw: true
+      });
+      totals.forEach(t => { totalMap[t.configure_business_agent_id] = parseFloat(t.total_paid) || 0; });
+    }
+
+    const configurations = records.rows.map(r => {
+      const total_paid = totalMap[r.id] || 0;
+      const commission_amount = parseFloat(r.commission_amount) || 0;
+      return {
+        ...r.toJSON(),
+        total_paid,
+        total_pending: commission_amount - total_paid
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Configurations retrieved successfully', { count: records.count, configurations });
+  } catch (error) {
+    console.error('Error in getAllConfigureBusinessAgentCommissionsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getConfigureBusinessAgentCommissionByIdService = async (res, id) => {
+  try {
+    const config = await ConfigureBusinessAgentCommission.findOne({
+      where: { id, is_deleted_status: 0 },
+      include: [
+        { model: Company, as: 'company', attributes: ['company_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
+        { model: Member, as: 'business_agent', attributes: ['name', 'member_id'] },
+        { model: Member, as: 'member', attributes: ['name', 'member_id'] }
+      ]
+    });
+    if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+
+    const total_paid_str = await HistoryBusinessAgent.sum('paid_amount', {
+      where: { configure_business_agent_id: id, is_deleted_status: 0 }
+    });
+    const total_paid = parseFloat(total_paid_str) || 0;
+    const commission_amount = parseFloat(config.commission_amount) || 0;
+
+    const data = {
+      ...config.toJSON(),
+      total_paid,
+      total_pending: commission_amount - total_paid
+    };
+
+    return successResponse(res, statusCodes.OK, 'Configuration retrieved successfully', data);
+  } catch (error) {
+    console.error('Error in getConfigureBusinessAgentCommissionByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteConfigureBusinessAgentCommissionService = async (res, id) => {
+  try {
+    const config = await ConfigureBusinessAgentCommission.findByPk(id);
+    if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+    await config.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Configuration deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteConfigureBusinessAgentCommissionService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
+  try {
+    const { id, ...historyData } = data;
+    
+    const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findByPk(id))?.configure_business_agent_id : null);
+    if (!configId) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration ID is required');
+
+    const config = await ConfigureBusinessAgentCommission.findByPk(configId);
+    if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+
+    const totalCommission = parseFloat(config.commission_amount) || 0;
+    
+    let previousTotal = await HistoryBusinessAgent.sum('paid_amount', {
+      where: { configure_business_agent_id: configId, is_deleted_status: 0 }
+    }) || 0;
+    previousTotal = parseFloat(previousTotal);
+
+    if (id) {
+      const history = await HistoryBusinessAgent.findByPk(id);
+      if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
+      
+      const oldAmount = parseFloat(history.paid_amount) || 0;
+      const newAmount = parseFloat(historyData.paid_amount) || oldAmount;
+      const newTotal = previousTotal - oldAmount + newAmount;
+      
+      if (newTotal > totalCommission) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
+      }
+
+      await history.update(historyData);
+      
+      const newStatus = newTotal >= totalCommission ? 3 : (newTotal > 0 ? 2 : 1);
+      await config.update({ status: newStatus });
+
+      return successResponse(res, statusCodes.OK, 'History record updated successfully', history);
+    } else {
+      const newAmount = parseFloat(historyData.paid_amount) || 0;
+      const newTotal = previousTotal + newAmount;
+
+      if (newTotal > totalCommission) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
+      }
+
+      const newHistory = await HistoryBusinessAgent.create(historyData);
+
+      const newStatus = newTotal >= totalCommission ? 3 : (newTotal > 0 ? 2 : 1);
+      await config.update({ status: newStatus });
+
+      return successResponse(res, statusCodes.CREATED, 'History record created successfully', newHistory);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateHistoryBusinessAgentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = { is_deleted_status: 0 };
+    if (configure_business_agent_id) where.configure_business_agent_id = configure_business_agent_id;
+    
+    const records = await HistoryBusinessAgent.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'History records retrieved successfully', records);
+  } catch (error) {
+    console.error('Error in getAllHistoryBusinessAgentsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getHistoryBusinessAgentByIdService = async (res, id) => {
+  try {
+    const history = await HistoryBusinessAgent.findOne({
+      where: { id, is_deleted_status: 0 }
+    });
+    if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
+    return successResponse(res, statusCodes.OK, 'History record retrieved successfully', history);
+  } catch (error) {
+    console.error('Error in getHistoryBusinessAgentByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteHistoryBusinessAgentService = async (res, id) => {
+  try {
+    const history = await HistoryBusinessAgent.findByPk(id);
+    if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
+    await history.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'History record deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteHistoryBusinessAgentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const totalCommissionStr = await ConfigureBusinessAgentCommission.sum('commission_amount', {
+      where: { business_agent_id, is_deleted_status: 0 }
+    });
+    const total_commission_amount = parseFloat(totalCommissionStr) || 0;
+
+    const paidRecords = await HistoryBusinessAgent.findAll({
+      where: { is_deleted_status: 0 },
+      include: [{
+        model: ConfigureBusinessAgentCommission,
+        as: 'configure_business_agent',
+        where: { business_agent_id, is_deleted_status: 0 },
+        attributes: []
+      }],
+      attributes: [
+        [sequelize.fn('sum', sequelize.col('paid_amount')), 'total_paid']
+      ],
+      raw: true
+    });
+    const paid_commission = parseFloat(paidRecords[0]?.total_paid) || 0;
+
+    const pending_commission_amount = total_commission_amount - paid_commission;
+
+    const member_joined = await ConfigureBusinessAgentCommission.count({
+      where: { business_agent_id, is_deleted_status: 0 },
+      distinct: true,
+      col: 'member_id'
+    });
+
+    const historyRecords = await HistoryBusinessAgent.findAndCountAll({
+      where: { is_deleted_status: 0 },
+      include: [{
+        model: ConfigureBusinessAgentCommission,
+        as: 'configure_business_agent',
+        where: { business_agent_id, is_deleted_status: 0 },
+        include: [{
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['group_name', 'chit_amount']
+        }]
+      }],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+
+    const history = historyRecords.rows.map(h => {
+      const config = h.configure_business_agent || {};
+      const group = config.group || {};
+      return {
+        id: h.id,
+        group_id: config.group_id,
+        group_name: group.group_name,
+        chit_amount: group.chit_amount,
+        commission_amount: config.commission_amount,
+        received_date: h.createdAt,
+        status: config.status,
+        paid_amount: h.paid_amount
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Summary retrieved successfully', {
+      total_commission_amount,
+      paid_commission,
+      pending_commission_amount,
+      member_joined,
+      history_count: historyRecords.count,
+      history
+    });
+
+  } catch (error) {
+    console.error('Error in getBusinessAgentCommissionSummaryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getHistoryByGroupIdService = async (res, group_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const records = await ConfigureBusinessAgentCommission.findAndCountAll({
+      where: { group_id, is_deleted_status: 0 },
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
+        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+
+    const configIds = records.rows.map(r => r.id);
+    
+    let historyRecords = [];
+    if (configIds.length > 0) {
+      historyRecords = await HistoryBusinessAgent.findAll({
+        where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+        order: [['createdAt', 'DESC']],
+        raw: true
+      });
+    }
+
+    const configurations = records.rows.map(config => {
+      const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
+      
+      let total_paid = 0;
+      histories.forEach(h => {
+        total_paid += parseFloat(h.paid_amount) || 0;
+      });
+
+      const commission_amount = parseFloat(config.commission_amount) || 0;
+      const group = config.group || {};
+      const member = config.member || {};
+      
+      const latestHistoryWithDoc = histories.find(h => h.upload_document);
+      const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
+
+      return {
+        id: config.id,
+        group_name: group.group_name || null,
+        chit_amount: group.chit_amount || null,
+        group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
+        commission_amount: commission_amount,
+        total_paid: total_paid,
+        total_pending: commission_amount - total_paid,
+        upload_document: upload_document,
+        member_id: config.member_id,
+        member_name: member.name || null,
+        status: config.status
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Records retrieved successfully', {
+      count: records.count,
+      records: configurations
+    });
+
+  } catch (error) {
+    console.error('Error in getHistoryByGroupIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getCompanyByIdService = async (res, id) => {
   try {
     const company = await Company.findByPk(id);
@@ -2442,5 +2825,15 @@ module.exports = {
   storeOrUpdateSelfChitService,
   getAllSelfChitDetailsService,
   getSelfChitByIdService,
-  deleteSelfChitService
+  deleteSelfChitService,
+  storeOrUpdateConfigureBusinessAgentCommissionService,
+  getAllConfigureBusinessAgentCommissionsService,
+  getConfigureBusinessAgentCommissionByIdService,
+  deleteConfigureBusinessAgentCommissionService,
+  storeOrUpdateHistoryBusinessAgentService,
+  getAllHistoryBusinessAgentsService,
+  getHistoryBusinessAgentByIdService,
+  deleteHistoryBusinessAgentService,
+  getBusinessAgentCommissionSummaryService,
+  getHistoryByGroupIdService
 };

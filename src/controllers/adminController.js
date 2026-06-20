@@ -983,6 +983,109 @@ const deleteSelfChit = async (req, res) => {
   }
 };
 
+const storeOrUpdateConfigureBusinessAgentCommission = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    if (req.user && req.user.role === 'company' && req.user.id) {
+      data.company_id = req.user.id;
+    }
+    return await adminService.storeOrUpdateConfigureBusinessAgentCommissionService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateConfigureBusinessAgentCommission:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllConfigureBusinessAgentCommissions = async (req, res) => {
+  try {
+    const { min, max, group_id, business_agent_id } = req.body || {};
+    return await adminService.getAllConfigureBusinessAgentCommissionsService(res, { group_id, business_agent_id }, min, max);
+  } catch (error) {
+    console.error('Error in getAllConfigureBusinessAgentCommissions:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getConfigureBusinessAgentCommissionById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getConfigureBusinessAgentCommissionByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getConfigureBusinessAgentCommissionById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteConfigureBusinessAgentCommission = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteConfigureBusinessAgentCommissionService(res, id);
+  } catch (error) {
+    console.error('Error in deleteConfigureBusinessAgentCommission:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    return await adminService.storeOrUpdateHistoryBusinessAgentService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateHistoryBusinessAgent:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllHistoryBusinessAgents = async (req, res) => {
+  try {
+    const { configure_business_agent_id, min, max } = req.body || {};
+    return await adminService.getAllHistoryBusinessAgentsService(res, configure_business_agent_id, min, max);
+  } catch (error) {
+    console.error('Error in getAllHistoryBusinessAgents:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getHistoryBusinessAgentById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.getHistoryBusinessAgentByIdService(res, id);
+  } catch (error) {
+    console.error('Error in getHistoryBusinessAgentById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteHistoryBusinessAgent = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    return await adminService.deleteHistoryBusinessAgentService(res, id);
+  } catch (error) {
+    console.error('Error in deleteHistoryBusinessAgent:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentCommissionSummary = async (req, res) => {
+  try {
+    const { business_agent_id, min, max } = req.body || {};
+    return await adminService.getBusinessAgentCommissionSummaryService(res, business_agent_id, min, max);
+  } catch (error) {
+    console.error('Error in getBusinessAgentCommissionSummary:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getHistoryByGroupId = async (req, res) => {
+  try {
+    const { group_id, min, max } = req.body || {};
+    return await adminService.getHistoryByGroupIdService(res, group_id, min, max);
+  } catch (error) {
+    console.error('Error in getHistoryByGroupId:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1075,5 +1178,15 @@ module.exports = {
   storeOrUpdateSelfChit,
   getAllSelfChitDetails,
   getSelfChitById,
-  deleteSelfChit
+  deleteSelfChit,
+  storeOrUpdateConfigureBusinessAgentCommission,
+  getAllConfigureBusinessAgentCommissions,
+  getConfigureBusinessAgentCommissionById,
+  deleteConfigureBusinessAgentCommission,
+  storeOrUpdateHistoryBusinessAgent,
+  getAllHistoryBusinessAgents,
+  getHistoryBusinessAgentById,
+  deleteHistoryBusinessAgent,
+  getBusinessAgentCommissionSummary,
+  getHistoryByGroupId
 };

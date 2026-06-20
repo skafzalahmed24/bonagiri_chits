@@ -160,4 +160,20 @@ router.post('/fixed-scheme/get-all', authMiddleware.authenticateToken, fixedSche
 router.post('/fixed-scheme/get-by-id', authMiddleware.authenticateToken, fixedSchemeController.getFixedSchemeById);
 router.post('/fixed-scheme/delete', authMiddleware.authenticateToken, fixedSchemeController.deleteFixedScheme);
 
+// configure-business-agent-commission routes
+router.post('/configure-business-agent-commission/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.configureBusinessAgentCommissionValidator), adminController.storeOrUpdateConfigureBusinessAgentCommission);
+router.post('/configure-business-agent-commission/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllConfigureBusinessAgentCommissionSchema), adminController.getAllConfigureBusinessAgentCommissions);
+router.post('/configure-business-agent-commission/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getConfigureBusinessAgentCommissionById);
+router.post('/configure-business-agent-commission/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteConfigureBusinessAgentCommissionSchema), adminController.deleteConfigureBusinessAgentCommission);
+
+// history-business-agent routes
+router.post('/history-business-agent/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.historyBusinessAgentValidator), adminController.storeOrUpdateHistoryBusinessAgent);
+router.post('/history-business-agent/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllHistoryBusinessAgentSchema), adminController.getAllHistoryBusinessAgents);
+router.post('/history-business-agent/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getHistoryBusinessAgentById);
+router.post('/history-business-agent/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteHistoryBusinessAgentSchema), adminController.deleteHistoryBusinessAgent);
+
+// business-agent summary route
+router.post('/configure-business-agent-commission/summary-by-agent', authMiddleware.authenticateToken, validate(adminValidation.getBusinessAgentCommissionSummarySchema), adminController.getBusinessAgentCommissionSummary);
+router.post('/history-business-agent/history-by-group-id', authMiddleware.authenticateToken, validate(adminValidation.getHistoryByGroupIdSchema), adminController.getHistoryByGroupId);
+
 module.exports = router;

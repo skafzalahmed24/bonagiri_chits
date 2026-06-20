@@ -833,6 +833,48 @@ module.exports = {
   }),
   deleteSelfChitSchema: Joi.object({
     id: Joi.string().uuid().required()
+  }),
+  configureBusinessAgentCommissionValidator: Joi.object({
+    id: Joi.string().uuid().optional(),
+    group_id: Joi.string().uuid().required(),
+    business_agent_id: Joi.number().integer().required(),
+    member_id: Joi.number().integer().required(),
+    commission_amount: Joi.number().precision(2).required(),
+    status: Joi.number().integer().valid(1, 2, 3).optional()
+  }),
+  getAllConfigureBusinessAgentCommissionSchema: Joi.object({
+    group_id: Joi.string().uuid().optional(),
+    business_agent_id: Joi.number().integer().optional(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
+  }),
+  deleteConfigureBusinessAgentCommissionSchema: Joi.object({
+    id: Joi.string().uuid().required()
+  }),
+  historyBusinessAgentValidator: Joi.object({
+    id: Joi.string().uuid().optional(),
+    configure_business_agent_id: Joi.string().uuid().required(),
+    description: Joi.string().allow('', null).optional(),
+    upload_document: Joi.string().allow('', null).optional(),
+    paid_amount: Joi.number().precision(2).required()
+  }),
+  getAllHistoryBusinessAgentSchema: Joi.object({
+    configure_business_agent_id: Joi.string().uuid().required(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
+  }),
+  deleteHistoryBusinessAgentSchema: Joi.object({
+    id: Joi.string().uuid().required()
+  }),
+  getBusinessAgentCommissionSummarySchema: Joi.object({
+    business_agent_id: Joi.number().integer().required(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
+  }),
+  getHistoryByGroupIdSchema: Joi.object({
+    group_id: Joi.string().uuid().required(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
   })
 };
 
