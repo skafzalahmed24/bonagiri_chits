@@ -97,11 +97,11 @@ const getHomeRecordService = async (res, subscriber_id) => {
       group_id: enrollment.group_id,
       subscriber_id: enrollment.subscriber_id,
       group_name: group ? group.group_name : null,
-      chit_amount: group ? group.chit_amount : null,
+      chit_amount: group ? (parseFloat(group.chit_amount) || 0) : null,
       upcoming_instalment_id: upcomingInstallment ? upcomingInstallment.id : null,
       enrollment_id: enrollment.id,
       next_due_date: upcomingInstallment ? upcomingInstallment.due_date : null,
-      payable_amount: upcomingInstallment ? (upcomingInstallment.payable_amount || 0) : 0,
+      payable_amount: upcomingInstallment ? (parseFloat(upcomingInstallment.payable_amount) || 0) : 0,
       ...(upcomingInstallment && {
         createdAt: upcomingInstallment.createdAt,
         updatedAt: upcomingInstallment.updatedAt
@@ -161,7 +161,7 @@ const getAllHomeRecordsService = async (res, subscriber_id, type = 0, min = 0, m
         group_id: enrollment.group_id,
         subscriber_id: enrollment.subscriber_id,
         group_name: group ? group.group_name : null,
-        chit_amount: group ? group.chit_amount : null,
+        chit_amount: group ? (parseFloat(group.chit_amount) || 0) : null,
         no_of_installments: group ? group.no_of_installments : null,
         completed_installments_count: totalAuctionsCount,
         positions_occupied_count: occupiedCount,
@@ -169,7 +169,7 @@ const getAllHomeRecordsService = async (res, subscriber_id, type = 0, min = 0, m
         upcoming_instalment_id: upcomingInstallment ? upcomingInstallment.id : null,
         enrollment_id: enrollment.id,
         next_due_date: upcomingInstallment ? upcomingInstallment.due_date : null,
-        payable_amount: upcomingInstallment ? (upcomingInstallment.payable_amount || 0) : 0,
+        payable_amount: upcomingInstallment ? (parseFloat(upcomingInstallment.payable_amount) || 0) : 0,
         ...(upcomingInstallment && {
           createdAt: upcomingInstallment.createdAt,
           updatedAt: upcomingInstallment.updatedAt
@@ -457,7 +457,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
         : 0.00;
 
       const penaltyText = isOverdue
-        ? `Penalty ${displayPercentage}% per day x ${overDueDaysCount} days`
+        ? `${displayPercentage}% per day x ${overDueDaysCount} days`
         : null;
 
       const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
@@ -590,7 +590,8 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
           members_count: membersCount,
           badge_label: badgeLabel,
           timing_label: timingLabel,
-          auction_date: group.auction_date
+          auction_date: group.auction_date,
+          is_today: group.auction_date === todayStr
         });
       }
     }

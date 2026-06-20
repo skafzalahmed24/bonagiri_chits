@@ -92,12 +92,12 @@ router.post('/enrollment/store-or-update', authMiddleware.authenticateToken, val
 router.post('/enrollment/get-all', authMiddleware.authenticateToken, validate(adminValidation.getEnrollmentSchema), adminController.getAllEnrollmentDetails);
 router.post('/enrollment/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteEnrollmentSchema), adminController.deleteEnrollment);
 router.post('/enrollment/get-position-numbers', authMiddleware.authenticateToken, validate(adminValidation.getPositionNumbersSchema), adminController.getPositionNumbers);
- 
+
 // upcoming-chit routes
 router.post('/upcoming-chit/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.upcomingChitValidator), adminController.storeOrUpdateUpcomingChit);
 router.post('/upcoming-chit/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllUpcomingChitSchema), adminController.getAllUpcomingChits);
 router.post('/upcoming-chit/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteUpcomingChitSchema), adminController.deleteUpcomingChit);
- 
+
 router.post('/favorite/update', authMiddleware.authenticateToken, validate(adminValidation.updateFavoritesSchema), adminController.updateFavorites);
 
 //fetch members by group id 

@@ -1344,7 +1344,7 @@ const getAgentEnrollmentsService = async (res, company_id, agent_type_id, agent_
           enrollment_id: e.id,
           group_id: e.group_id,
           group_name: e.group ? e.group.group_name : null,
-          chit_amount: e.group ? e.group.chit_amount : null,
+          chit_amount: e.group ? (parseFloat(e.group.chit_amount) || 0) : null,
           subscriber_id: e.subscriber_id,
           subscriber_name: e.subscriber ? e.subscriber.name : null,
           subscriber_member_id: e.subscriber ? e.subscriber.member_id : null,
