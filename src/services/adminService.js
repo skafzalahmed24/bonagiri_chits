@@ -31,7 +31,7 @@ const getCompanyIdFromUser = async (userPayload, reqBody = {}) => {
 
 const loginAdminService = async (res, email, password) => {
   if (email === 'superadmin@gmail.com' && password === 'superadmin@123') {
-    const user = { email: 'superadmin@gmail.com', role: 'superadmin' };
+    const user = { email: 'superadmin@gmail.com', role: 'superadmin', company_id: null };
     const tokens = generateTokens(user);
     return successResponse(res, statusCodes.OK, 'Login success', { user, tokens });
   }
@@ -73,6 +73,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       user: {
         id: user.id,
         user_id: payload.user_id,
+        company_id: type === 1 ? user.id : user.company_id,
         name: user.company_name || user.name,
         type: user.type,
         is_favorites: user.is_favorites || []

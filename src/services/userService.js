@@ -753,28 +753,87 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
       return `${day}${suffix} ${month} ${year}`;
     };
 
+    const paidInstallments = await ChitsInstallment.findAll({
+      where: {
+        enrollment_id: { [Op.in]: enrollmentIds },
+        id: {
+          [Op.in]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+        }
+      }
+    });
+    const totalPaidAmount = paidInstallments.reduce((sum, inst) => sum + (parseFloat(inst.payable_amount) || 0), 0);
+
     let nextPaymentDue = null;
     if (upcomingInstallment) {
+      const dueAmount = parseFloat(upcomingInstallment.payable_amount) || 0.00;
       const grossAmount = parseFloat(group.installment_amount) || 0.00;
-      const penaltyAmount = parseFloat(upcomingInstallment.penalty_amount) || 0.00;
-      const payableAmount = parseFloat(upcomingInstallment.payable_amount) || 0.00;
-      const finalDueAmount = payableAmount + penaltyAmount;
+
+      // To do penalty logic, we need to know if the user is a winner in this group
+      const wonAuctions = await Auction.findAll({
+        where: {
+          group_id,
+          bidder_id: subscriber_id
+        }
+      });
+      const isWinner = wonAuctions.length > 0;
+
+      const penaltyRate = isWinner
+        ? (parseFloat(group.penality_for_ps) || 0.00)
+        : (parseFloat(group.penality_for_nps) || 0.00);
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const dueDate = new Date(upcomingInstallment.due_date);
       dueDate.setHours(0, 0, 0, 0);
-      const diffTime = dueDate.getTime() - today.getTime();
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      const days_left = diffDays >= 0 ? diffDays : 0;
+
+      let overDueDaysCount = 0;
+      if (dueDate < today) {
+        const diffTime = today.getTime() - dueDate.getTime();
+        overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      }
+      const isOverdue = overDueDaysCount > 0;
+
+      let penaltyAmountPerDay = 0.00;
+      let displayPercentage = 2.0;
+
+      if (penaltyRate > 0) {
+        if (penaltyRate <= 20) {
+          displayPercentage = penaltyRate;
+          penaltyAmountPerDay = (penaltyRate / 100) * dueAmount;
+        } else {
+          penaltyAmountPerDay = penaltyRate;
+          displayPercentage = dueAmount > 0 ? parseFloat(((penaltyAmountPerDay / dueAmount) * 100).toFixed(1)) : 2.0;
+        }
+      } else {
+        displayPercentage = 2.0;
+        penaltyAmountPerDay = 0.02 * dueAmount;
+      }
+
+      const penaltyAmount = isOverdue
+        ? parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2))
+        : 0.00;
+
+      const penaltyText = isOverdue
+        ? `${displayPercentage}% per day x ${overDueDaysCount} days`
+        : null;
+
+      const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
+      const days_left = !isOverdue ? Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)) : 0;
 
       nextPaymentDue = {
         installment_no: upcomingInstallment.installment_no,
         due_date: upcomingInstallment.due_date,
         due_date_formatted: formatDateToOrdinal(upcomingInstallment.due_date),
-        due_amount: finalDueAmount,
+        due_amount: dueAmount,
+        gross_installment_amount: grossAmount,
+        penalty_amount: penaltyAmount,
+        over_due_days_count: overDueDaysCount,
+        penalty_text: penaltyText,
+        final_payable_amount: finalPayableAmount,
+        is_overdue: isOverdue,
         days_left: days_left,
-        days_left_text: `${days_left} days left`
+        days_left_text: `${days_left} days left`,
+        paid_amount: 0.00 // Adjust if partial payments logic is added
       };
     }
 
@@ -936,11 +995,13 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         total_amount: parseFloat(group.chit_amount) || 0.00,
         running_status_label: group.chits_group_status === 1 ? 'Active chit' : (group.chits_group_status === 2 ? 'Completed' : 'Upcoming'),
         ticket_member_number: positionNumbersFormatted,
-        agent_name: agentName,
+        collection_agent_name: 'Mr. Collection Agent',
+        business_agent_name: agentName,
         total_members: `${totalMembersCount} Members`
       },
       my_chit_overview: {
         monthly_bid_amount: parseFloat(group.installment_amount) || 0.00,
+        total_paid_amount: parseFloat(totalPaidAmount.toFixed(2)),
         next_payment_due: nextPaymentDue
       },
       monthly_activity: monthlyActivity
