@@ -66,6 +66,7 @@ router.post('/area/delete', authMiddleware.authenticateToken, validate(adminVali
 router.post('/chits-group/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.chitsGroupValidator), adminController.storeOrUpdateChitsGroup);
 router.post('/chits-group/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllChitsGroupSchema), adminController.getAllChitsGroupDetails);
 router.post('/chits-group/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteChitsGroupSchema), adminController.deleteChitsGroup);
+router.post('/chits-group/update-status', authMiddleware.authenticateToken, validate(adminValidation.updateChitsGroupStatusSchema), adminController.updateChitsGroupStatus);
 
 // import locations 
 router.post('/import-locations', authMiddleware.authenticateToken, adminController.importLocations);

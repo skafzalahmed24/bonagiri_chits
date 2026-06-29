@@ -619,6 +619,22 @@ const deleteChitsGroupService = async (res, id) => {
   }
 };
 
+const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
+  try {
+    const chitsGroup = await ChitsGroup.findByPk(id);
+    if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+    
+    const updateData = {};
+    if (chits_group_status !== undefined && chits_group_status !== null) updateData.chits_group_status = chits_group_status;
+    
+    await chitsGroup.update(updateData);
+    return successResponse(res, statusCodes.OK, 'Chits group status updated successfully', chitsGroup);
+  } catch (error) {
+    console.error('Error in updateChitsGroupStatusService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const importLocationsService = async (res) => {
   try {
     const countryCsvPath = path.join(__dirname, '../utils/public/countrycodes.csv');
@@ -766,6 +782,31 @@ const fetchStaticDropdownService = async (res, type_id, search) => {
   }
 };
 
+const checkAndUpdateChitFullStatus = async (group_id) => {
+  try {
+    const chitsGroup = await ChitsGroup.findByPk(group_id);
+    if (!chitsGroup) return;
+
+    const totalPositions = chitsGroup.no_of_installments || 20;
+
+    const enrollments = await Enrollment.findAll({ where: { group_id, delete_status: 0 }, attributes: ['group_position_number'] });
+    const takenFromEnrollments = enrollments.map(e => parseInt(e.group_position_number)).filter(n => !isNaN(n));
+    
+    const selfChits = await SelfChit.findAll({ where: { group_id, is_deleted_status: 0 }, attributes: ['slot_id'] });
+    const takenFromSelfChits = selfChits.map(s => parseInt(s.slot_id)).filter(n => !isNaN(n));
+    
+    const takenPositions = [...new Set([...takenFromEnrollments, ...takenFromSelfChits])];
+    
+    let is_chit_full_status = 0;
+    if (takenPositions.length >= totalPositions) {
+      is_chit_full_status = 1;
+    }
+    await chitsGroup.update({ is_chit_full_status });
+  } catch (error) {
+    console.error('Error in checkAndUpdateChitFullStatus:', error);
+  }
+};
+
 const storeOrUpdateEnrollmentService = async (res, data = {}) => {
   try {
     const { id, ...enrollmentData } = data;
@@ -773,9 +814,11 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
       const enrollment = await Enrollment.findByPk(id);
       if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
       await enrollment.update(enrollmentData);
+      await checkAndUpdateChitFullStatus(enrollment.group_id);
       return successResponse(res, statusCodes.OK, 'Enrollment updated successfully', enrollment);
     } else {
       const newEnrollment = await Enrollment.create(enrollmentData);
+      await checkAndUpdateChitFullStatus(newEnrollment.group_id);
       return successResponse(res, statusCodes.CREATED, 'Enrollment stored successfully', newEnrollment);
     }
   } catch (error) {
@@ -823,6 +866,7 @@ const deleteEnrollmentService = async (res, id) => {
     const enrollment = await Enrollment.findByPk(id);
     if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
     await enrollment.update({ delete_status: 1 });
+    await checkAndUpdateChitFullStatus(enrollment.group_id);
     return successResponse(res, statusCodes.OK, 'Enrollment deleted successfully');
   } catch (error) {
     console.error('Error in deleteEnrollmentService:', error);
@@ -1819,9 +1863,11 @@ const storeOrUpdateSelfChitService = async (res, data = {}) => {
       const selfChit = await SelfChit.findByPk(id);
       if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
       await selfChit.update(selfChitData);
+      await checkAndUpdateChitFullStatus(selfChit.group_id);
       return successResponse(res, statusCodes.OK, 'Self chit updated successfully', selfChit);
     } else {
       const newSelfChit = await SelfChit.create(selfChitData);
+      await checkAndUpdateChitFullStatus(newSelfChit.group_id);
       return successResponse(res, statusCodes.CREATED, 'Self chit created successfully', newSelfChit);
     }
   } catch (error) {
@@ -1877,6 +1923,7 @@ const deleteSelfChitService = async (res, id) => {
     const selfChit = await SelfChit.findByPk(id);
     if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
     await selfChit.update({ is_deleted_status: 1 });
+    await checkAndUpdateChitFullStatus(selfChit.group_id);
     return successResponse(res, statusCodes.OK, 'Self chit deleted successfully');
   } catch (error) {
     console.error('Error in deleteSelfChitService:', error);
@@ -2768,6 +2815,7 @@ module.exports = {
   storeOrUpdateChitsGroupService,
   getAllChitsGroupDetailsService,
   deleteChitsGroupService,
+  updateChitsGroupStatusService,
   importLocationsService,
   getCountriesListService,
   getStatesListService,

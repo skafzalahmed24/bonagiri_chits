@@ -875,6 +875,13 @@ module.exports = {
     group_id: Joi.string().uuid().required(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional()
+  }),
+  updateChitsGroupStatusSchema: Joi.object({
+    id: Joi.string().uuid().required().messages({
+      'any.required': 'Chits Group ID is required',
+      'string.uuid': 'Invalid Chits Group ID format'
+    }),
+    chits_group_status: Joi.number().integer().valid(0, 1, 2).optional()
   })
 };
 

@@ -23,6 +23,14 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true
     },
+    chit_category_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    scheme_configuration_id: {
+      type: DataTypes.UUID,
+      allowNull: true
+    },
     chit_series_term: {
       type: DataTypes.INTEGER,
       allowNull: false
@@ -80,6 +88,11 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER,
       defaultValue: 0,
       comment: '0 - Not started, 1 - started, 2 - completed'
+    },
+    is_chit_full_status: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+      comment: '0 - not full, 1 - full'
     },
     chit_start_date: DataTypes.DATEONLY,
     chit_end_date: DataTypes.DATEONLY,

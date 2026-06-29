@@ -246,6 +246,16 @@ const deleteChitsGroup = async (req, res) => {
   }
 };
 
+const updateChitsGroupStatus = async (req, res) => {
+  try {
+    const { id, chits_group_status } = req.body || {};
+    return await adminService.updateChitsGroupStatusService(res, id, chits_group_status);
+  } catch (error) {
+    console.error('Error in updateChitsGroupStatus:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const importLocations = async (req, res) => {
   try {
     return await adminService.importLocationsService(res);
@@ -1121,6 +1131,7 @@ module.exports = {
   storeOrUpdateChitsGroup,
   getAllChitsGroupDetails,
   deleteChitsGroup,
+  updateChitsGroupStatus,
   importLocations,
   getCountriesList,
   getStatesList,
