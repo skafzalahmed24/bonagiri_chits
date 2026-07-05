@@ -1,4 +1,5 @@
 const userService = require('../services/userService');
+const adminService = require('../services/adminService');
 const { errorResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 
@@ -82,6 +83,16 @@ const getChitDetails = async (req, res) => {
   }
 };
 
+const getBusinessListUnderMembers = async (req, res) => {
+  try {
+    const { business_agent_id, min, max } = req.body || {};
+    return await adminService.getBusinessListUnderMembersService(res, business_agent_id, min, max);
+  } catch (error) {
+    console.error('Error in getBusinessListUnderMembers:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecord,
   getAllHomeRecords,
@@ -90,5 +101,6 @@ module.exports = {
   getPendingPayments,
   getBids,
   getBidDetails,
-  getChitDetails
+  getChitDetails,
+  getBusinessListUnderMembers
 };

@@ -21,4 +21,7 @@ router.post('/bids', authMiddleware.authenticateToken, validate(userValidation.g
 router.post('/bid-details', authMiddleware.authenticateToken, validate(userValidation.getBidDetailsSchema), userController.getBidDetails);
 router.post('/chit-details', authMiddleware.authenticateToken, validate(userValidation.getChitDetailsSchema), userController.getChitDetails);
 
+// business-agent routes (authenticated)
+router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(userValidation.getBusinessListUnderMembersSchema), userController.getBusinessListUnderMembers);
+
 module.exports = router;

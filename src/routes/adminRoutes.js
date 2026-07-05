@@ -120,6 +120,7 @@ router.post('/agent/get-enrollments', authMiddleware.authenticateToken, validate
 router.post('/agent-target-entry/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.storeOrUpdateAgentTargetEntrySchema), adminController.storeOrUpdateAgentTargetEntry);
 router.post('/member/get-filtered-by-group-agent', authMiddleware.authenticateToken, validate(adminValidation.getFilteredMembersByGroupAndAgentSchema), adminController.getFilteredMembersByGroupAndAgent);
 router.post('/agent/transfer-agent', authMiddleware.authenticateToken, validate(adminValidation.transferAgentUpdateSchema), adminController.transferAgentUpdate);
+router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(adminValidation.getBusinessListUnderMembersSchema), adminController.getBusinessListUnderMembers);
 
 //get by id routes 
 router.post('/company/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCompanyById);

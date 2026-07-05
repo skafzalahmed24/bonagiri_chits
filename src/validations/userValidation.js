@@ -56,6 +56,12 @@ const getChitDetailsSchema = Joi.object({
   })
 });
 
+const getBusinessListUnderMembersSchema = Joi.object({
+  business_agent_id: Joi.number().integer().required(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
 module.exports = {  
   getHomeRecordSchema,
   getAllHomeRecordsSchema,
@@ -64,5 +70,6 @@ module.exports = {
   getPendingPaymentsSchema,
   getBidsSchema,
   getBidDetailsSchema,
-  getChitDetailsSchema
+  getChitDetailsSchema,
+  getBusinessListUnderMembersSchema
 };

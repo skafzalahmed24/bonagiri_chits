@@ -882,6 +882,11 @@ module.exports = {
       'string.uuid': 'Invalid Chits Group ID format'
     }),
     chits_group_status: Joi.number().integer().valid(0, 1, 2).optional()
+  }),
+  getBusinessListUnderMembersSchema: Joi.object({
+    business_agent_id: Joi.number().integer().required(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
   })
 };
 

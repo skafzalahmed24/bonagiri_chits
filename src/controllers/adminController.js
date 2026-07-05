@@ -586,6 +586,16 @@ const storeOrUpdateAgentTargetEntry = async (req, res) => {
   }
 };
 
+const getBusinessListUnderMembers = async (req, res) => {
+  try {
+    const { business_agent_id, min, max } = req.body || {};
+    return await adminService.getBusinessListUnderMembersService(res, business_agent_id, min, max);
+  } catch (error) {
+    console.error('Error in getBusinessListUnderMembers:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getAllGroupUnderStaticLists = async (req, res) => {
   try {
     const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
@@ -1163,6 +1173,7 @@ module.exports = {
   storeOrUpdateAgentTargetEntry,
   getFilteredMembersByGroupAndAgent,
   transferAgentUpdate,
+  getBusinessListUnderMembers,
   getAllGroupUnderStaticLists,
   getCompanyById,
   getMemberById,

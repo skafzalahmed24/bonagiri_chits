@@ -69,6 +69,33 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     };
     const tokens = generateTokens(payload);
 
+    let introduced_as_details = [];
+    if (type === 2 && user.introduced_as) {
+      let intIds = [];
+      if (Array.isArray(user.introduced_as)) {
+        intIds = user.introduced_as.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+      } else if (typeof user.introduced_as === 'string') {
+        try {
+          intIds = JSON.parse(user.introduced_as).map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+        } catch (e) {
+          intIds = [parseInt(user.introduced_as, 10)].filter(id => !isNaN(id));
+        }
+      } else {
+        intIds = [parseInt(user.introduced_as, 10)].filter(id => !isNaN(id));
+      }
+
+      if (intIds.length > 0) {
+        const introducers = await StaticDropdownsList.findAll({
+          where: { id: { [Op.in]: intIds } },
+          attributes: ['id', 'dropdown_name']
+        });
+        introduced_as_details = introducers.map(ind => ({
+          id: ind.id,
+          name: ind.dropdown_name
+        }));
+      }
+    }
+
     return successResponse(res, statusCodes.OK, 'Login success', {
       user: {
         id: user.id,
@@ -76,7 +103,8 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
         company_id: type === 1 ? user.id : user.company_id,
         name: user.company_name || user.name,
         type: user.type,
-        is_favorites: user.is_favorites || []
+        is_favorites: user.is_favorites || [],
+        introduced_as: introduced_as_details
       },
       tokens
     });
@@ -623,10 +651,10 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
   try {
     const chitsGroup = await ChitsGroup.findByPk(id);
     if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
-    
+
     const updateData = {};
     if (chits_group_status !== undefined && chits_group_status !== null) updateData.chits_group_status = chits_group_status;
-    
+
     await chitsGroup.update(updateData);
     return successResponse(res, statusCodes.OK, 'Chits group status updated successfully', chitsGroup);
   } catch (error) {
@@ -791,12 +819,12 @@ const checkAndUpdateChitFullStatus = async (group_id) => {
 
     const enrollments = await Enrollment.findAll({ where: { group_id, delete_status: 0 }, attributes: ['group_position_number'] });
     const takenFromEnrollments = enrollments.map(e => parseInt(e.group_position_number)).filter(n => !isNaN(n));
-    
+
     const selfChits = await SelfChit.findAll({ where: { group_id, is_deleted_status: 0 }, attributes: ['slot_id'] });
     const takenFromSelfChits = selfChits.map(s => parseInt(s.slot_id)).filter(n => !isNaN(n));
-    
+
     const takenPositions = [...new Set([...takenFromEnrollments, ...takenFromSelfChits])];
-    
+
     let is_chit_full_status = 0;
     if (takenPositions.length >= totalPositions) {
       is_chit_full_status = 1;
@@ -877,20 +905,20 @@ const deleteEnrollmentService = async (res, id) => {
 const getPositionNumbersService = async (res, group_id) => {
   try {
     const totalPositions = 20;
-    
+
     const enrollments = await Enrollment.findAll({ where: { group_id, delete_status: 0 }, attributes: ['group_position_number'] });
     const takenFromEnrollments = enrollments.map(e => parseInt(e.group_position_number)).filter(n => !isNaN(n));
-    
+
     const selfChits = await SelfChit.findAll({ where: { group_id, is_deleted_status: 0 }, attributes: ['slot_id'] });
     const takenFromSelfChits = selfChits.map(s => parseInt(s.slot_id)).filter(n => !isNaN(n));
-    
+
     const takenPositions = [...new Set([...takenFromEnrollments, ...takenFromSelfChits])];
-    
+
     const availablePositions = [];
     for (let i = 1; i <= totalPositions; i++) {
       if (!takenPositions.includes(i)) availablePositions.push(i);
     }
-    
+
     return successResponse(res, statusCodes.OK, 'Available position numbers retrieved successfully', availablePositions);
   } catch (error) {
     console.error('Error in getPositionNumbersService:', error);
@@ -1643,6 +1671,34 @@ const storeOrUpdateGroupUnderStaticListService = async (res, comp_id, data = {})
   }
 };
 
+const getBusinessListUnderMembersService = async (res, business_agent_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const commissions = await ConfigureBusinessAgentCommission.findAndCountAll({
+      where: { business_agent_id },
+      limit,
+      offset,
+      include: [
+        {
+          model: Member,
+          as: 'member',
+          attributes: ['id', 'name', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt'],
+          include: [
+            { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
+          ]
+        }
+      ]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Members under business agent retrieved successfully', { count: commissions.count, rows: commissions.rows });
+  } catch (error) {
+    console.error('Error in getBusinessListUnderMembersService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const deleteGroupUnderStaticListService = async (res, id) => {
   try {
     const existing = await GroupUnderStaticList.findByPk(id);
@@ -2068,7 +2124,7 @@ const deleteConfigureBusinessAgentCommissionService = async (res, id) => {
 const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
   try {
     const { id, ...historyData } = data;
-    
+
     const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findByPk(id))?.configure_business_agent_id : null);
     if (!configId) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration ID is required');
 
@@ -2076,7 +2132,7 @@ const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
     if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
 
     const totalCommission = parseFloat(config.commission_amount) || 0;
-    
+
     let previousTotal = await HistoryBusinessAgent.sum('paid_amount', {
       where: { configure_business_agent_id: configId, is_deleted_status: 0 }
     }) || 0;
@@ -2085,17 +2141,17 @@ const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
     if (id) {
       const history = await HistoryBusinessAgent.findByPk(id);
       if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
-      
+
       const oldAmount = parseFloat(history.paid_amount) || 0;
       const newAmount = parseFloat(historyData.paid_amount) || oldAmount;
       const newTotal = previousTotal - oldAmount + newAmount;
-      
+
       if (newTotal > totalCommission) {
         return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
       }
 
       await history.update(historyData);
-      
+
       const newStatus = newTotal >= totalCommission ? 3 : (newTotal > 0 ? 2 : 1);
       await config.update({ status: newStatus });
 
@@ -2127,7 +2183,7 @@ const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_
     const offset = parseInt(min, 10) || 0;
     const where = { is_deleted_status: 0 };
     if (configure_business_agent_id) where.configure_business_agent_id = configure_business_agent_id;
-    
+
     const records = await HistoryBusinessAgent.findAndCountAll({
       where,
       limit,
@@ -2263,7 +2319,7 @@ const getHistoryByGroupIdService = async (res, group_id, min, max) => {
     });
 
     const configIds = records.rows.map(r => r.id);
-    
+
     let historyRecords = [];
     if (configIds.length > 0) {
       historyRecords = await HistoryBusinessAgent.findAll({
@@ -2275,7 +2331,7 @@ const getHistoryByGroupIdService = async (res, group_id, min, max) => {
 
     const configurations = records.rows.map(config => {
       const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
-      
+
       let total_paid = 0;
       histories.forEach(h => {
         total_paid += parseFloat(h.paid_amount) || 0;
@@ -2284,7 +2340,7 @@ const getHistoryByGroupIdService = async (res, group_id, min, max) => {
       const commission_amount = parseFloat(config.commission_amount) || 0;
       const group = config.group || {};
       const member = config.member || {};
-      
+
       const latestHistoryWithDoc = histories.find(h => h.upload_document);
       const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
 
@@ -2847,6 +2903,7 @@ module.exports = {
   storeOrUpdateAgentTargetEntryService,
   getFilteredMembersByGroupAndAgentService,
   transferAgentUpdateService,
+  getBusinessListUnderMembersService,
   getAllGroupUnderStaticListsService,
   getCompanyByIdService,
   getMemberByIdService,
