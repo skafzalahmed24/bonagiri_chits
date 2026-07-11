@@ -93,6 +93,79 @@ const getBusinessListUnderMembers = async (req, res) => {
   }
 };
 
+const getCollectionAgentDashboard = async (req, res) => {
+  try {
+    const { collection_agent_id } = req.body;
+    return await userService.getCollectionAgentDashboardService(res, collection_agent_id);
+  } catch (error) {
+    console.error('Error in getCollectionAgentDashboard:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCollectionAgentGroupDashboard = async (req, res) => {
+  try {
+    const { group_id } = req.body;
+    return await userService.getCollectionAgentGroupDashboardService(res, group_id);
+  } catch (error) {
+    console.error('Error in getCollectionAgentGroupDashboard:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCollectionAgentActiveGroups = async (req, res) => {
+  try {
+    const { collection_agent_id, min, max } = req.body;
+    return await userService.getCollectionAgentActiveGroupsService(res, collection_agent_id, min, max);
+  } catch (error) {
+    console.error('Error in getCollectionAgentActiveGroups:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getPendingMembers = async (req, res) => {
+  try {
+    const { collection_agent_id, min, max } = req.body;
+    return await userService.getPendingMembersService(res, collection_agent_id, min, max);
+  } catch (error) {
+    console.error('Error in getPendingMembers:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMemberDues = async (req, res) => {
+  try {
+    const { member_id } = req.body;
+    return await userService.getMemberDuesService(res, member_id);
+  } catch (error) {
+    console.error('Error in getMemberDues:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSubmissions = async (req, res) => {
+  try {
+    const { collection_agent_id, type, min, max } = req.body;
+    return await userService.getSubmissionsService(res, collection_agent_id, type, min, max);
+  } catch (error) {
+    console.error('Error in getSubmissions:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const submitCollectionPayment = async (req, res) => {
+  try {
+    return await userService.submitCollectionPaymentService(res, req.body);
+  } catch (error) {
+    console.error('Error in submitCollectionPayment:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllGallery = async (req, res) => {
+  return await userService.getAllGalleryService(res, req.body);
+};
+
 module.exports = {
   getHomeRecord,
   getAllHomeRecords,
@@ -102,5 +175,13 @@ module.exports = {
   getBids,
   getBidDetails,
   getChitDetails,
-  getBusinessListUnderMembers
+  getBusinessListUnderMembers,
+  getCollectionAgentDashboard,
+  getCollectionAgentGroupDashboard,
+  getCollectionAgentActiveGroups,
+  getPendingMembers,
+  getMemberDues,
+  getSubmissions,
+  submitCollectionPayment,
+  getAllGallery
 };

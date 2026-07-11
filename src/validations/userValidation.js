@@ -62,6 +62,55 @@ const getBusinessListUnderMembersSchema = Joi.object({
   max: Joi.number().integer().min(1).optional()
 });
 
+const getCollectionAgentDashboardSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().required()
+});
+
+const getCollectionAgentGroupDashboardSchema = Joi.object({
+  group_id: Joi.string().uuid().required()
+});
+
+const getPendingMembersSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().required(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
+const getCollectionAgentActiveGroupsSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().required(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
+const getMemberDuesSchema = Joi.object({
+  member_id: Joi.number().integer().required()
+});
+
+const getSubmissionsSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().required(),
+  type: Joi.number().integer().valid(1, 2, 3, 4).required(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
+const submitCollectionPaymentSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().required(),
+  member_id: Joi.number().integer().required(),
+  payment_type: Joi.number().integer().valid(1, 2, 3, 4, 5).required(),
+  amount: Joi.number().precision(2).required(),
+  cash: Joi.object().optional(),
+  transaction_id: Joi.string().optional(),
+  cheque_number: Joi.string().optional(),
+  bank_details: Joi.object().optional(),
+  other_details: Joi.string().optional()
+});
+
+const getAllGallerySchema = Joi.object({
+  company_id: Joi.string().uuid().optional(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
 module.exports = {  
   getHomeRecordSchema,
   getAllHomeRecordsSchema,
@@ -71,5 +120,13 @@ module.exports = {
   getBidsSchema,
   getBidDetailsSchema,
   getChitDetailsSchema,
-  getBusinessListUnderMembersSchema
+  getBusinessListUnderMembersSchema,
+  getCollectionAgentDashboardSchema,
+  getCollectionAgentGroupDashboardSchema,
+  getCollectionAgentActiveGroupsSchema,
+  getPendingMembersSchema,
+  getMemberDuesSchema,
+  getSubmissionsSchema,
+  submitCollectionPaymentSchema,
+  getAllGallerySchema
 };

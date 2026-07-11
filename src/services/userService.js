@@ -1,6 +1,6 @@
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Enrollment, Company, ChitsGroup, Member, StaticDropdownsList, Area, City, ChitsInstallment, UpcomingChit, UpcomingChitInterest, Auction, sequelize } = require('../models');
+const { Enrollment, Company, ChitsGroup, Member, StaticDropdownsList, Area, City, ChitsInstallment, UpcomingChit, UpcomingChitInterest, Auction, CustomerPayment, CollectionAgentAmount, Gallery, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 const getHomeRecordService = async (res, subscriber_id) => {
@@ -1014,6 +1014,643 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
   }
 };
 
+const getCollectionAgentDashboardService = async (res, collection_agent_id) => {
+  try {
+    const enrollments = await Enrollment.findAll({
+      where: {
+        collection_agent_id,
+        delete_status: 0
+      }
+    });
+
+    if (!enrollments || enrollments.length === 0) {
+      return successResponse(res, statusCodes.OK, 'Collection agent dashboard details retrieved successfully', {
+        total_pending_collection: 0,
+        from_members_count: 0,
+        today_collection: 0,
+        from_collection_group_count: 0,
+        active_chit_groups: 0
+      });
+    }
+
+    const enrollmentIds = enrollments.map(e => e.id);
+    const uniqueMembers = new Set(enrollments.map(e => e.subscriber_id));
+    const uniqueGroups = new Set(enrollments.map(e => e.group_id));
+
+    const from_collection_group_count = uniqueGroups.size;
+
+    const active_chit_groups = await ChitsGroup.count({
+      where: {
+        id: { [Op.in]: Array.from(uniqueGroups) },
+        chits_group_status: 1,
+        is_deleted_status: 0
+      }
+    });
+
+    const pendingInstallments = await ChitsInstallment.findAll({
+      where: {
+        enrollment_id: { [Op.in]: enrollmentIds },
+        id: {
+          [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+        }
+      }
+    });
+    const pending_amount = pendingInstallments.reduce((sum, inst) => sum + (parseFloat(inst.payable_amount) || 0), 0);
+
+    const pendingMembersSet = new Set();
+    pendingInstallments.forEach(inst => {
+      const e = enrollments.find(e => e.id === inst.enrollment_id);
+      if (e) pendingMembersSet.add(e.subscriber_id);
+    });
+
+    const collectedInstallments = await CustomerPayment.findAll({
+      where: { payment_status: 1 },
+      include: [{
+        model: ChitsInstallment,
+        as: 'installment',
+        where: { enrollment_id: { [Op.in]: enrollmentIds } }
+      }]
+    });
+    
+    const collectedMembersSet = new Set();
+    collectedInstallments.forEach(payment => {
+      const inst = payment.installment;
+      if (inst) {
+        const e = enrollments.find(e => e.id === inst.enrollment_id);
+        if (e) collectedMembersSet.add(e.subscriber_id);
+      }
+    });
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const todayCollectionsList = collectedInstallments.filter(payment => {
+      const d = new Date(payment.createdAt);
+      return d >= startOfToday && d <= endOfToday;
+    });
+    const today_collection = todayCollectionsList.reduce((sum, payment) => sum + (parseFloat(payment.received_amount) || 0), 0);
+
+    const dashboardData = {
+      total_pending_collection: pending_amount,
+      from_members_count: pendingMembersSet.size,
+      today_collection,
+      from_collection_group_count,
+      active_chit_groups
+    };
+
+    return successResponse(res, statusCodes.OK, 'Collection agent dashboard retrieved successfully', dashboardData);
+  } catch (error) {
+    console.error('Error in getCollectionAgentDashboardService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCollectionAgentActiveGroupsService = async (res, collection_agent_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const enrollments = await Enrollment.findAll({
+      where: { collection_agent_id, delete_status: 0 }
+    });
+
+    if (!enrollments || enrollments.length === 0) {
+      return successResponse(res, statusCodes.OK, 'Active groups retrieved', { rows: [] });
+    }
+
+    const enrollmentIds = enrollments.map(e => e.id);
+    const uniqueGroups = Array.from(new Set(enrollments.map(e => e.group_id)));
+
+    const activeGroupsData = await ChitsGroup.findAndCountAll({
+      where: {
+        id: { [Op.in]: uniqueGroups },
+        chits_group_status: 1, // Active
+        is_deleted_status: 0
+      },
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    const activeGroups = activeGroupsData.rows;
+    const count = activeGroupsData.count;
+
+    const activeGroupIds = activeGroups.map(g => g.id);
+
+    const groupInstallments = await ChitsInstallment.findAll({
+      where: { enrollment_id: { [Op.in]: enrollmentIds } }
+    });
+
+    const groupPayments = await CustomerPayment.findAll({
+      where: { payment_status: 1 },
+      include: [{
+        model: ChitsInstallment,
+        as: 'installment',
+        where: { enrollment_id: { [Op.in]: enrollmentIds } }
+      }]
+    });
+
+    const rows = activeGroups.map(group => {
+      const groupEnrollments = enrollments.filter(e => e.group_id === group.id);
+      const groupEnrollmentIds = groupEnrollments.map(e => e.id);
+      
+      let pending_amount = 0;
+      let pendingMembersSet = new Set();
+      
+      const installmentsForGroup = groupInstallments.filter(inst => groupEnrollmentIds.includes(inst.enrollment_id));
+      let paidInstallmentCount = 0;
+
+      installmentsForGroup.forEach(inst => {
+        const payable = parseFloat(inst.payable_amount) || 0;
+        const relatedPayments = groupPayments.filter(p => p.chits_installment_id === inst.id);
+        const paidForInst = relatedPayments.reduce((s, p) => s + (parseFloat(p.received_amount) || 0), 0);
+        const pending = payable - paidForInst;
+        
+        if (pending > 0) {
+          pending_amount += pending;
+          const e = groupEnrollments.find(e => e.id === inst.enrollment_id);
+          if (e) pendingMembersSet.add(e.subscriber_id);
+        }
+        
+        if (paidForInst >= payable && payable > 0) {
+          paidInstallmentCount++;
+        }
+      });
+
+      const total_members = new Set(groupEnrollments.map(e => e.subscriber_id)).size;
+      const pending_members = pendingMembersSet.size;
+
+      const totalInstallments = installmentsForGroup.length;
+      let completed_percentage = 0;
+      if (totalInstallments > 0) {
+        completed_percentage = ((paidInstallmentCount / totalInstallments) * 100).toFixed(0);
+      }
+
+      return {
+        group_id: group.id,
+        group_name: group.group_name,
+        status: 'Active',
+        chit_amount: parseFloat(group.chit_amount) || 0,
+        pending_amount,
+        pending_members,
+        total_members,
+        completed_percentage: parseInt(completed_percentage),
+        date: group.chit_end_date || group.maturity_date || group.term_date || null
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Active groups retrieved', { count, rows });
+  } catch (error) {
+    console.error('Error in getCollectionAgentActiveGroupsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCollectionAgentGroupDashboardService = async (res, group_id) => {
+  try {
+    const group = await ChitsGroup.findByPk(group_id);
+    if (!group) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Group not found');
+    }
+
+    const enrollments = await Enrollment.findAll({
+      where: { group_id, delete_status: 0 }
+    });
+    const enrollmentIds = enrollments.map(e => e.id);
+
+    const allInstallments = await ChitsInstallment.findAll({
+      where: { enrollment_id: { [Op.in]: enrollmentIds } }
+    });
+
+    const payments = await CustomerPayment.findAll({
+      where: { payment_status: 1 },
+      include: [{
+        model: ChitsInstallment,
+        as: 'installment',
+        where: { enrollment_id: { [Op.in]: enrollmentIds } }
+      }]
+    });
+
+    const total_collected = payments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0);
+    
+    let total_payable = 0;
+    let total_pending = 0;
+    let overdue_members_set = new Set();
+    
+    const now = new Date();
+    allInstallments.forEach(inst => {
+      const payable = parseFloat(inst.payable_amount) || 0;
+      total_payable += payable;
+      const relatedPayments = payments.filter(p => p.chits_installment_id === inst.id);
+      const paidForInst = relatedPayments.reduce((s, p) => s + (parseFloat(p.received_amount) || 0), 0);
+      const pending = payable - paidForInst;
+      
+      if (pending > 0) {
+        total_pending += pending;
+        if (new Date(inst.due_date) < now) {
+          const e = enrollments.find(e => e.id === inst.enrollment_id);
+          if (e) overdue_members_set.add(e.subscriber_id);
+        }
+      }
+    });
+
+    const percentage = total_payable > 0 ? ((total_collected / total_payable) * 100).toFixed(2) : 0;
+
+    return successResponse(res, statusCodes.OK, 'Group dashboard', {
+      today_group_value_price: parseFloat(group.chit_amount) || 0,
+      total_collected,
+      pending_amount: total_pending,
+      overdue_members: overdue_members_set.size,
+      overall_collection_process_percentage: parseFloat(percentage),
+      current_date: new Date().toISOString().split('T')[0]
+    });
+  } catch (error) {
+    console.error('Error:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getPendingMembersService = async (res, collection_agent_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const enrollments = await Enrollment.findAll({
+      where: { collection_agent_id, delete_status: 0 },
+      include: [
+        { model: Member, as: 'subscriber' },
+        { model: ChitsGroup, as: 'group' }
+      ]
+    });
+
+    const enrollmentIds = enrollments.map(e => e.id);
+    const unpaidInstallments = await ChitsInstallment.findAll({
+      where: {
+        enrollment_id: { [Op.in]: enrollmentIds },
+        id: {
+          [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+        }
+      }
+    });
+
+    const memberMap = {};
+    unpaidInstallments.forEach(inst => {
+      const e = enrollments.find(e => e.id === inst.enrollment_id);
+      if (!e) return;
+      const sub = e.subscriber;
+      if (!sub) return;
+
+      if (!memberMap[sub.id]) {
+        memberMap[sub.id] = {
+          id: sub.id,
+          member_name: sub.name,
+          member_id: sub.member_id,
+          profile_image: sub.upload_image,
+          gender: sub.gender,
+          pending_months: 0,
+          oldest_due_date: inst.due_date,
+          oldest_due_date: inst.due_date,
+          balance: 0,
+          penalty_amount: 0,
+          penalty_text: ""
+        };
+      }
+      
+      memberMap[sub.id].pending_months += 1;
+      memberMap[sub.id].balance += (parseFloat(inst.payable_amount) || 0);
+      
+      // Use installment's penalty amount
+      memberMap[sub.id].penalty_amount += (parseFloat(inst.penalty_amount) || 0);
+      memberMap[sub.id].penalty_text = `Penalty - ₹ ${memberMap[sub.id].penalty_amount}`;
+      
+      if (new Date(inst.due_date) < new Date(memberMap[sub.id].oldest_due_date)) {
+        memberMap[sub.id].oldest_due_date = inst.due_date;
+      }
+    });
+
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    
+    let rows = Object.values(memberMap);
+    
+    // Sort rows (optional, but good for consistent pagination)
+    rows.sort((a, b) => new Date(a.oldest_due_date) - new Date(b.oldest_due_date));
+
+    const count = rows.length;
+    rows = rows.slice(offset, offset + limit);
+
+    // Format dates after sorting
+    rows = rows.map(row => {
+      const d = new Date(row.oldest_due_date);
+      row.oldest_due = `${months[d.getMonth()]} ${d.getFullYear()}`;
+      delete row.oldest_due_date;
+      return row;
+    });
+
+    return successResponse(res, statusCodes.OK, 'Pending members', { count, rows });
+  } catch (error) {
+    console.error('Error:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMemberDuesService = async (res, member_id) => {
+  try {
+    const member = await Member.findByPk(member_id);
+    if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+
+    const enrollments = await Enrollment.findAll({
+      where: { subscriber_id: member_id, delete_status: 0 },
+      include: [{ model: ChitsGroup, as: 'group' }]
+    });
+
+    let total_due = 0;
+    let total_paid = 0;
+    let balance = 0;
+    let penalty_amount = 0;
+    let oldest_due = null;
+    let group_names = enrollments.map(e => e.group ? e.group.group_name : '').join(', ');
+
+    const enrollmentIds = enrollments.map(e => e.id);
+    const installments = await ChitsInstallment.findAll({
+      where: { enrollment_id: { [Op.in]: enrollmentIds } }
+    });
+
+    const payments = await CustomerPayment.findAll({
+      where: { payment_status: 1 },
+      include: [{
+        model: ChitsInstallment,
+        as: 'installment',
+        where: { enrollment_id: { [Op.in]: enrollmentIds } }
+      }]
+    });
+
+    installments.forEach(inst => {
+      const payable = parseFloat(inst.payable_amount) || 0;
+      total_due += payable;
+      const relatedPayments = payments.filter(p => p.chits_installment_id === inst.id);
+      const paid = relatedPayments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0);
+      total_paid += paid;
+      
+      const pending = payable - paid;
+      if (pending > 0) {
+        // Penalty logic
+        penalty_amount += (parseFloat(inst.penalty_amount) || 0);
+
+        if (!oldest_due || new Date(inst.due_date) < new Date(oldest_due)) {
+          oldest_due = inst.due_date;
+        }
+      }
+    });
+
+    balance = total_due - total_paid;
+
+    return successResponse(res, statusCodes.OK, 'Member dues', {
+      id: member.id,
+      name: member.name,
+      member_id: member.member_id,
+      group_name: group_names,
+      total_due,
+      total_paid,
+      balance,
+      penalty_amount,
+      penalty_text: `Penalty - ₹ ${penalty_amount}`,
+      older_due_months: oldest_due
+    });
+  } catch (error) {
+    console.error('Error:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSubmissionsService = async (res, collection_agent_id, type, min, max) => {
+  try {
+    const whereClause = { collection_agent_id };
+    // 1 - all, 2 - pending, 3 - verified, 4 - rejected
+    if (type === 2) whereClause.status = { [Op.in]: [0, 1] }; // pending
+    if (type === 3) whereClause.status = 2; // verified
+    if (type === 4) whereClause.status = 3; // rejected
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const submissionsData = await CollectionAgentAmount.findAndCountAll({
+      where: whereClause,
+      include: [
+        { model: Member, as: 'member' },
+        { model: Member, as: 'collection_agent' }
+      ],
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    const submissions = submissionsData.rows;
+    const count = submissionsData.count;
+
+    // Get group names for each member
+    const memberIds = submissions.map(s => s.member_id).filter(id => id);
+    const enrollments = await Enrollment.findAll({
+      where: { subscriber_id: { [Op.in]: memberIds }, delete_status: 0 },
+      include: [{ model: ChitsGroup, as: 'group' }]
+    });
+
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const formatDate = (date) => {
+      if (!date) return '';
+      const d = new Date(date);
+      return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+    };
+
+    const getPaymentMethod = (type) => {
+      switch(type) {
+        case 1: return 'Cash';
+        case 2: return 'UPI';
+        case 3: return 'Cheque';
+        case 4: return 'Bank';
+        default: return 'Others';
+      }
+    };
+
+    const getStatusStr = (status) => {
+      switch(status) {
+        case 0: return 'Pending';
+        case 1: return 'Pending';
+        case 2: return 'Verified';
+        case 3: return 'Rejected';
+        default: return 'Unknown';
+      }
+    };
+
+    const formatted = submissions.map(sub => {
+      let amount = 0;
+      if (sub.cash && sub.cash.amount) {
+        amount = sub.cash.amount;
+      } else if (sub.bank_details && sub.bank_details.amount) {
+        amount = sub.bank_details.amount;
+      }
+
+      const memberEnrollments = enrollments.filter(e => e.subscriber_id === sub.member_id);
+      const groupNames = memberEnrollments.map(e => e.group ? e.group.group_name : '').join(', ');
+
+      const statusStr = getStatusStr(sub.status);
+      let status_note = `Submitted on ${formatDate(sub.createdAt)}`;
+      if (sub.status === 2 && sub.confirm_date) {
+        status_note = `Verified on ${formatDate(sub.confirm_date)}`;
+      } else if (sub.status === 3 && sub.confirm_date) {
+        status_note = `Rejected on ${formatDate(sub.confirm_date)}`;
+      }
+
+      let collection_id_value = 'Unknown';
+      if (sub.collection_agent && sub.collection_agent.other_info_user_code) {
+        collection_id_value = sub.collection_agent.other_info_user_code.toString();
+      } else if (sub.collection_agent_id) {
+        collection_id_value = sub.collection_agent_id.toString();
+      }
+
+      return {
+        id: sub.id,
+        member_name: sub.member ? sub.member.name : 'Unknown',
+        profile_image: sub.member ? sub.member.upload_image : '',
+        group_name: groupNames || 'No Group',
+        amount,
+        method: getPaymentMethod(sub.payment_type),
+        date: formatDate(sub.createdAt),
+        collection_id: collection_id_value,
+        status: statusStr,
+        status_note
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Submissions retrieved successfully', { count, rows: formatted });
+  } catch (error) {
+    console.error('Error:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const submitCollectionPaymentService = async (res, payload) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const { collection_agent_id, member_id, payment_type, amount, cash, transaction_id, cheque_number, bank_details, other_details } = payload;
+    
+    // Create CollectionAgentAmount (status 0: Pending)
+    const submission = await CollectionAgentAmount.create({
+      collection_agent_id,
+      member_id,
+      payment_type,
+      cash,
+      transaction_id,
+      cheque_number,
+      bank_details,
+      other_details,
+      status: 0
+    }, { transaction });
+
+    // Clearance Logic
+    // Find all unpaid installments for this member
+    const enrollments = await Enrollment.findAll({
+      where: { subscriber_id: member_id, delete_status: 0 },
+      include: [{ model: ChitsGroup, as: 'group' }]
+    });
+    
+    const enrollmentIds = enrollments.map(e => e.id);
+    const installments = await ChitsInstallment.findAll({
+      where: { enrollment_id: { [Op.in]: enrollmentIds } },
+      order: [['due_date', 'ASC']] // Oldest first
+    });
+
+    const allPayments = await CustomerPayment.findAll({
+      include: [{
+        model: ChitsInstallment,
+        as: 'installment',
+        where: { enrollment_id: { [Op.in]: enrollmentIds } }
+      }]
+      // We only care about verified payments (status = 1) and maybe pending (status = 0) 
+      // If there are pending payments, they should be considered "paid" for clearance logic?
+      // Yes, otherwise we might double-charge.
+    });
+
+    let remaining_amount = parseFloat(amount);
+    
+    for (const inst of installments) {
+      if (remaining_amount <= 0) break;
+
+      const payable = parseFloat(inst.payable_amount) || 0;
+      
+      const relatedPayments = allPayments.filter(p => p.chits_installment_id === inst.id && p.payment_status !== 2); // excluding rejected/due date
+      const paid = relatedPayments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0);
+      const penaltyAlreadyPaid = relatedPayments.reduce((sum, p) => sum + (parseFloat(p.penalty_paid) || 0), 0);
+      
+      let pending_installment = payable - paid;
+      
+      let pending_penalty = 0;
+      if (pending_installment > 0 && new Date(inst.due_date) < new Date()) {
+        const expected_penalty = parseFloat(inst.penalty_amount) || 0;
+        pending_penalty = Math.max(0, expected_penalty - penaltyAlreadyPaid);
+      }
+
+      if (pending_installment > 0 || pending_penalty > 0) {
+        let payment_for_this_inst = 0;
+        let penalty_for_this_inst = 0;
+
+        // Pay penalty first
+        if (pending_penalty > 0 && remaining_amount > 0) {
+          penalty_for_this_inst = Math.min(pending_penalty, remaining_amount);
+          remaining_amount -= penalty_for_this_inst;
+        }
+
+        // Pay installment
+        if (pending_installment > 0 && remaining_amount > 0) {
+          payment_for_this_inst = Math.min(pending_installment, remaining_amount);
+          remaining_amount -= payment_for_this_inst;
+        }
+
+        if (payment_for_this_inst > 0 || penalty_for_this_inst > 0) {
+          await CustomerPayment.create({
+            chits_installment_id: inst.id,
+            received_amount: payment_for_this_inst,
+            penalty_paid: penalty_for_this_inst,
+            payment_status: 0, // Pending Admin Approval
+            collection_agent_amount_id: submission.id
+          }, { transaction });
+        }
+      }
+    }
+
+    await transaction.commit();
+    return successResponse(res, statusCodes.OK, 'Payment submitted successfully', { submission_id: submission.id });
+  } catch (error) {
+    await transaction.rollback();
+    console.error('Error in submitCollectionPaymentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllGalleryService = async (res, reqBody) => {
+  try {
+    const { company_id, min = 0, max = 10 } = reqBody;
+    const limit = parseInt(max, 10);
+    const offset = parseInt(min, 10);
+
+    const whereClause = { status: 0 }; // Only fetch active galleries for users
+    if (company_id) whereClause.company_id = company_id;
+
+    const galleries = await Gallery.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Galleries retrieved successfully', galleries);
+  } catch (error) {
+    console.error('Error in getAllGalleryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecordService,
   getAllHomeRecordsService,
@@ -1022,6 +1659,13 @@ module.exports = {
   getPendingPaymentsService,
   getBidsService,
   getBidDetailsService,
-  getChitDetailsService
+  getChitDetailsService,
+  getCollectionAgentDashboardService,
+  getCollectionAgentActiveGroupsService,
+  getCollectionAgentGroupDashboardService,
+  getPendingMembersService,
+  getMemberDuesService,
+  getSubmissionsService,
+  submitCollectionPaymentService,
+  getAllGalleryService
 };
-

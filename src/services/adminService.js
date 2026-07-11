@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -2232,28 +2232,62 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
     });
     const total_commission_amount = parseFloat(totalCommissionStr) || 0;
 
-    const paidRecords = await HistoryBusinessAgent.findAll({
-      where: { is_deleted_status: 0 },
-      include: [{
-        model: ConfigureBusinessAgentCommission,
-        as: 'configure_business_agent',
-        where: { business_agent_id, is_deleted_status: 0 },
-        attributes: []
-      }],
-      attributes: [
-        [sequelize.fn('sum', sequelize.col('paid_amount')), 'total_paid']
-      ],
-      raw: true
+    const configRecords = await ConfigureBusinessAgentCommission.findAll({
+      where: { business_agent_id, is_deleted_status: 0 },
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
+        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }
+      ]
     });
-    const paid_commission = parseFloat(paidRecords[0]?.total_paid) || 0;
+
+    const configIds = configRecords.map(r => r.id);
+    let allHistories = [];
+    if (configIds.length > 0) {
+      allHistories = await HistoryBusinessAgent.findAll({
+        where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+        order: [['createdAt', 'DESC']],
+        raw: true
+      });
+    }
+
+    let paid_commission = 0;
+    const members = configRecords.map(config => {
+      const histories = allHistories.filter(h => h.configure_business_agent_id === config.id);
+      
+      let total_paid = 0;
+      histories.forEach(h => {
+        total_paid += parseFloat(h.paid_amount) || 0;
+      });
+
+      paid_commission += total_paid;
+
+      const commission_amount = parseFloat(config.commission_amount) || 0;
+      const total_pending = commission_amount - total_paid;
+      const group = config.group || {};
+      const member = config.member || {};
+
+      const latestHistoryWithDoc = histories.find(h => h.upload_document);
+      const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
+
+      return {
+        id: config.id,
+        group_name: group.group_name || null,
+        chit_amount: group.chit_amount || null,
+        group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
+        commission_amount,
+        total_paid,
+        total_pending,
+        upload_document,
+        member_id: member.id || null,
+        member_name: member.name || null,
+        status: config.status
+      };
+    });
 
     const pending_commission_amount = total_commission_amount - paid_commission;
 
-    const member_joined = await ConfigureBusinessAgentCommission.count({
-      where: { business_agent_id, is_deleted_status: 0 },
-      distinct: true,
-      col: 'member_id'
-    });
+    const uniqueMembers = new Set(configRecords.map(c => c.member_id));
+    const member_joined = uniqueMembers.size;
 
     const historyRecords = await HistoryBusinessAgent.findAndCountAll({
       where: { is_deleted_status: 0 },
@@ -2265,6 +2299,11 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
           model: ChitsGroup,
           as: 'group',
           attributes: ['group_name', 'chit_amount']
+        },
+        {
+          model: Member,
+          as: 'member',
+          attributes: ['id', 'name', 'member_id']
         }]
       }],
       order: [['createdAt', 'DESC']],
@@ -2275,11 +2314,14 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
     const history = historyRecords.rows.map(h => {
       const config = h.configure_business_agent || {};
       const group = config.group || {};
+      const member = config.member || {};
       return {
         id: h.id,
         group_id: config.group_id,
         group_name: group.group_name,
         chit_amount: group.chit_amount,
+        member_name: member.name || null,
+        member_id: member.id || null,
         commission_amount: config.commission_amount,
         received_date: h.createdAt,
         status: config.status,
@@ -2292,6 +2334,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
       paid_commission,
       pending_commission_amount,
       member_joined,
+      members,
       history_count: historyRecords.count,
       history
     });
@@ -2366,6 +2409,39 @@ const getHistoryByGroupIdService = async (res, group_id, min, max) => {
 
   } catch (error) {
     console.error('Error in getHistoryByGroupIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateCollectionSubmissionStatusService = async (res, id, status) => {
+  try {
+    const submission = await CollectionAgentAmount.findByPk(id);
+    if (!submission) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Submission not found');
+    }
+
+    // update status (0 - pending, 1 - pending, 2 - verified, 3 - rejected)
+    await submission.update({
+      status,
+      confirm_date: status === 2 ? new Date() : null
+    });
+
+    if (status === 2) {
+      // Verified - Update pending CustomerPayments to paid
+      await CustomerPayment.update(
+        { payment_status: 1 },
+        { where: { collection_agent_amount_id: id, payment_status: 0 } }
+      );
+    } else if (status === 3) {
+      // Rejected - Delete the pending CustomerPayments to revert clearance
+      await CustomerPayment.destroy({
+        where: { collection_agent_amount_id: id, payment_status: 0 }
+      });
+    }
+
+    return successResponse(res, statusCodes.OK, 'Submission status updated successfully', submission);
+  } catch (error) {
+    console.error('Error in updateCollectionSubmissionStatusService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -2835,6 +2911,190 @@ const logoutService = async (res, userPayload) => {
   }
 };
 
+const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max) => {
+  try {
+    const whereClause = {};
+    if (collection_agent_id) {
+      whereClause.collection_agent_id = collection_agent_id;
+    }
+    // 1 - all, 2 - pending, 3 - verified, 4 - rejected
+    if (type === 2) whereClause.status = { [Op.in]: [0, 1] }; // pending
+    if (type === 3) whereClause.status = 2; // verified
+    if (type === 4) whereClause.status = 3; // rejected
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const submissionsData = await CollectionAgentAmount.findAndCountAll({
+      where: whereClause,
+      include: [
+        { model: Member, as: 'member' },
+        { model: Member, as: 'collection_agent' }
+      ],
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    const submissions = submissionsData.rows;
+    const count = submissionsData.count;
+
+    // Get group names for each member
+    const memberIds = submissions.map(s => s.member_id).filter(id => id);
+    const enrollments = await Enrollment.findAll({
+      where: { subscriber_id: { [Op.in]: memberIds }, delete_status: 0 },
+      include: [{ model: ChitsGroup, as: 'group' }]
+    });
+
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const formatDate = (date) => {
+      if (!date) return '';
+      const d = new Date(date);
+      return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+    };
+
+    const getPaymentMethod = (type) => {
+      switch (type) {
+        case 1: return 'Cash';
+        case 2: return 'UPI';
+        case 3: return 'Cheque';
+        case 4: return 'Bank';
+        default: return 'Others';
+      }
+    };
+
+    const getStatusStr = (status) => {
+      switch (status) {
+        case 0: return 'Pending';
+        case 1: return 'Pending';
+        case 2: return 'Verified';
+        case 3: return 'Rejected';
+        default: return 'Unknown';
+      }
+    };
+
+    const formatted = submissions.map(sub => {
+      let amount = 0;
+      if (sub.cash && sub.cash.amount) {
+        amount = sub.cash.amount;
+      } else if (sub.bank_details && sub.bank_details.amount) {
+        amount = sub.bank_details.amount;
+      }
+
+      const memberEnrollments = enrollments.filter(e => e.subscriber_id === sub.member_id);
+      const groupNames = memberEnrollments.map(e => e.group ? e.group.group_name : '').join(', ');
+
+      const statusStr = getStatusStr(sub.status);
+      let status_note = `Submitted on ${formatDate(sub.createdAt)}`;
+      if (sub.status === 2 && sub.confirm_date) {
+        status_note = `Verified on ${formatDate(sub.confirm_date)}`;
+      } else if (sub.status === 3 && sub.confirm_date) {
+        status_note = `Rejected on ${formatDate(sub.confirm_date)}`;
+      }
+
+      let collection_id_value = 'Unknown';
+      if (sub.collection_agent && sub.collection_agent.other_info_user_code) {
+        collection_id_value = sub.collection_agent.other_info_user_code.toString();
+      } else if (sub.collection_agent_id) {
+        collection_id_value = sub.collection_agent_id.toString();
+      }
+
+      return {
+        id: sub.id,
+        member_name: sub.member ? sub.member.name : 'Unknown',
+        profile_image: sub.member ? sub.member.upload_image : '',
+        group_name: groupNames || 'No Group',
+        amount,
+        method: getPaymentMethod(sub.payment_type),
+        date: formatDate(sub.createdAt),
+        collection_id: collection_id_value,
+        status: statusStr,
+        status_note
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Submissions retrieved successfully', { count, rows: formatted });
+  } catch (error) {
+    console.error('Error in getAllCollectionSubmissionsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateGalleryService = async (res, reqBody, userPayload) => {
+  try {
+    const { id, gallery_image, status } = reqBody;
+    const company_id = await getCompanyIdFromUser(userPayload, reqBody);
+
+    if (id) {
+      // Update
+      const gallery = await Gallery.findByPk(id);
+      if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+      await gallery.update({ gallery_image, status });
+      return successResponse(res, statusCodes.OK, 'Gallery updated successfully', gallery);
+    } else {
+      // Store
+      const gallery = await Gallery.create({
+        company_id,
+        gallery_image,
+        status: status || 0
+      });
+      return successResponse(res, statusCodes.CREATED, 'Gallery added successfully', gallery);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateGalleryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllGalleryService = async (res, reqBody) => {
+  try {
+    const { company_id, min = 0, max = 10, status } = reqBody;
+    const limit = parseInt(max, 10);
+    const offset = parseInt(min, 10);
+
+    const whereClause = {};
+    if (company_id) whereClause.company_id = company_id;
+    if (status !== undefined) whereClause.status = status;
+
+    const galleries = await Gallery.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Galleries retrieved successfully', galleries);
+  } catch (error) {
+    console.error('Error in getAllGalleryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getGalleryByIdService = async (res, id) => {
+  try {
+    const gallery = await Gallery.findByPk(id);
+    if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+    return successResponse(res, statusCodes.OK, 'Gallery retrieved successfully', gallery);
+  } catch (error) {
+    console.error('Error in getGalleryByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteGalleryService = async (res, id) => {
+  try {
+    const gallery = await Gallery.findByPk(id);
+    if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+    await gallery.destroy();
+    return successResponse(res, statusCodes.OK, 'Gallery deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteGalleryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -2941,5 +3201,11 @@ module.exports = {
   getHistoryBusinessAgentByIdService,
   deleteHistoryBusinessAgentService,
   getBusinessAgentCommissionSummaryService,
-  getHistoryByGroupIdService
+  getHistoryByGroupIdService,
+  updateCollectionSubmissionStatusService,
+  getAllCollectionSubmissionsService,
+  storeOrUpdateGalleryService,
+  getAllGalleryService,
+  getGalleryByIdService,
+  deleteGalleryService
 };

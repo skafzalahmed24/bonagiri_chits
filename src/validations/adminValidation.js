@@ -867,14 +867,40 @@ module.exports = {
     id: Joi.string().uuid().required()
   }),
   getBusinessAgentCommissionSummarySchema: Joi.object({
+    company_id: Joi.string().uuid().allow('', null).optional(),
     business_agent_id: Joi.number().integer().required(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional()
   }),
   getHistoryByGroupIdSchema: Joi.object({
+    company_id: Joi.string().uuid().allow('', null).optional(),
     group_id: Joi.string().uuid().required(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional()
+  }),
+  updateCollectionSubmissionStatusSchema: Joi.object({
+    id: Joi.string().uuid().required(),
+    status: Joi.number().integer().valid(0, 1, 2, 3).required()
+  }),
+  getAllCollectionSubmissionsSchema: Joi.object({
+    collection_agent_id: Joi.number().integer().optional(),
+    type: Joi.number().integer().valid(1, 2, 3, 4).required(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional()
+  }),
+  galleryValidator: Joi.object({
+    id: Joi.string().uuid().optional(),
+    gallery_image: Joi.string().required(),
+    status: Joi.number().integer().valid(0, 1).optional()
+  }),
+  getAllGallerySchema: Joi.object({
+    company_id: Joi.string().uuid().optional(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    status: Joi.number().integer().valid(0, 1).optional()
+  }),
+  deleteGallerySchema: Joi.object({
+    id: Joi.string().uuid().required()
   }),
   updateChitsGroupStatusSchema: Joi.object({
     id: Joi.string().uuid().required().messages({

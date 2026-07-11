@@ -178,4 +178,14 @@ router.post('/history-business-agent/delete', authMiddleware.authenticateToken, 
 router.post('/configure-business-agent-commission/summary-by-agent', authMiddleware.authenticateToken, validate(adminValidation.getBusinessAgentCommissionSummarySchema), adminController.getBusinessAgentCommissionSummary);
 router.post('/history-business-agent/history-by-group-id', authMiddleware.authenticateToken, validate(adminValidation.getHistoryByGroupIdSchema), adminController.getHistoryByGroupId);
 
+// collection-agent submissions update
+router.post('/collection-agent/submissions/update-status', authMiddleware.authenticateToken, validate(adminValidation.updateCollectionSubmissionStatusSchema), adminController.updateCollectionSubmissionStatus);
+router.post('/collection-agent/submissions/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllCollectionSubmissionsSchema), adminController.getAllCollectionSubmissions);
+
+// gallery routes
+router.post('/gallery/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.galleryValidator), adminController.storeOrUpdateGallery);
+router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllGallerySchema), adminController.getAllGallery);
+router.post('/gallery/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getGalleryById);
+router.post('/gallery/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteGallerySchema), adminController.deleteGallery);
+
 module.exports = router;

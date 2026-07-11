@@ -1106,6 +1106,44 @@ const getHistoryByGroupId = async (req, res) => {
   }
 };
 
+const updateCollectionSubmissionStatus = async (req, res) => {
+  try {
+    const { id, status } = req.body;
+    return await adminService.updateCollectionSubmissionStatusService(res, id, status);
+  } catch (error) {
+    console.error('Error in updateCollectionSubmissionStatus:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllCollectionSubmissions = async (req, res) => {
+  try {
+    const { collection_agent_id, type, min, max } = req.body;
+    // I can reuse the userService's getSubmissionsService since it does exactly this, just needs to support optional collection_agent_id
+    // But since it's an admin endpoint, it's cleaner to have it in adminService
+    return await adminService.getAllCollectionSubmissionsService(res, collection_agent_id, type, min, max);
+  } catch (error) {
+    console.error('Error in getAllCollectionSubmissions:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateGallery = async (req, res) => {
+  return await adminService.storeOrUpdateGalleryService(res, req.body, req.user);
+};
+
+const getAllGallery = async (req, res) => {
+  return await adminService.getAllGalleryService(res, req.body);
+};
+
+const getGalleryById = async (req, res) => {
+  return await adminService.getGalleryByIdService(res, req.body.id);
+};
+
+const deleteGallery = async (req, res) => {
+  return await adminService.deleteGalleryService(res, req.body.id);
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1210,5 +1248,11 @@ module.exports = {
   getHistoryBusinessAgentById,
   deleteHistoryBusinessAgent,
   getBusinessAgentCommissionSummary,
-  getHistoryByGroupId
+  getHistoryByGroupId,
+  updateCollectionSubmissionStatus,
+  getAllCollectionSubmissions,
+  storeOrUpdateGallery,
+  getAllGallery,
+  getGalleryById,
+  deleteGallery
 };

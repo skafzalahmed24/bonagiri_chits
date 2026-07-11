@@ -24,4 +24,16 @@ router.post('/chit-details', authMiddleware.authenticateToken, validate(userVali
 // business-agent routes (authenticated)
 router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(userValidation.getBusinessListUnderMembersSchema), userController.getBusinessListUnderMembers);
 
+// collection-agent routes (authenticated)
+router.post('/collection-agent/dashboard', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentDashboardSchema), userController.getCollectionAgentDashboard);
+router.post('/collection-agent/group-dashboard', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentGroupDashboardSchema), userController.getCollectionAgentGroupDashboard);
+router.post('/collection-agent/active-groups', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentActiveGroupsSchema), userController.getCollectionAgentActiveGroups);
+router.post('/collection-agent/pending-members', authMiddleware.authenticateToken, validate(userValidation.getPendingMembersSchema), userController.getPendingMembers);
+router.post('/collection-agent/member-dues', authMiddleware.authenticateToken, validate(userValidation.getMemberDuesSchema), userController.getMemberDues);
+router.post('/collection-agent/submissions', authMiddleware.authenticateToken, validate(userValidation.getSubmissionsSchema), userController.getSubmissions);
+router.post('/collection-agent/submit-payment', authMiddleware.authenticateToken, validate(userValidation.submitCollectionPaymentSchema), userController.submitCollectionPayment);
+
+// gallery routes
+router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(userValidation.getAllGallerySchema), userController.getAllGallery);
+
 module.exports = router;
