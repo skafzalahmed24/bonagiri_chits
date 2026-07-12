@@ -902,6 +902,36 @@ module.exports = {
   deleteGallerySchema: Joi.object({
     id: Joi.string().uuid().required()
   }),
+  storeOrUpdateFixedSchemeSchema: Joi.object({
+    id: Joi.string().uuid().optional(),
+    title: Joi.string().required(),
+    scheme_type: Joi.number().valid(62, 63, 64, 65).required(),
+    months_count: Joi.number().required(),
+    members_count: Joi.number().required(),
+    description: Joi.string().allow('', null).optional(),
+    status: Joi.number().integer().valid(0, 1).optional(),
+    company_profit: Joi.alternatives().try(Joi.number(), Joi.string()).allow('', null).optional(),
+    
+    chit_value: Joi.when('scheme_type', { is: 63, then: Joi.alternatives().try(Joi.number(), Joi.string()).required(), otherwise: Joi.any().optional() }),
+    adding_percentage: Joi.when('scheme_type', { is: 63, then: Joi.alternatives().try(Joi.number(), Joi.string()).required(), otherwise: Joi.any().optional() }),
+    company_percentage: Joi.when('scheme_type', { is: 63, then: Joi.alternatives().try(Joi.number(), Joi.string()).required(), otherwise: Joi.any().optional() }),
+    installment: Joi.any().optional(),
+    company_chit: Joi.any().optional(),
+
+    prices: Joi.when('scheme_type', {
+      is: Joi.valid(62, 64, 65),
+      then: Joi.array().items(Joi.object({
+          month: Joi.number().required(),
+          withdrawn: Joi.any().optional(),
+          not_withdrawn: Joi.any().optional(),
+          chit_amount: Joi.any().optional(),
+          installment: Joi.any().optional(),
+          monthly_subscription: Joi.any().optional(),
+          net_received: Joi.any().optional()
+      })).length(Joi.ref('months_count')).required(),
+      otherwise: Joi.any().optional()
+    })
+  }),
   updateChitsGroupStatusSchema: Joi.object({
     id: Joi.string().uuid().required().messages({
       'any.required': 'Chits Group ID is required',

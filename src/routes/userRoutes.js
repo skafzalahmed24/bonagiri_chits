@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const userController = require('../controllers/userController');
+const fixedSchemeController = require('../controllers/fixedSchemeController');
 const validate = require('../middlewares/validate');
 const authMiddleware = require('../middlewares/authMiddleware');
 const userValidation = require('../validations/userValidation');
@@ -35,5 +36,8 @@ router.post('/collection-agent/submit-payment', authMiddleware.authenticateToken
 
 // gallery routes
 router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(userValidation.getAllGallerySchema), userController.getAllGallery);
+
+// Fixed Scheme Chits Routes (Public / No Authorization)
+router.post('/fixed-scheme-details', fixedSchemeController.getFixedSchemeByType);
 
 module.exports = router;

@@ -34,6 +34,16 @@ const getFixedSchemeById = async (req, res) => {
   }
 };
 
+const getFixedSchemeByType = async (req, res) => {
+  try {
+    const { scheme_type } = req.body || {};
+    return await fixedSchemeService.getFixedSchemeByTypeService(res, scheme_type);
+  } catch (error) {
+    console.error('Error in getFixedSchemeByType:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const deleteFixedScheme = async (req, res) => {
   try {
     const { id } = req.body || {};
@@ -48,5 +58,6 @@ module.exports = {
   storeOrUpdateFixedScheme,
   getAllFixedSchemes,
   getFixedSchemeById,
+  getFixedSchemeByType,
   deleteFixedScheme
 };

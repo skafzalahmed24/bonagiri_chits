@@ -121,6 +121,19 @@ const getFixedSchemeByIdService = async (res, id) => {
   }
 };
 
+const getFixedSchemeByTypeService = async (res, scheme_type) => {
+  try {
+    const record = await FixedSchemeChitsConfiguration.findOne({ where: { scheme_type } });
+    if (!record) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Record not found');
+    }
+    return successResponse(res, statusCodes.OK, 'Fixed scheme chit configuration retrieved successfully', record);
+  } catch (error) {
+    console.error('Error in getFixedSchemeByTypeService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,5 +155,6 @@ module.exports = {
   storeOrUpdateFixedSchemeService,
   getAllFixedSchemesService,
   getFixedSchemeByIdService,
+  getFixedSchemeByTypeService,
   deleteFixedSchemeService
 };

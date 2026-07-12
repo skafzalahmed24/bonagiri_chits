@@ -67,6 +67,7 @@ router.post('/chits-group/store-or-update', authMiddleware.authenticateToken, va
 router.post('/chits-group/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllChitsGroupSchema), adminController.getAllChitsGroupDetails);
 router.post('/chits-group/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteChitsGroupSchema), adminController.deleteChitsGroup);
 router.post('/chits-group/update-status', authMiddleware.authenticateToken, validate(adminValidation.updateChitsGroupStatusSchema), adminController.updateChitsGroupStatus);
+router.post('/chits-group/check-capacity', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.checkChitsGroupCapacity);
 
 // import locations 
 router.post('/import-locations', authMiddleware.authenticateToken, adminController.importLocations);
@@ -157,7 +158,7 @@ router.post('/self-chit/get-by-id', authMiddleware.authenticateToken, validate(a
 router.post('/self-chit/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteSelfChitSchema), adminController.deleteSelfChit);
 
 // fixed-scheme-chits-configuration routes
-router.post('/fixed-scheme/store-or-update', authMiddleware.authenticateToken, fixedSchemeController.storeOrUpdateFixedScheme);
+router.post('/fixed-scheme/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.storeOrUpdateFixedSchemeSchema), fixedSchemeController.storeOrUpdateFixedScheme);
 router.post('/fixed-scheme/get-all', authMiddleware.authenticateToken, fixedSchemeController.getAllFixedSchemes);
 router.post('/fixed-scheme/get-by-id', authMiddleware.authenticateToken, fixedSchemeController.getFixedSchemeById);
 router.post('/fixed-scheme/delete', authMiddleware.authenticateToken, fixedSchemeController.deleteFixedScheme);

@@ -3,6 +3,8 @@ const { successResponse, errorResponse } = require('../utils/responseHelper');
 const { Enrollment, Company, ChitsGroup, Member, StaticDropdownsList, Area, City, ChitsInstallment, UpcomingChit, UpcomingChitInterest, Auction, CustomerPayment, CollectionAgentAmount, Gallery, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
+const { getSimulatedNow } = require('../utils/timeSimulator');
+
 const getHomeRecordService = async (res, subscriber_id) => {
   try {
     // 1. Fetch only essential Enrollment fields
@@ -351,15 +353,10 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
 
     const enrollmentIds = enrollments.map(e => e.id);
 
-    const now = new Date();
-    // Normalize to isolate end of current month in local time
-    const endOfCurrentMonthStr = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).toISOString().split('T')[0];
-
-    // 2. Fetch all unpaid installments for these enrollments
-    const unpaidInstallments = await ChitsInstallment.findAll({
+    // Fetch all unpaid installments for these enrollments (no due_date filter yet)
+    const allUnpaidInstallments = await ChitsInstallment.findAll({
       where: {
         enrollment_id: { [Op.in]: enrollmentIds },
-        due_date: { [Op.lte]: endOfCurrentMonthStr },
         id: {
           [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
         }
@@ -377,6 +374,17 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
         }
       ],
       order: [['due_date', 'ASC']]
+    });
+
+    // Filter in-memory based on simulated time relative to each group
+    const unpaidInstallments = allUnpaidInstallments.filter(inst => {
+      const group = inst.enrollment?.group;
+      const simulatedNow = getSimulatedNow(group);
+      
+      // Calculate the end of the simulated current month
+      const endOfSimulatedMonthStr = new Date(simulatedNow.getFullYear(), simulatedNow.getMonth() + 1, 0, 23, 59, 59, 999).toISOString().split('T')[0];
+      
+      return inst.due_date <= endOfSimulatedMonthStr;
     });
 
     // Format helper for date to produce: e.g. "15th March 2026"
@@ -407,15 +415,15 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
       const dueAmount = parseFloat(installment.payable_amount) || 0.00;
       const grossAmount = group ? (parseFloat(group.installment_amount) || 0.00) : dueAmount;
 
-      // Calculate dynamic over_due_days_count based on current date
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      // Calculate dynamic over_due_days_count based on simulated date
+      const simulatedNow = getSimulatedNow(group);
+      simulatedNow.setHours(0, 0, 0, 0);
       const dueDate = new Date(installment.due_date);
       dueDate.setHours(0, 0, 0, 0);
 
       let overDueDaysCount = 0;
-      if (dueDate < today) {
-        const diffTime = today.getTime() - dueDate.getTime();
+      if (dueDate < simulatedNow) {
+        const diffTime = simulatedNow.getTime() - dueDate.getTime();
         overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
       }
       const isOverdue = overDueDaysCount > 0;
@@ -523,7 +531,6 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
     }
 
     // 2. Filter groups based on type
-    const todayStr = new Date().toISOString().split('T')[0];
     const resolvedRows = [];
 
     // Helper for date formatting
@@ -555,11 +562,14 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
       const groupStatus = Number(group.chits_group_status); // 0 - Not started, 1 - started, 2 - completed
       const typeInt = Number(type);
 
+      // Define simulated today outside the inner block so it can be used for is_today property
+      const simulatedNow = getSimulatedNow(group);
+      const simulatedTodayStr = simulatedNow.toISOString().split('T')[0];
+
       if (typeInt === 1) {
         if (groupStatus === 1) {
           isMatch = true;
-          // If auction is scheduled today, label it "Live Now" or "Today"
-          const isAuctionToday = group.auction_date === todayStr;
+          const isAuctionToday = group.auction_date === simulatedTodayStr;
           badgeLabel = 1;
           timingLabel = isAuctionToday ? 'Today' : (group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Today');
         }
@@ -591,7 +601,7 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
           badge_label: badgeLabel,
           timing_label: timingLabel,
           auction_date: group.auction_date,
-          is_today: group.auction_date === todayStr
+          is_today: group.auction_date === simulatedTodayStr
         });
       }
     }
@@ -781,14 +791,14 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         ? (parseFloat(group.penality_for_ps) || 0.00)
         : (parseFloat(group.penality_for_nps) || 0.00);
 
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const simulatedNow = getSimulatedNow(group);
+      simulatedNow.setHours(0, 0, 0, 0);
       const dueDate = new Date(upcomingInstallment.due_date);
       dueDate.setHours(0, 0, 0, 0);
 
       let overDueDaysCount = 0;
-      if (dueDate < today) {
-        const diffTime = today.getTime() - dueDate.getTime();
+      if (dueDate < simulatedNow) {
+        const diffTime = simulatedNow.getTime() - dueDate.getTime();
         overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
       }
       const isOverdue = overDueDaysCount > 0;
@@ -818,7 +828,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         : null;
 
       const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
-      const days_left = !isOverdue ? Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+      const days_left = !isOverdue ? Math.ceil((dueDate.getTime() - simulatedNow.getTime()) / (1000 * 60 * 60 * 24)) : 0;
 
       nextPaymentDue = {
         installment_no: upcomingInstallment.installment_no,
@@ -1239,7 +1249,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
     let total_pending = 0;
     let overdue_members_set = new Set();
     
-    const now = new Date();
+    const simulatedNow = getSimulatedNow(group);
     allInstallments.forEach(inst => {
       const payable = parseFloat(inst.payable_amount) || 0;
       total_payable += payable;
@@ -1249,7 +1259,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
       
       if (pending > 0) {
         total_pending += pending;
-        if (new Date(inst.due_date) < now) {
+        if (new Date(inst.due_date) < simulatedNow) {
           const e = enrollments.find(e => e.id === inst.enrollment_id);
           if (e) overdue_members_set.add(e.subscriber_id);
         }
@@ -1586,7 +1596,9 @@ const submitCollectionPaymentService = async (res, payload) => {
       let pending_installment = payable - paid;
       
       let pending_penalty = 0;
-      if (pending_installment > 0 && new Date(inst.due_date) < new Date()) {
+      const group = enrollments.find(e => e.id === inst.enrollment_id)?.group;
+      const simulatedNow = getSimulatedNow(group);
+      if (pending_installment > 0 && new Date(inst.due_date) < simulatedNow) {
         const expected_penalty = parseFloat(inst.penalty_amount) || 0;
         pending_penalty = Math.max(0, expected_penalty - penaltyAlreadyPaid);
       }

@@ -256,6 +256,16 @@ const updateChitsGroupStatus = async (req, res) => {
   }
 };
 
+const checkChitsGroupCapacity = async (req, res) => {
+  try {
+    const { id } = req.body || req.params || {};
+    return await adminService.checkChitsGroupCapacityService(res, id);
+  } catch (error) {
+    console.error('Error in checkChitsGroupCapacity:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const importLocations = async (req, res) => {
   try {
     return await adminService.importLocationsService(res);
@@ -1180,6 +1190,7 @@ module.exports = {
   getAllChitsGroupDetails,
   deleteChitsGroup,
   updateChitsGroupStatus,
+  checkChitsGroupCapacity,
   importLocations,
   getCountriesList,
   getStatesList,
