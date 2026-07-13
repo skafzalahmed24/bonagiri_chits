@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { Op } = require('sequelize');
 
@@ -475,6 +475,14 @@ const createInstallaments = async (chits_group_id, chits_group_status) => {
       const chitAmount = parseFloat(group.chit_amount) || 0;
       const payableAmount = parseFloat((chitAmount / noOfInstallments).toFixed(2));
 
+      const schemeConfig = group.scheme_configuration_id
+        ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id)
+        : null;
+      
+      const pricesArray = schemeConfig && schemeConfig.prices
+        ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
+        : [];
+
       for (const e of enrollments) {
         const data = e.toJSON();
         const modeName = data.payment_mode ? data.payment_mode.dropdown_name : 'Unknown';
@@ -493,6 +501,20 @@ const createInstallaments = async (chits_group_id, chits_group_status) => {
 
         // Generate JSON data array directly
         for (let i = 1; i <= noOfInstallments; i++) {
+          let currentPayableAmount = payableAmount; // fallback flat amount
+
+          if (schemeConfig) {
+            if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) {
+              const row = pricesArray[i - 1];
+              currentPayableAmount = parseFloat(row?.installment) || 0;
+            } else if (schemeConfig.scheme_type === 62) {
+              const row = pricesArray[i - 1];
+              currentPayableAmount = parseFloat(row?.not_withdrawn) || 0;
+            } else if (schemeConfig.scheme_type === 63) {
+              currentPayableAmount = parseFloat(schemeConfig.installment) || 0;
+            }
+          }
+
           installmentsJsonArray.push({
             enrollment_id: data.id,
             type: mappedType || 1, // Fallback to 1
@@ -500,7 +522,7 @@ const createInstallaments = async (chits_group_id, chits_group_status) => {
             due_date: new Date(dateIterator.getTime() - (dateIterator.getTimezoneOffset() * 60000)).toISOString().split('T')[0],
             over_due_days_count: 0,
             penalty_amount: 0.00,
-            payable_amount: payableAmount
+            payable_amount: currentPayableAmount
           });
 
           // Move iterator forward to the next due date based on schedule type
@@ -1249,6 +1271,52 @@ const storeOrUpdateAuctionService = async (res, data = {}) => {
         { auction_date: auctionData.next_auction_date },
         { where: { id: auctionData.group_id } }
       );
+    }
+
+    if (isNew && auctionData.group_id && auctionData.bidder_id) {
+      const group = await ChitsGroup.findByPk(auctionData.group_id);
+      const schemeConfig = group?.scheme_configuration_id
+        ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id)
+        : null;
+
+      if (schemeConfig) {
+        const winnerEnrollment = await Enrollment.findOne({
+          where: { group_id: auctionData.group_id, subscriber_id: auctionData.bidder_id, delete_status: 0 }
+        });
+
+        if (winnerEnrollment) {
+          const winMonth = auctionData.auction_number; // the month just resolved
+          const PAID_INSTALLMENT_SUBQUERY = '(SELECT chits_installment_id FROM customer_payments WHERE payment_status = 1)';
+          
+          const remainingWhere = {
+            enrollment_id: winnerEnrollment.id,
+            installment_no: { [Op.gt]: winMonth },
+            id: { [Op.notIn]: sequelize.literal(PAID_INSTALLMENT_SUBQUERY) }
+          };
+
+          if (schemeConfig.scheme_type === 62 /* WITHDRAWN */) {
+            const futureInstallments = await ChitsInstallment.findAll({ where: remainingWhere });
+            const pricesArray = schemeConfig.prices
+              ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
+              : [];
+
+            for (const inst of futureInstallments) {
+              const row = pricesArray[inst.installment_no - 1];
+              if (row?.withdrawn != null) {
+                await inst.update({ payable_amount: parseFloat(row.withdrawn) });
+              }
+            }
+          }
+
+          if (schemeConfig.scheme_type === 63 /* FIXED_ADDING */) {
+            const addingAmount = parseFloat(schemeConfig.chit_value) * (parseFloat(schemeConfig.adding_percentage) / 100);
+            await ChitsInstallment.increment(
+              { payable_amount: addingAmount },
+              { where: remainingWhere }
+            );
+          }
+        }
+      }
     }
 
     return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, `Auction ${isNew ? 'created' : 'updated'} successfully`, auctionResult);
