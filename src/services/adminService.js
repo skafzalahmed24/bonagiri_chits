@@ -532,10 +532,9 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
       if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
       if (chitsGroupData.chits_group_status !== undefined && Number(chitsGroupData.chits_group_status) === 1 && chitsGroup.chits_group_status !== 1) {
         const enrollmentsCount = await Enrollment.count({ where: { group_id: id, delete_status: 0 } });
-        const selfChitsCount = await SelfChit.count({ where: { group_id: id, is_deleted_status: 0 } });
-        const totalTaken = enrollmentsCount + selfChitsCount;
+        const totalTaken = enrollmentsCount;
         const requiredPositions = parseInt(chitsGroup.no_of_installments) || 0;
-        
+
         if (totalTaken < requiredPositions) {
           return errorResponse(res, statusCodes.BAD_REQUEST, `Cannot start group. All positions must be filled (${totalTaken}/${requiredPositions} filled).`);
         }
@@ -639,7 +638,18 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search)
       },
       order: [['createdAt', 'DESC']]
     });
-    return successResponse(res, statusCodes.OK, 'Chits groups retrieved successfully', chitsGroups);
+
+    const rowsWithCounts = await Promise.all(chitsGroups.rows.map(async (group) => {
+      const groupData = group.toJSON();
+      const enrollmentsCount = await Enrollment.count({ where: { group_id: groupData.id, delete_status: 0 } });
+      groupData.slot_filled_count = enrollmentsCount;
+      return groupData;
+    }));
+
+    return successResponse(res, statusCodes.OK, 'Chits groups retrieved successfully', {
+      count: chitsGroups.count,
+      rows: rowsWithCounts
+    });
   } catch (error) {
     console.error('Error in getAllChitsGroupDetailsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -670,7 +680,7 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
         const selfChitsCount = await SelfChit.count({ where: { group_id: id, is_deleted_status: 0 } });
         const totalTaken = enrollmentsCount + selfChitsCount;
         const requiredPositions = parseInt(chitsGroup.no_of_installments) || 0;
-        
+
         if (totalTaken < requiredPositions) {
           return errorResponse(res, statusCodes.BAD_REQUEST, `Cannot start group. All positions must be filled (${totalTaken}/${requiredPositions} filled).`);
         }
@@ -679,11 +689,11 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
     }
 
     await chitsGroup.update(updateData);
-    
+
     if (updateData.chits_group_status !== undefined) {
       await createInstallaments(chitsGroup.id, updateData.chits_group_status);
     }
-    
+
     return successResponse(res, statusCodes.OK, 'Chits group status updated successfully', chitsGroup);
   } catch (error) {
     console.error('Error in updateChitsGroupStatusService:', error);
@@ -698,11 +708,11 @@ const checkChitsGroupCapacityService = async (res, id) => {
 
     const enrollmentsCount = await Enrollment.count({ where: { group_id: id, delete_status: 0 } });
     const selfChitsCount = await SelfChit.count({ where: { group_id: id, is_deleted_status: 0 } });
-    
+
     const totalTaken = enrollmentsCount + selfChitsCount;
     const requiredPositions = parseInt(chitsGroup.no_of_installments) || 0;
     const isFull = totalTaken >= requiredPositions;
-    
+
     return successResponse(res, statusCodes.OK, 'Group capacity retrieved successfully', {
       group_id: chitsGroup.id,
       group_name: chitsGroup.group_name,
@@ -963,7 +973,7 @@ const getPositionNumbersService = async (res, group_id) => {
     if (!group) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Group not found');
     }
-    
+
     // Dynamically use the number of installments as the total available positions
     const totalPositions = group.no_of_installments ? parseInt(group.no_of_installments) : 20;
 
@@ -1219,29 +1229,29 @@ const deleteSuitFileInformationService = async (res, id) => {
 
 const storeOrUpdateAuctionService = async (res, data = {}) => {
   try {
-      const { id, ...auctionData } = data;
-      let auctionResult = null;
-      let isNew = false;
-      
-      if (id) {
-        const auction = await Auction.findByPk(id);
-        if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
-        await auction.update(auctionData);
-        auctionResult = auction;
-      } else {
-        auctionResult = await Auction.create(auctionData);
-        isNew = true;
-      }
+    const { id, ...auctionData } = data;
+    let auctionResult = null;
+    let isNew = false;
 
-      // Automatically update the ChitsGroup's auction_date to the next_auction_date so the UI updates
-      if (auctionData.next_auction_date && auctionData.group_id) {
-        await ChitsGroup.update(
-          { auction_date: auctionData.next_auction_date },
-          { where: { id: auctionData.group_id } }
-        );
-      }
+    if (id) {
+      const auction = await Auction.findByPk(id);
+      if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+      await auction.update(auctionData);
+      auctionResult = auction;
+    } else {
+      auctionResult = await Auction.create(auctionData);
+      isNew = true;
+    }
 
-      return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, `Auction ${isNew ? 'created' : 'updated'} successfully`, auctionResult);
+    // Automatically update the ChitsGroup's auction_date to the next_auction_date so the UI updates
+    if (auctionData.next_auction_date && auctionData.group_id) {
+      await ChitsGroup.update(
+        { auction_date: auctionData.next_auction_date },
+        { where: { id: auctionData.group_id } }
+      );
+    }
+
+    return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, `Auction ${isNew ? 'created' : 'updated'} successfully`, auctionResult);
   } catch (error) {
     console.error('Error in storeOrUpdateAuctionService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -2327,7 +2337,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
     let paid_commission = 0;
     const members = configRecords.map(config => {
       const histories = allHistories.filter(h => h.configure_business_agent_id === config.id);
-      
+
       let total_paid = 0;
       histories.forEach(h => {
         total_paid += parseFloat(h.paid_amount) || 0;
@@ -2954,7 +2964,7 @@ const getTermsPrivacyService = async (res, company_id, type) => {
     });
     if (!record) {
       const label = type === 1 ? 'Terms & Conditions' : 'Privacy Policy';
-      return errorResponse(res, statusCodes.NOT_FOUND, `${label} record not found for this company`);
+      return successResponse(res, statusCodes.OK, `${label} record not found for this company`, null);
     }
     return successResponse(res, statusCodes.OK, 'Terms/Privacy record retrieved successfully', record);
   } catch (error) {

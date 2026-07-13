@@ -277,16 +277,18 @@ const chitsGroupValidator = Joi.object({
     'string.uuid': 'Invalid Chits Group ID format'
   }),
   group_name: Joi.string().allow('', null).optional(),
+  chit_category_id: Joi.number().integer().allow(null).optional(),
+  scheme_configuration_id: Joi.string().uuid().allow(null).optional(),
   chit_series_term: Joi.number().integer().required().messages({
     'any.required': 'Chit series term is required'
   }),
   auction_type: Joi.number().integer().required().messages({
     'any.required': 'Auction type is required'
   }),
-  chit_amount: Joi.number().precision(2).required().messages({
+  chit_amount: Joi.number().precision(2).allow(null).optional().messages({
     'any.required': 'Chit amount is required'
   }),
-  no_of_installments: Joi.number().integer().required().messages({
+  no_of_installments: Joi.number().integer().allow(null).optional().messages({
     'any.required': 'Number of installments is required'
   }),
   chit_agreement_number: Joi.string().allow('', null).optional(),
