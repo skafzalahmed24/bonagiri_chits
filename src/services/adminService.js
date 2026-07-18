@@ -1344,7 +1344,11 @@ const deleteSuitFileInformationService = async (res, id) => {
   }
 };
 
-const storeOrUpdateAuctionService = async (res, data = {}) => {
+const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
+  if (!userToken || userToken.role !== 'company') {
+    return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can store or update auctions');
+  }
+  const safeCompanyId = userToken.id;
   const transaction = await sequelize.transaction();
   try {
     const { id, ...auctionData } = data;
@@ -1362,7 +1366,10 @@ const storeOrUpdateAuctionService = async (res, data = {}) => {
     } else {
       if (auctionData.group_id) {
         // B9 Option (b): Block new rows for fixed-scheme groups
-        const group = await ChitsGroup.findByPk(auctionData.group_id, { transaction });
+        const group = await ChitsGroup.findOne({
+          where: { id: auctionData.group_id, company_id: safeCompanyId },
+          transaction
+        });
         if (group && group.scheme_configuration_id) {
           await transaction.rollback();
           return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot manually create auctions for fixed-scheme groups. Please use the Spinner (Record Winner) flow.');
@@ -1403,7 +1410,10 @@ const storeOrUpdateAuctionService = async (res, data = {}) => {
     }
 
     if (isNew && auctionData.group_id && auctionData.bidder_id) {
-      const group = await ChitsGroup.findByPk(auctionData.group_id, { transaction });
+      const group = await ChitsGroup.findOne({
+        where: { id: auctionData.group_id, company_id: safeCompanyId },
+        transaction
+      });
       const schemeConfig = group?.scheme_configuration_id
         ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
         : null;
@@ -1442,12 +1452,13 @@ const storeOrUpdateAuctionService = async (res, data = {}) => {
 };
 
 const recordWinnerService = async (res, reqBody, userToken) => {
+  if (!userToken || userToken.role !== 'company') {
+    return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can record auction winners');
+  }
+  const safeCompanyId = userToken.id;
   const transaction = await sequelize.transaction();
   try {
     const { company_id, group_id, bidder_id, auction_date, pb_bo_proxy, gst_number_percentage, due_date, next_auction_date } = reqBody;
-
-    // B8: Derive company_id from userToken unconditionally
-    const safeCompanyId = userToken.role === 'company' ? userToken.id : userToken.company_id;
 
     // 1. Group checks
     const group = await ChitsGroup.findOne({
@@ -1455,7 +1466,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
         id: group_id, 
         is_deleted_status: 0, 
         chits_group_status: 1,
-        ...(safeCompanyId && { company_id: safeCompanyId }) // Secure scoping
+        company_id: safeCompanyId // Secure scoping
       },
       transaction
     });

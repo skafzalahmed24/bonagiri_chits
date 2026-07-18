@@ -502,7 +502,7 @@ const storeOrUpdateAuction = async (req, res) => {
     if (req.user && req.user.role === 'company' && req.user.id) {
       data.company_id = req.user.id;
     }
-    return await adminService.storeOrUpdateAuctionService(res, data);
+    return await adminService.storeOrUpdateAuctionService(res, data, req.user);
   } catch (error) {
     console.error('Error in storeOrUpdateAuction:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
