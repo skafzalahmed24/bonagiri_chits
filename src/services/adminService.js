@@ -186,9 +186,11 @@ const storeOrUpdateCompanyService = async (res, data = {}) => {
   if (id) {
     const company = await Company.findByPk(id);
     if (!company) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+    delete companyData.company_id; // prevent updating generated field
     await company.update(companyData);
     return successResponse(res, statusCodes.OK, 'Company updated successfully', company);
   } else {
+    delete companyData.company_id; // model hook will handle creation
     const newCompany = await Company.create(companyData);
     return successResponse(res, statusCodes.CREATED, 'Company registered successfully', newCompany);
   }
@@ -233,27 +235,34 @@ const generateUniqueMemberId = async () => {
 const storeOrUpdateMemberService = async (res, data = {}) => {
   try {
     const { id, ...memberData } = data;
-    if (!memberData.member_id) {
-      memberData.member_id = await generateUniqueMemberId();
-    } else {
-      const existing = await Member.findOne({ where: { member_id: memberData.member_id, ...(id && { id: { [Op.ne]: id } }) } });
-      if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Member ID already exists');
-    }
-    if (!memberData.other_info_user_code) memberData.other_info_user_code = await generateUniqueUserCode();
-    else {
-      const existing = await Member.findOne({ where: { other_info_user_code: memberData.other_info_user_code, ...(id && { id: { [Op.ne]: id } }) } });
-      if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'User Code already exists');
-    }
     if (id) {
       // Update existing
       const member = await Member.findByPk(id);
       if (!member) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
       }
+      // Prevent updating generated fields during edit
+      delete memberData.member_id;
+      delete memberData.other_info_user_code;
+
       await member.update(memberData);
       return successResponse(res, statusCodes.OK, 'Member updated successfully', member);
     } else {
       // Create new
+      if (!memberData.member_id) {
+        memberData.member_id = await generateUniqueMemberId();
+      } else {
+        const existing = await Member.findOne({ where: { member_id: memberData.member_id } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Member ID already exists');
+      }
+
+      if (!memberData.other_info_user_code) {
+        memberData.other_info_user_code = await generateUniqueUserCode();
+      } else {
+        const existing = await Member.findOne({ where: { other_info_user_code: memberData.other_info_user_code } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'User Code already exists');
+      }
+
       const newMember = await Member.create(memberData);
       return successResponse(res, statusCodes.CREATED, 'Member registered successfully', newMember);
     }
