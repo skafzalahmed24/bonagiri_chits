@@ -188,5 +188,10 @@ router.post('/gallery/store-or-update', authMiddleware.authenticateToken, valida
 router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllGallerySchema), adminController.getAllGallery);
 router.post('/gallery/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getGalleryById);
 router.post('/gallery/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteGallerySchema), adminController.deleteGallery);
+// schedule view route
+router.post('/chits-installment/get-by-group', authMiddleware.authenticateToken, adminController.getInstallmentsByGroup);
+
+// record winner route
+router.post('/auction/record-winner', authMiddleware.authenticateToken, adminController.recordWinner);
 
 module.exports = router;

@@ -1,6 +1,6 @@
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Enrollment, Company, ChitsGroup, Member, StaticDropdownsList, Area, City, ChitsInstallment, UpcomingChit, UpcomingChitInterest, Auction, CustomerPayment, CollectionAgentAmount, Gallery, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, UpcomingChit, UpcomingChitInterest, Auction, ChitsInstallment, CustomerPayment, CollectionAgentAmount, GroupUnderStaticList, SelfChit, FixedSchemeChitsConfiguration, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 const { getSimulatedNow } = require('../utils/timeSimulator');
@@ -137,8 +137,16 @@ const getAllHomeRecordsService = async (res, subscriber_id, type = 0, min = 0, m
     const resolvedData = await Promise.all(enrollments.map(async (enrollment) => {
       const group = await ChitsGroup.findOne({
         where: { id: enrollment.group_id },
-        attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments']
+        attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'scheme_configuration_id']
       });
+
+      let schemeType = null;
+      if (group && group.scheme_configuration_id) {
+        const scheme = await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, {
+          attributes: ['scheme_type']
+        });
+        if (scheme) schemeType = scheme.scheme_type;
+      }
 
       const upcomingInstallment = await ChitsInstallment.findOne({
         where: {
@@ -165,6 +173,7 @@ const getAllHomeRecordsService = async (res, subscriber_id, type = 0, min = 0, m
         group_name: group ? group.group_name : null,
         chit_amount: group ? (parseFloat(group.chit_amount) || 0) : null,
         no_of_installments: group ? group.no_of_installments : null,
+        scheme_type: schemeType,
         completed_installments_count: totalAuctionsCount,
         positions_occupied_count: occupiedCount,
         total_positions: 20,
@@ -620,12 +629,18 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
   }
 };
 
+const { getSchemeWinningAmount, getSchemeOriginalAmount } = require('../utils/schemeHelpers');
+
 const getBidDetailsService = async (res, group_id) => {
   try {
     const group = await ChitsGroup.findByPk(group_id);
     if (!group) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Chit group not found');
     }
+
+    const schemeConfig = group.scheme_configuration_id
+      ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id)
+      : null;
 
     // 1. Fetch the latest completed auction for this group
     const latestAuction = await Auction.findOne({
@@ -651,7 +666,10 @@ const getBidDetailsService = async (res, group_id) => {
     const totalInstallments = group.no_of_installments || 1;
     const currentMonthFormatted = `${currentInstallmentNo}/${totalInstallments}`;
 
-    const bidWinningAmount = latestAuction ? parseFloat(latestAuction.bid_amount) : 0.00;
+    const rawBidAmount = latestAuction ? (parseFloat(latestAuction.bid_amount) || 0.00) : 0.00;
+    const bidWinningAmount = latestAuction 
+      ? (getSchemeWinningAmount(schemeConfig, latestAuction.auction_number) ?? rawBidAmount)
+      : 0.00;
 
     // Status label mapping: 0 = Upcoming, 1 = Live Now, 2 = Completed
     const groupStatus = Number(group.chits_group_status);
@@ -692,6 +710,10 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
     if (!group) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Chit group not found');
     }
+
+    const schemeConfig = group.scheme_configuration_id
+      ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id)
+      : null;
 
     // 2. Fetch the subscriber's enrollments in this group
     const userEnrollments = await Enrollment.findAll({
@@ -914,7 +936,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         : (auction.bidder && auction.bidder.member_id ? `#${auction.bidder.member_id}` : 'N/A');
 
       // Math card stats
-      const originalAmountVal = parseFloat(group.installment_amount) || 0.00;
+      const originalAmountVal = getSchemeOriginalAmount(schemeConfig, auction);
       let profitAmountVal = 0.00;
 
       // Check if we have subscriber's installment record for this installment number
@@ -977,12 +999,15 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         });
       }
 
+      const rawBidAmount = parseFloat(auction.bid_amount) || 0.00;
+      const bidWinningAmount = getSchemeWinningAmount(schemeConfig, auction.auction_number) ?? rawBidAmount;
+
       monthlyActivity.push({
         id: auction.id,
         auction_number: auction.auction_number,
         month_name: monthName,
         auction_date_formatted: auctionDateFormatted,
-        bid_winning_amount: parseFloat(auction.bid_amount) || 0.00,
+        bid_winning_amount: parseFloat(bidWinningAmount.toFixed(2)),
         winner_name: auction.bidder ? auction.bidder.name : 'N/A',
         winner_member_id: winnerTicketFormatted,
         payable_amount: parseFloat(payableAmountVal.toFixed(2)),
@@ -1014,6 +1039,10 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         total_paid_amount: parseFloat(totalPaidAmount.toFixed(2)),
         next_payment_due: nextPaymentDue
       },
+      scheme: schemeConfig ? {
+        ...schemeConfig.toJSON(),
+        prices: typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices
+      } : null,
       monthly_activity: monthlyActivity
     };
 

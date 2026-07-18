@@ -1154,6 +1154,29 @@ const deleteGallery = async (req, res) => {
   return await adminService.deleteGalleryService(res, req.body.id);
 };
 
+const getInstallmentsByGroup = async (req, res) => {
+  try {
+    const { group_id, enrollment_id, min, max } = req.body || {};
+    return await adminService.getInstallmentsByGroupService(res, group_id, enrollment_id, min, max);
+  } catch (error) {
+    console.error('Error in getInstallmentsByGroup:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const recordWinner = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    if (req.user && req.user.role === 'company' && req.user.id) {
+      data.company_id = req.user.id;
+    }
+    return await adminService.recordWinnerService(res, data);
+  } catch (error) {
+    console.error('Error in recordWinner:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1265,5 +1288,7 @@ module.exports = {
   storeOrUpdateGallery,
   getAllGallery,
   getGalleryById,
-  deleteGallery
+  deleteGallery,
+  getInstallmentsByGroup,
+  recordWinner
 };

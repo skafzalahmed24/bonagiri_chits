@@ -4,6 +4,7 @@ const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
 const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
+const { applyWinnerSchemeAdjustments, getSchemeWinningAmount } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 
 const getCompanyIdFromUser = async (userPayload, reqBody = {}) => {
@@ -1161,11 +1162,22 @@ const getGroupMembersService = async (res, company_id, group_id, min, max) => {
       order: [['group_position_number', 'ASC']]
     });
 
-    const members = enrollments.map(e => ({
-      id: e.subscriber ? e.subscriber.id : null,
-      name: e.subscriber ? e.subscriber.name : null,
-      position: e.group_position_number
-    }));
+    const auctions = await Auction.findAll({
+      where: { group_id },
+      attributes: ['bidder_id', 'auction_number']
+    });
+
+    const members = enrollments.map(e => {
+      const memberId = e.subscriber ? e.subscriber.id : null;
+      const winData = auctions.find(a => a.bidder_id === memberId);
+      return {
+        id: memberId,
+        name: e.subscriber ? e.subscriber.name : null,
+        position: e.group_position_number,
+        has_won: !!winData,
+        won_month: winData ? parseInt(winData.auction_number, 10) : null
+      };
+    });
 
     return successResponse(res, statusCodes.OK, 'Group members retrieved successfully', { count, rows: members });
   } catch (error) {
@@ -1250,18 +1262,34 @@ const deleteSuitFileInformationService = async (res, id) => {
 };
 
 const storeOrUpdateAuctionService = async (res, data = {}) => {
+  const transaction = await sequelize.transaction();
   try {
     const { id, ...auctionData } = data;
     let auctionResult = null;
     let isNew = false;
 
     if (id) {
-      const auction = await Auction.findByPk(id);
-      if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
-      await auction.update(auctionData);
+      const auction = await Auction.findByPk(id, { transaction });
+      if (!auction) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+      }
+      await auction.update(auctionData, { transaction });
       auctionResult = auction;
     } else {
-      auctionResult = await Auction.create(auctionData);
+      // Duplicate-winner guard for new auctions
+      if (auctionData.group_id && auctionData.bidder_id) {
+        const existingWin = await Auction.findOne({
+          where: { group_id: auctionData.group_id, bidder_id: auctionData.bidder_id },
+          transaction
+        });
+        if (existingWin) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
+        }
+      }
+
+      auctionResult = await Auction.create(auctionData, { transaction });
       isNew = true;
     }
 
@@ -1269,59 +1297,171 @@ const storeOrUpdateAuctionService = async (res, data = {}) => {
     if (auctionData.next_auction_date && auctionData.group_id) {
       await ChitsGroup.update(
         { auction_date: auctionData.next_auction_date },
-        { where: { id: auctionData.group_id } }
+        { where: { id: auctionData.group_id }, transaction }
       );
     }
 
     if (isNew && auctionData.group_id && auctionData.bidder_id) {
-      const group = await ChitsGroup.findByPk(auctionData.group_id);
+      const group = await ChitsGroup.findByPk(auctionData.group_id, { transaction });
       const schemeConfig = group?.scheme_configuration_id
-        ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id)
+        ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
         : null;
 
       if (schemeConfig) {
         const winnerEnrollment = await Enrollment.findOne({
-          where: { group_id: auctionData.group_id, subscriber_id: auctionData.bidder_id, delete_status: 0 }
+          where: { group_id: auctionData.group_id, subscriber_id: auctionData.bidder_id, delete_status: 0 },
+          transaction
         });
 
         if (winnerEnrollment) {
-          const winMonth = auctionData.auction_number; // the month just resolved
-          const PAID_INSTALLMENT_SUBQUERY = '(SELECT chits_installment_id FROM customer_payments WHERE payment_status = 1)';
-          
-          const remainingWhere = {
-            enrollment_id: winnerEnrollment.id,
-            installment_no: { [Op.gt]: winMonth },
-            id: { [Op.notIn]: sequelize.literal(PAID_INSTALLMENT_SUBQUERY) }
-          };
-
-          if (schemeConfig.scheme_type === 62 /* WITHDRAWN */) {
-            const futureInstallments = await ChitsInstallment.findAll({ where: remainingWhere });
-            const pricesArray = schemeConfig.prices
-              ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
-              : [];
-
-            for (const inst of futureInstallments) {
-              const row = pricesArray[inst.installment_no - 1];
-              if (row?.withdrawn != null) {
-                await inst.update({ payable_amount: parseFloat(row.withdrawn) });
-              }
-            }
-          }
-
-          if (schemeConfig.scheme_type === 63 /* FIXED_ADDING */) {
-            const addingAmount = parseFloat(schemeConfig.chit_value) * (parseFloat(schemeConfig.adding_percentage) / 100);
-            await ChitsInstallment.increment(
-              { payable_amount: addingAmount },
-              { where: remainingWhere }
-            );
-          }
+          await applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnrollment.id, transaction);
         }
       }
     }
 
+    await transaction.commit();
     return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, `Auction ${isNew ? 'created' : 'updated'} successfully`, auctionResult);
   } catch (error) {
+    await transaction.rollback();
     console.error('Error in storeOrUpdateAuctionService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const recordWinnerService = async (res, reqBody) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const { company_id, group_id, bidder_id, auction_date, pb_bo_proxy, gst_number_percentage, due_date, next_auction_date } = reqBody;
+
+    // 1. Group checks
+    const group = await ChitsGroup.findOne({
+      where: { id: group_id, is_deleted_status: 0, chits_group_status: 1 },
+      transaction
+    });
+
+    if (!group) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Group is not started or does not exist');
+    }
+
+    // 2. Bidder checks
+    const winnerEnrollment = await Enrollment.findOne({
+      where: { group_id, subscriber_id: bidder_id, delete_status: 0 },
+      transaction
+    });
+
+    if (!winnerEnrollment) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Bidder is not enrolled in this group');
+    }
+
+    // 3. Duplicate-winner guard
+    const existingWin = await Auction.findOne({
+      where: { group_id, bidder_id },
+      transaction
+    });
+    
+    if (existingWin) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
+    }
+
+    // 4. Auction number
+    const lastAuction = await Auction.findOne({
+      where: { group_id },
+      order: [['auction_number', 'DESC']],
+      transaction
+    });
+    
+    const lastRecorded = lastAuction ? parseInt(lastAuction.auction_number, 10) : 0;
+
+    let schemeConfig = null;
+    let companyMonths = 0;
+    
+    if (group.scheme_configuration_id) {
+      schemeConfig = await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction });
+      if (schemeConfig) {
+        if (schemeConfig.scheme_type === 63) {
+          companyMonths = parseInt(schemeConfig.company_chit, 10) || 1;
+        } else if (schemeConfig.scheme_type === 64) {
+          companyMonths = 1;
+        }
+      }
+    }
+
+    const nextAuctionNumber = Math.max(lastRecorded, companyMonths) + 1;
+
+    // Guard against exceeding schedule
+    if (nextAuctionNumber > (group.no_of_installments || 0)) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Auction schedule is already finished for this group');
+    }
+
+    // 5. Amount
+    let auctionData = {
+      company_id: company_id || group.company_id,
+      group_id,
+      bidder_id,
+      auction_number: nextAuctionNumber,
+      auction_date: auction_date || new Date().toISOString().split('T')[0],
+      pb_bo_proxy: pb_bo_proxy || 'Prized Bidder',
+      due_date,
+      next_auction_date
+    };
+
+    if (schemeConfig) {
+      const derivedWinningAmount = getSchemeWinningAmount(schemeConfig, nextAuctionNumber);
+      if (derivedWinningAmount === null) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot record winner for a company month');
+      }
+      auctionData.bid_amount = derivedWinningAmount;
+    } else {
+      const bid_amount = parseFloat(reqBody.bid_amount);
+      if (isNaN(bid_amount) || bid_amount <= 0) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'bid_amount is required for Open Auction groups');
+      }
+      auctionData.bid_amount = bid_amount;
+      const chitAmount = parseFloat(group.chit_amount) || 0;
+      const installments = parseInt(group.no_of_installments, 10) || 1;
+      const companyCommissionPct = parseFloat(group.company_commission) || 0;
+      
+      const subscription = chitAmount / installments;
+      const commission = chitAmount * (companyCommissionPct / 100);
+      const gstPct = parseFloat(gst_number_percentage) || 18;
+      const gst = commission * (gstPct / 100);
+      const dividend = bid_amount - commission - gst;
+      
+      // Calculate total enrollments for dividend distribution
+      const totalEnrollments = await Enrollment.count({ where: { group_id, delete_status: 0 }, transaction });
+      const membersCount = totalEnrollments > 0 ? totalEnrollments : installments;
+      const netPayable = subscription - (dividend / membersCount);
+
+      auctionData.subscription_amount = subscription;
+      auctionData.company_commission = commission;
+      auctionData.gst_amount = gst;
+      auctionData.dividend = dividend;
+      auctionData.net_payable = netPayable;
+    }
+
+    // 6. Create auction row and apply adjustments
+    const newAuction = await Auction.create(auctionData, { transaction });
+    
+    if (schemeConfig) {
+      await applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnrollment.id, transaction);
+    }
+
+    // 7. Update ChitsGroup auction_date
+    if (next_auction_date) {
+      await group.update({ auction_date: next_auction_date }, { transaction });
+    }
+
+    await transaction.commit();
+    return successResponse(res, statusCodes.CREATED, 'Auction recorded successfully', { ...newAuction.toJSON(), auction_number: nextAuctionNumber });
+  } catch (error) {
+    await transaction.rollback();
+    console.error('Error in recordWinnerService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -3360,5 +3500,6 @@ module.exports = {
   storeOrUpdateGalleryService,
   getAllGalleryService,
   getGalleryByIdService,
-  deleteGalleryService
+  deleteGalleryService,
+  recordWinnerService
 };
