@@ -1186,6 +1186,80 @@ const getGroupMembersService = async (res, company_id, group_id, min, max) => {
   }
 };
 
+const getInstallmentsByGroupService = async (res, group_id, enrollment_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 100;
+    const offset = parseInt(min, 10) || 0;
+
+    let enrollmentWhere = { group_id, delete_status: 0 };
+    if (enrollment_id) {
+      enrollmentWhere.id = enrollment_id;
+    }
+
+    const enrollments = await Enrollment.findAll({
+      where: enrollmentWhere,
+      attributes: ['id']
+    });
+
+    const enrollmentIds = enrollments.map(e => e.id);
+
+    if (enrollmentIds.length === 0) {
+      return successResponse(res, statusCodes.OK, 'Installments retrieved successfully', { count: 0, rows: [] });
+    }
+
+    const { count, rows: installments } = await ChitsInstallment.findAndCountAll({
+      where: { enrollment_id: { [Op.in]: enrollmentIds } },
+      include: [
+        {
+          model: Enrollment,
+          as: 'enrollment',
+          include: [
+            {
+              model: Member,
+              as: 'subscriber',
+              attributes: ['id', 'name']
+            }
+          ]
+        },
+        {
+          model: CustomerPayment,
+          as: 'payments',
+          where: { payment_status: 1 },
+          required: false // LEFT JOIN
+        }
+      ],
+      limit,
+      offset,
+      order: [
+        ['installment_no', 'ASC'],
+        [{ model: Enrollment, as: 'enrollment' }, 'group_position_number', 'ASC']
+      ]
+    });
+
+    const rows = installments.map(inst => {
+      const payment = inst.payments && inst.payments.length > 0 ? inst.payments[0] : null;
+      return {
+        id: inst.id,
+        enrollment_id: inst.enrollment_id,
+        subscriber: inst.enrollment && inst.enrollment.subscriber ? inst.enrollment.subscriber : null,
+        group_position_number: inst.enrollment ? inst.enrollment.group_position_number : null,
+        installment_no: inst.installment_no,
+        due_date: inst.due_date,
+        payable_amount: inst.payable_amount,
+        penalty_amount: inst.penalty_amount,
+        is_paid: !!payment,
+        paid_amount: payment ? payment.amount : "0.00",
+        payment_date: payment ? payment.payment_date : null
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Installments retrieved successfully', { count, rows });
+  } catch (error) {
+    console.error('Error in getInstallmentsByGroupService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to fetch installments');
+  }
+};
+
 const storeOrUpdateSuitFileInformationService = async (res, data = {}) => {
   try {
     const { id, ...suitData } = data;
@@ -1277,15 +1351,33 @@ const storeOrUpdateAuctionService = async (res, data = {}) => {
       await auction.update(auctionData, { transaction });
       auctionResult = auction;
     } else {
-      // Duplicate-winner guard for new auctions
-      if (auctionData.group_id && auctionData.bidder_id) {
-        const existingWin = await Auction.findOne({
-          where: { group_id: auctionData.group_id, bidder_id: auctionData.bidder_id },
+      if (auctionData.group_id) {
+        // B9 Option (b): Block new rows for fixed-scheme groups
+        const group = await ChitsGroup.findByPk(auctionData.group_id, { transaction });
+        if (group && group.scheme_configuration_id) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot manually create auctions for fixed-scheme groups. Please use the Spinner (Record Winner) flow.');
+        }
+
+        // B7: Auto-assign auction_number
+        const lastAuction = await Auction.findOne({
+          where: { group_id: auctionData.group_id },
+          order: [['auction_number', 'DESC']],
           transaction
         });
-        if (existingWin) {
-          await transaction.rollback();
-          return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
+        const lastRecorded = lastAuction ? parseInt(lastAuction.auction_number, 10) : 0;
+        auctionData.auction_number = lastRecorded + 1;
+
+        // Duplicate-winner guard for new auctions
+        if (auctionData.bidder_id) {
+          const existingWin = await Auction.findOne({
+            where: { group_id: auctionData.group_id, bidder_id: auctionData.bidder_id },
+            transaction
+          });
+          if (existingWin) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
+          }
         }
       }
 
@@ -1323,25 +1415,45 @@ const storeOrUpdateAuctionService = async (res, data = {}) => {
     return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, `Auction ${isNew ? 'created' : 'updated'} successfully`, auctionResult);
   } catch (error) {
     await transaction.rollback();
+    
+    // B6: Catch DB unique constraint errors
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      const errItem = error.errors && error.errors[0];
+      if (errItem && errItem.path === 'auctions_group_bidder_unique') {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'This member has already won an auction in this group');
+      }
+      if (errItem && errItem.path === 'auctions_group_auction_number_unique') {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'This auction number has already been recorded for this group');
+      }
+    }
+
     console.error('Error in storeOrUpdateAuctionService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
 
-const recordWinnerService = async (res, reqBody) => {
+const recordWinnerService = async (res, reqBody, userToken) => {
   const transaction = await sequelize.transaction();
   try {
     const { company_id, group_id, bidder_id, auction_date, pb_bo_proxy, gst_number_percentage, due_date, next_auction_date } = reqBody;
 
+    // B8: Derive company_id from userToken unconditionally
+    const safeCompanyId = userToken.role === 'company' ? userToken.id : userToken.company_id;
+
     // 1. Group checks
     const group = await ChitsGroup.findOne({
-      where: { id: group_id, is_deleted_status: 0, chits_group_status: 1 },
+      where: { 
+        id: group_id, 
+        is_deleted_status: 0, 
+        chits_group_status: 1,
+        ...(safeCompanyId && { company_id: safeCompanyId }) // Secure scoping
+      },
       transaction
     });
 
     if (!group) {
       await transaction.rollback();
-      return errorResponse(res, statusCodes.BAD_REQUEST, 'Group is not started or does not exist');
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Group is not started, does not exist, or you have no access');
     }
 
     // 2. Bidder checks
@@ -1399,7 +1511,7 @@ const recordWinnerService = async (res, reqBody) => {
 
     // 5. Amount
     let auctionData = {
-      company_id: company_id || group.company_id,
+      company_id: safeCompanyId || group.company_id,
       group_id,
       bidder_id,
       auction_number: nextAuctionNumber,
@@ -1461,6 +1573,18 @@ const recordWinnerService = async (res, reqBody) => {
     return successResponse(res, statusCodes.CREATED, 'Auction recorded successfully', { ...newAuction.toJSON(), auction_number: nextAuctionNumber });
   } catch (error) {
     await transaction.rollback();
+    
+    // B6: Catch DB unique constraint errors
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      const errItem = error.errors && error.errors[0];
+      if (errItem && errItem.path === 'auctions_group_bidder_unique') {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'This member has already won an auction in this group');
+      }
+      if (errItem && errItem.path === 'auctions_group_auction_number_unique') {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'This auction number has already been recorded for this group');
+      }
+    }
+
     console.error('Error in recordWinnerService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
@@ -3444,10 +3568,12 @@ module.exports = {
   deleteUpcomingChitService,
   updateFavoritesService,
   getGroupMembersService,
+  getInstallmentsByGroupService,
   storeOrUpdateSuitFileInformationService,
   getAllSuitFileInformationService,
   deleteSuitFileInformationService,
   storeOrUpdateAuctionService,
+  recordWinnerService,
   getAllAuctionsService,
   deleteAuctionService,
   getAllSubcategoriesService,
