@@ -295,6 +295,7 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
       limit,
       offset,
       where,
+      attributes: { exclude: ['verification_otp', 'verification_otp_expires_at', 'verification_otp_attempts', 'other_info_user_password'] },
       include: [
         { model: StaticDropdownsList, as: 'title', attributes: ['dropdown_name'] },
         { model: StaticDropdownSubcategoryList, as: 'parental_title', attributes: ['subcategory_name'] },
@@ -2911,6 +2912,7 @@ const getCompanyByIdService = async (res, id) => {
 const getMemberByIdService = async (res, id) => {
   try {
     const member = await Member.findByPk(id, {
+      attributes: { exclude: ['verification_otp', 'verification_otp_expires_at', 'verification_otp_attempts', 'other_info_user_password'] },
       include: [
         { model: StaticDropdownsList, as: 'title' },
         { model: StaticDropdownSubcategoryList, as: 'parental_title' },
