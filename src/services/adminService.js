@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
@@ -15,6 +15,9 @@ const getCompanyIdFromUser = async (userPayload, reqBody = {}) => {
 
   if (userPayload.role === 'company') {
     return userPayload.id;
+  }
+  if (userPayload.role === 'staff') {
+    return userPayload.company_id; // already embedded in the JWT, no DB lookup needed
   }
   if (userPayload.role === 'member') {
     const mem = await Member.findByPk(userPayload.id);
@@ -46,6 +49,17 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     if (type === 1) {
       user = await Company.findOne({ where: { company_id: user_code, company_password: password, is_deleted_status: 0 } });
       role = 'company';
+      
+      if (!user) {
+        const staffUser = await StaffUser.findOne({ where: { user_code, password, is_deleted_status: 0 } });
+        if (staffUser) {
+          if (!staffUser.is_active) {
+            return errorResponse(res, statusCodes.FORBIDDEN, "You don't have access to login");
+          }
+          user = staffUser;
+          role = 'staff';
+        }
+      }
     } else if (type === 2) {
       user = await Member.findOne({ where: { other_info_user_code: user_code, other_info_user_password: password, is_deleted_status: 0 } });
       if (user && !user.is_verified) {
@@ -65,10 +79,18 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       device_details
     });
 
+    let staffPermissions = null;
+    if (role === 'staff') {
+      const staffRole = await Role.findByPk(user.role_id);
+      staffPermissions = staffRole?.permissions || {};
+    }
+
     const payload = {
       id: user.id,
-      user_id: type === 1 ? user.company_id : user.other_info_user_code,
+      user_id: type === 1 ? (role === 'company' ? user.company_id : user.user_code) : user.other_info_user_code,
       role,
+      company_id: role !== 'company' ? user.company_id : undefined,
+      permissions: role === 'staff' ? staffPermissions : undefined,
       device_unique_id
     };
     const tokens = generateTokens(payload);
@@ -104,9 +126,10 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       user: {
         id: user.id,
         user_id: payload.user_id,
-        company_id: type === 1 ? user.id : user.company_id,
-        name: user.company_name || user.name,
+        company_id: type === 1 ? (role === 'company' ? user.id : user.company_id) : user.company_id,
+        name: user.company_name || (user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user.name),
         type: user.type,
+        role: role,
         is_favorites: user.is_favorites || [],
         introduced_as: introduced_as_details
       },
@@ -120,14 +143,23 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
 
 const forgotPasswordService = async (res, user_code, type) => {
   try {
-    let user;
-    if (type === 1) user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
-    else user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+    let user, role;
+    if (type === 1) {
+      user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+      role = 'company';
+      if (!user) {
+        user = await StaffUser.findOne({ where: { user_code, is_deleted_status: 0 } });
+        role = 'staff';
+      }
+    } else {
+      user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+      role = 'member';
+    }
 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
 
     const otp = '123456'; // Default as per request
-    await user.update({ mobile_otp: otp });
+    await user.update(role === 'staff' ? { otp } : { mobile_otp: otp });
 
     // TODO: Call sendMesageOtpMobile(user.mobile_number, otp) if implemented
     return successResponse(res, statusCodes.OK, 'OTP sent successfully', { user_code, type });
@@ -140,8 +172,14 @@ const forgotPasswordService = async (res, user_code, type) => {
 const verifyOtpService = async (res, user_code, type, otp) => {
   try {
     let user;
-    if (type === 1) user = await Company.findOne({ where: { company_id: user_code, mobile_otp: otp, is_deleted_status: 0 } });
-    else user = await Member.findOne({ where: { other_info_user_code: user_code, mobile_otp: otp, is_deleted_status: 0 } });
+    if (type === 1) {
+      user = await Company.findOne({ where: { company_id: user_code, mobile_otp: otp, is_deleted_status: 0 } });
+      if (!user) {
+        user = await StaffUser.findOne({ where: { user_code, otp, is_deleted_status: 0 } });
+      }
+    } else {
+      user = await Member.findOne({ where: { other_info_user_code: user_code, mobile_otp: otp, is_deleted_status: 0 } });
+    }
 
     if (!user) return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid OTP');
 
@@ -154,13 +192,23 @@ const verifyOtpService = async (res, user_code, type, otp) => {
 
 const resetPasswordService = async (res, user_code, type, password) => {
   try {
-    let user;
-    if (type === 1) user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
-    else user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+    let user, role;
+    if (type === 1) {
+      user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+      role = 'company';
+      if (!user) {
+        user = await StaffUser.findOne({ where: { user_code, is_deleted_status: 0 } });
+        role = 'staff';
+      }
+    } else {
+      user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+      role = 'member';
+    }
 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
 
-    if (type === 1) await user.update({ company_password: password, mobile_otp: null });
+    if (role === 'company') await user.update({ company_password: password, mobile_otp: null });
+    else if (role === 'staff') await user.update({ password: password, otp: null });
     else await user.update({ other_info_user_password: password, mobile_otp: null });
 
     return successResponse(res, statusCodes.OK, 'Password reset successfully');
@@ -3620,6 +3668,177 @@ const verifyMemberOtpService = async (res, member_id, otp) => {
   }
 };
 
+const generateUniqueStaffUserCode = async () => {
+  let userCode;
+  let exists = true;
+  while (exists) {
+    userCode = Math.floor(100000 + Math.random() * 900000);
+    const count = await StaffUser.count({ where: { user_code: userCode } });
+    if (count === 0) exists = false;
+  }
+  return userCode;
+};
+
+const storeOrUpdateStaffService = async (res, data = {}, userToken) => {
+  try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can manage staff users');
+    }
+    const { id, password, ...staffData } = data;
+    const companyId = userToken.id;
+
+    if (id) {
+      const staff = await StaffUser.findOne({ where: { id, company_id: companyId } });
+      if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
+      await staff.update(staffData);
+      return successResponse(res, statusCodes.OK, 'Staff user updated successfully', staff);
+    }
+
+    const user_code = await generateUniqueStaffUserCode();
+    const newStaff = await StaffUser.create({ ...staffData, password, user_code, company_id: companyId });
+    return successResponse(res, statusCodes.CREATED, 'Staff user created successfully', newStaff);
+  } catch (error) {
+    console.error('Error in storeOrUpdateStaffService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllStaffService = async (res, companyId, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = { company_id: companyId, is_deleted_status: 0 };
+    if (search) {
+      where[Op.or] = [
+        { first_name: { [Op.like]: `%${search}%` } },
+        { last_name: { [Op.like]: `%${search}%` } },
+        sequelize.where(sequelize.cast(sequelize.col('user_code'), 'varchar'), { [Op.like]: `%${search}%` }),
+      ];
+    }
+    const staffUsers = await StaffUser.findAndCountAll({
+      where,
+      limit,
+      offset,
+      attributes: { exclude: ['password', 'otp'] },
+      include: [{ model: Role, as: 'role', attributes: ['name'] }],
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'Staff users retrieved successfully', staffUsers);
+  } catch (error) {
+    console.error('Error in getAllStaffService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStaffByIdService = async (res, id, companyId) => {
+  try {
+    const staff = await StaffUser.findOne({
+      where: { id, company_id: companyId, is_deleted_status: 0 },
+      attributes: { exclude: ['password', 'otp'] },
+      include: [{ model: Role, as: 'role' }]
+    });
+    if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
+    return successResponse(res, statusCodes.OK, 'Staff user retrieved successfully', staff);
+  } catch (error) {
+    console.error('Error in getStaffByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteStaffService = async (res, id, companyId) => {
+  try {
+    const staff = await StaffUser.findOne({ where: { id, company_id: companyId } });
+    if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
+    await staff.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Staff user deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteStaffService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const staffChangePasswordService = async (res, userToken, member_id, new_password) => {
+  try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can reset staff passwords');
+    }
+    const staff = await StaffUser.findOne({ where: { id: member_id, company_id: userToken.id } });
+    if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
+    await staff.update({ password: new_password });
+    return successResponse(res, statusCodes.OK, 'Password updated successfully');
+  } catch (error) {
+    console.error('Error in staffChangePasswordService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateRoleService = async (res, data = {}, userToken) => {
+  try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can manage roles');
+    }
+    const { id, ...roleData } = data;
+    const companyId = userToken.id;
+
+    if (id) {
+      const role = await Role.findOne({ where: { id, company_id: companyId } });
+      if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
+      await role.update(roleData);
+      return successResponse(res, statusCodes.OK, 'Role updated successfully', role);
+    }
+    
+    const newRole = await Role.create({ ...roleData, company_id: companyId });
+    return successResponse(res, statusCodes.CREATED, 'Role created successfully', newRole);
+  } catch (error) {
+    console.error('Error in storeOrUpdateRoleService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllRoleService = async (res, companyId, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = { company_id: companyId, status: 1 };
+    if (search) {
+      where.name = { [Op.like]: `%${search}%` };
+    }
+    const roles = await Role.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'Roles retrieved successfully', roles);
+  } catch (error) {
+    console.error('Error in getAllRoleService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getRoleByIdService = async (res, id, companyId) => {
+  try {
+    const role = await Role.findOne({ where: { id, company_id: companyId, status: 1 } });
+    if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
+    return successResponse(res, statusCodes.OK, 'Role retrieved successfully', role);
+  } catch (error) {
+    console.error('Error in getRoleByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteRoleService = async (res, id, companyId) => {
+  try {
+    const role = await Role.findOne({ where: { id, company_id: companyId } });
+    if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
+    await role.update({ status: 0 });
+    return successResponse(res, statusCodes.OK, 'Role deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteRoleService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -3738,5 +3957,14 @@ module.exports = {
   deleteGalleryService,
   recordWinnerService,
   sendMemberVerificationOtpService,
-  verifyMemberOtpService
+  verifyMemberOtpService,
+  storeOrUpdateStaffService,
+  getAllStaffService,
+  getStaffByIdService,
+  deleteStaffService,
+  staffChangePasswordService,
+  storeOrUpdateRoleService,
+  getAllRoleService,
+  getRoleByIdService,
+  deleteRoleService
 };

@@ -957,6 +957,56 @@ module.exports = {
     business_agent_id: Joi.number().integer().required(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional()
+  }),
+  
+  // RBAC & Staff Validations
+  roleValidator: Joi.object({
+    id: Joi.string().uuid().optional(),
+    name: Joi.string().required().messages({
+      'any.required': 'Role name is required',
+      'string.empty': 'Role name cannot be empty'
+    }),
+    description: Joi.string().allow('', null).optional(),
+    permissions: Joi.object().optional()
+  }),
+  getAllRoleSchema: Joi.object({
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
+  }),
+  deleteRoleSchema: Joi.object({
+    id: Joi.string().uuid().required()
+  }),
+  
+  staffValidator: Joi.object({
+    id: Joi.string().uuid().optional(),
+    name_prefix: Joi.number().integer().allow(null).optional(),
+    first_name: Joi.string().required().messages({
+      'any.required': 'First name is required',
+      'string.empty': 'First name cannot be empty'
+    }),
+    last_name: Joi.string().allow('', null).optional(),
+    mobile_number: Joi.string().allow('', null).optional(),
+    role_id: Joi.string().uuid().required().messages({
+      'any.required': 'Role is required'
+    }),
+    password: Joi.string().min(6).when('id', {
+      is: Joi.exist(),
+      then: Joi.optional(),
+      otherwise: Joi.required().messages({ 'any.required': 'Password is required' })
+    }),
+    is_active: Joi.boolean().optional(),
+  }),
+  getAllStaffSchema: Joi.object({
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
+  }),
+  deleteStaffSchema: Joi.object({
+    id: Joi.string().uuid().required()
+  }),
+  changePasswordSchema: Joi.object({
+    member_id: Joi.string().uuid().required(),
+    new_password: Joi.string().min(6).required()
   })
 };
-

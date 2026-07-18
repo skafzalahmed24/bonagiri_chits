@@ -6,6 +6,7 @@ const validate = require('../middlewares/validate');
 const authMiddleware = require('../middlewares/authMiddleware');
 const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
+const MODULES = require('../utils/modules');
 
 // auth routes
 router.post('/login', authMiddleware.authenticateDefaultToken, validate(adminValidation.loginAdminSchema), adminController.loginAdmin);
@@ -45,31 +46,31 @@ router.post('/company/get-all', authMiddleware.authenticateToken, validate(admin
 router.post('/company/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteCompanySchema), adminController.deleteCompany);
 
 //member routes
-router.post('/member/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.memberValidator), adminController.storeOrUpdateMember);
-router.post('/member/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllMemberSchema), adminController.getAllMemberDetails);
-router.post('/member/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteMemberSchema), adminController.deleteMember);
-router.post('/member/verification/send-otp', authMiddleware.authenticateToken, validate(adminValidation.sendMemberOtpSchema), adminController.sendMemberVerificationOtp);
-router.post('/member/verification/verify-otp', authMiddleware.authenticateToken, validate(adminValidation.verifyMemberOtpSchema), adminController.verifyMemberOtp);
+router.post('/member/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.memberValidator), adminController.storeOrUpdateMember);
+router.post('/member/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getAllMemberSchema), adminController.getAllMemberDetails);
+router.post('/member/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.deleteMemberSchema), adminController.deleteMember);
+router.post('/member/verification/send-otp', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.sendMemberOtpSchema), adminController.sendMemberVerificationOtp);
+router.post('/member/verification/verify-otp', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.verifyMemberOtpSchema), adminController.verifyMemberOtp);
 
 // upload routes
 router.post('/upload/document', authMiddleware.authenticateToken, uploadMiddleware.array('document', 20), validate(adminValidation.uploadDocumentSchema), adminController.uploadDocument);
 
 // routes management
-router.post('/route/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.routeValidator), adminController.storeOrUpdateRoute);
-router.post('/route/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllRouteSchema), adminController.getAllRouteDetails);
-router.post('/route/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteRouteSchema), adminController.deleteRoute);
+router.post('/route/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ROUTE), validate(adminValidation.routeValidator), adminController.storeOrUpdateRoute);
+router.post('/route/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ROUTE), validate(adminValidation.getAllRouteSchema), adminController.getAllRouteDetails);
+router.post('/route/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ROUTE), validate(adminValidation.deleteRouteSchema), adminController.deleteRoute);
 
 // area management
-router.post('/area/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.areaValidator), adminController.storeOrUpdateArea);
-router.post('/area/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllAreaSchema), adminController.getAllAreaDetails);
-router.post('/area/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteAreaSchema), adminController.deleteArea);
+router.post('/area/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AREA), validate(adminValidation.areaValidator), adminController.storeOrUpdateArea);
+router.post('/area/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AREA), validate(adminValidation.getAllAreaSchema), adminController.getAllAreaDetails);
+router.post('/area/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AREA), validate(adminValidation.deleteAreaSchema), adminController.deleteArea);
 
 // chits-group management
-router.post('/chits-group/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.chitsGroupValidator), adminController.storeOrUpdateChitsGroup);
-router.post('/chits-group/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllChitsGroupSchema), adminController.getAllChitsGroupDetails);
-router.post('/chits-group/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteChitsGroupSchema), adminController.deleteChitsGroup);
-router.post('/chits-group/update-status', authMiddleware.authenticateToken, validate(adminValidation.updateChitsGroupStatusSchema), adminController.updateChitsGroupStatus);
-router.post('/chits-group/check-capacity', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.checkChitsGroupCapacity);
+router.post('/chits-group/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS_GROUP), validate(adminValidation.chitsGroupValidator), adminController.storeOrUpdateChitsGroup);
+router.post('/chits-group/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS_GROUP), validate(adminValidation.getAllChitsGroupSchema), adminController.getAllChitsGroupDetails);
+router.post('/chits-group/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS_GROUP), validate(adminValidation.deleteChitsGroupSchema), adminController.deleteChitsGroup);
+router.post('/chits-group/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS_GROUP), validate(adminValidation.updateChitsGroupStatusSchema), adminController.updateChitsGroupStatus);
+router.post('/chits-group/check-capacity', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS_GROUP), validate(adminValidation.getByIdSchema), adminController.checkChitsGroupCapacity);
 
 // import locations 
 router.post('/import-locations', authMiddleware.authenticateToken, adminController.importLocations);
@@ -79,23 +80,23 @@ router.post('/get-countries', authMiddleware.authenticateToken, validate(adminVa
 router.post('/get-states', authMiddleware.authenticateToken, validate(adminValidation.getStatesSchema), adminController.getStatesList);
 
 // district routes
-router.post('/district/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.districtValidator), adminController.storeOrUpdateDistrict);
-router.post('/district/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllDistrictSchema), adminController.getAllDistrictDetails);
+router.post('/district/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_DISTRICT), validate(adminValidation.districtValidator), adminController.storeOrUpdateDistrict);
+router.post('/district/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_DISTRICT), validate(adminValidation.getAllDistrictSchema), adminController.getAllDistrictDetails);
 router.post('/get-districts', authMiddleware.authenticateToken, validate(adminValidation.getDistrictsSchema), adminController.getDistrictsList);
 
 // city routes
-router.post('/city/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.cityValidator), adminController.storeOrUpdateCity);
-router.post('/city/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllCitySchema), adminController.getAllCityDetails);
-router.post('/city/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteCitySchema), adminController.deleteCity);
+router.post('/city/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CITY), validate(adminValidation.cityValidator), adminController.storeOrUpdateCity);
+router.post('/city/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CITY), validate(adminValidation.getAllCitySchema), adminController.getAllCityDetails);
+router.post('/city/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CITY), validate(adminValidation.deleteCitySchema), adminController.deleteCity);
 
 router.post('/fetch-static-dropdown', authMiddleware.authenticateToken, validate(adminValidation.fetchStaticDropdownSchema), adminController.fetchStaticDropdown);
 router.post('/fetch-static-dropdown-subcategory', authMiddleware.authenticateToken, adminController.getAllSubcategories);
 
 // Enrollment Routes
-router.post('/enrollment/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.enrollmentValidator), adminController.storeOrUpdateEnrollment);
-router.post('/enrollment/get-all', authMiddleware.authenticateToken, validate(adminValidation.getEnrollmentSchema), adminController.getAllEnrollmentDetails);
-router.post('/enrollment/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteEnrollmentSchema), adminController.deleteEnrollment);
-router.post('/enrollment/get-position-numbers', authMiddleware.authenticateToken, validate(adminValidation.getPositionNumbersSchema), adminController.getPositionNumbers);
+router.post('/enrollment/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENT), validate(adminValidation.enrollmentValidator), adminController.storeOrUpdateEnrollment);
+router.post('/enrollment/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENT), validate(adminValidation.getEnrollmentSchema), adminController.getAllEnrollmentDetails);
+router.post('/enrollment/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENT), validate(adminValidation.deleteEnrollmentSchema), adminController.deleteEnrollment);
+router.post('/enrollment/get-position-numbers', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENT), validate(adminValidation.getPositionNumbersSchema), adminController.getPositionNumbers);
 
 // upcoming-chit routes
 router.post('/upcoming-chit/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.upcomingChitValidator), adminController.storeOrUpdateUpcomingChit);
@@ -108,9 +109,9 @@ router.post('/favorite/update', authMiddleware.authenticateToken, validate(admin
 router.post('/group/members', authMiddleware.authenticateToken, validate(adminValidation.getGroupMembersSchema), adminController.getGroupMembers);
 
 // suit-file-information routes
-router.post('/suit-file-information/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.suitFileInformationValidator), adminController.storeOrUpdateSuitFileInformation);
-router.post('/suit-file-information/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllSuitFileInformationSchema), adminController.getAllSuitFileInformation);
-router.post('/suit-file-information/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteSuitFileInformationSchema), adminController.deleteSuitFileInformation);
+router.post('/suit-file-information/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_SUIT_FILE), validate(adminValidation.suitFileInformationValidator), adminController.storeOrUpdateSuitFileInformation);
+router.post('/suit-file-information/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_SUIT_FILE), validate(adminValidation.getAllSuitFileInformationSchema), adminController.getAllSuitFileInformation);
+router.post('/suit-file-information/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_SUIT_FILE), validate(adminValidation.deleteSuitFileInformationSchema), adminController.deleteSuitFileInformation);
 
 // auction routes
 router.post('/auction/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.auctionValidator), adminController.storeOrUpdateAuction);
@@ -121,23 +122,23 @@ router.post('/auction/delete', authMiddleware.authenticateToken, validate(adminV
 router.post('/agent/get-by-type', authMiddleware.authenticateToken, validate(adminValidation.getAgentTargetSchema), adminController.getAgentByAgentType);
 router.post('/agent/get-enrollments', authMiddleware.authenticateToken, validate(adminValidation.getAgentEnrollmentsSchema), adminController.getAgentEnrollments);
 router.post('/agent-target-entry/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.storeOrUpdateAgentTargetEntrySchema), adminController.storeOrUpdateAgentTargetEntry);
-router.post('/member/get-filtered-by-group-agent', authMiddleware.authenticateToken, validate(adminValidation.getFilteredMembersByGroupAndAgentSchema), adminController.getFilteredMembersByGroupAndAgent);
+router.post('/member/get-filtered-by-group-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getFilteredMembersByGroupAndAgentSchema), adminController.getFilteredMembersByGroupAndAgent);
 router.post('/agent/transfer-agent', authMiddleware.authenticateToken, validate(adminValidation.transferAgentUpdateSchema), adminController.transferAgentUpdate);
-router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(adminValidation.getBusinessListUnderMembersSchema), adminController.getBusinessListUnderMembers);
+router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getBusinessListUnderMembersSchema), adminController.getBusinessListUnderMembers);
 
 //get by id routes 
 router.post('/company/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCompanyById);
-router.post('/member/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getMemberById);
-router.post('/route/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getRouteById);
-router.post('/area/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getAreaById);
-router.post('/chits-group/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getChitsGroupById);
+router.post('/member/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getByIdSchema), adminController.getMemberById);
+router.post('/route/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ROUTE), validate(adminValidation.getByIdSchema), adminController.getRouteById);
+router.post('/area/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AREA), validate(adminValidation.getByIdSchema), adminController.getAreaById);
+router.post('/chits-group/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS_GROUP), validate(adminValidation.getByIdSchema), adminController.getChitsGroupById);
 router.post('/country/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCountryById);
 router.post('/state/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getStateById);
-router.post('/district/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getDistrictById);
-router.post('/city/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCityById);
-router.post('/enrollment/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getEnrollmentById);
+router.post('/district/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_DISTRICT), validate(adminValidation.getByIdSchema), adminController.getDistrictById);
+router.post('/city/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CITY), validate(adminValidation.getByIdSchema), adminController.getCityById);
+router.post('/enrollment/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENT), validate(adminValidation.getByIdSchema), adminController.getEnrollmentById);
 router.post('/upcoming-chit/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getUpcomingChitById);
-router.post('/suit-file-information/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getSuitFileInformationById);
+router.post('/suit-file-information/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_SUIT_FILE), validate(adminValidation.getByIdSchema), adminController.getSuitFileInformationById);
 router.post('/auction/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getAuctionById);
 
 
@@ -195,5 +196,19 @@ router.post('/chits-installment/get-by-group', authMiddleware.authenticateToken,
 
 // record winner route
 router.post('/auction/record-winner', authMiddleware.authenticateToken, adminController.recordWinner);
+
+
+// staff routes
+router.post('/staff/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.staffValidator), adminController.storeOrUpdateStaff);
+router.post('/staff/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllStaffSchema), adminController.getAllStaff);
+router.post('/staff/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getStaffById);
+router.post('/staff/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteStaffSchema), adminController.deleteStaff);
+router.post('/staff/change-password', authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.staffChangePassword);
+
+// role routes
+router.post('/role/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.roleValidator), adminController.storeOrUpdateRole);
+router.post('/role/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllRoleSchema), adminController.getAllRole);
+router.post('/role/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getRoleById);
+router.post('/role/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteRoleSchema), adminController.deleteRole);
 
 module.exports = router;

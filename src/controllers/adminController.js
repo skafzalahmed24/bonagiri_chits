@@ -718,11 +718,105 @@ const getEnrollmentById = async (req, res) => {
 };
 
 const getUpcomingChitById = async (req, res) => {
+  const { error, value } = getByIdSchema.validate(req.query);
+  if (error) return errorResponse(res, statusCodes.BAD_REQUEST, error.details[0].message);
+  
+  const companyId = await getCompanyIdFromUser(req.user, req.body);
+  await getUpcomingChitByIdService(res, value.id, companyId);
+};
+
+// Staff Controllers
+const storeOrUpdateStaff = async (req, res) => {
+  try {
+    return await adminService.storeOrUpdateStaffService(res, req.body, req.user);
+  } catch (error) {
+    console.error('Error in storeOrUpdateStaff:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllStaff = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    return await adminService.getAllStaffService(res, companyId, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllStaff:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStaffById = async (req, res) => {
   try {
     const { id } = req.body || {};
-    return await adminService.getUpcomingChitByIdService(res, id);
+    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    return await adminService.getStaffByIdService(res, id, companyId);
   } catch (error) {
-    console.error('Error in getUpcomingChitById:', error);
+    console.error('Error in getStaffById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteStaff = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    return await adminService.deleteStaffService(res, id, companyId);
+  } catch (error) {
+    console.error('Error in deleteStaff:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const staffChangePassword = async (req, res) => {
+  try {
+    const { member_id, new_password } = req.body;
+    return await adminService.staffChangePasswordService(res, req.user, member_id, new_password);
+  } catch (error) {
+    console.error('Error in staffChangePassword:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+// Role Controllers
+const storeOrUpdateRole = async (req, res) => {
+  try {
+    return await adminService.storeOrUpdateRoleService(res, req.body, req.user);
+  } catch (error) {
+    console.error('Error in storeOrUpdateRole:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllRole = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    return await adminService.getAllRoleService(res, companyId, min, max, search);
+  } catch (error) {
+    console.error('Error in getAllRole:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getRoleById = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    return await adminService.getRoleByIdService(res, id, companyId);
+  } catch (error) {
+    console.error('Error in getRoleById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteRole = async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    return await adminService.deleteRoleService(res, id, companyId);
+  } catch (error) {
+    console.error('Error in deleteRole:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1312,5 +1406,14 @@ module.exports = {
   getInstallmentsByGroup,
   recordWinner,
   sendMemberVerificationOtp,
-  verifyMemberOtp
+  verifyMemberOtp,
+  storeOrUpdateStaff,
+  getAllStaff,
+  getStaffById,
+  deleteStaff,
+  staffChangePassword,
+  storeOrUpdateRole,
+  getAllRole,
+  getRoleById,
+  deleteRole
 };

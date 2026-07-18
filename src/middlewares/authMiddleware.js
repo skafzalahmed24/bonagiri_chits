@@ -43,7 +43,15 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
+const requirePermission = (moduleId) => (req, res, next) => {
+  if (!req.user) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+  if (req.user.role === 'company') return next();
+  if (req.user.role === 'staff' && req.user.permissions?.[moduleId]?.view) return next();
+  return errorResponse(res, statusCodes.FORBIDDEN, `You don't have permission to access this module`);
+};
+
 module.exports = {
   authenticateDefaultToken,
-  authenticateToken
+  authenticateToken,
+  requirePermission
 };
