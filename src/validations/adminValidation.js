@@ -102,6 +102,16 @@ const verifyOtpSchema = Joi.object({
   otp: Joi.string().length(6).required()
 });
 
+const sendMemberOtpSchema = Joi.object({
+  member_id: Joi.number().integer().required()
+});
+
+const verifyMemberOtpSchema = Joi.object({
+  member_id: Joi.number().integer().required(),
+  otp: Joi.string().length(6).required()
+});
+
+
 const resetPasswordSchema = Joi.object({
   user_code: Joi.string().required(),
   type: Joi.number().integer().valid(1, 2).required(),
@@ -466,6 +476,8 @@ module.exports = {
   companyLoginSchema,
   forgotPasswordSchema,
   verifyOtpSchema,
+  sendMemberOtpSchema,
+  verifyMemberOtpSchema,
   resetPasswordSchema,
   refreshTokenSchema,
   memberValidator,

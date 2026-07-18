@@ -1177,6 +1177,26 @@ const recordWinner = async (req, res) => {
   }
 };
 
+const sendMemberVerificationOtp = async (req, res) => {
+  try {
+    const { member_id } = req.body || {};
+    return await adminService.sendMemberVerificationOtpService(res, member_id);
+  } catch (error) {
+    console.error('Error in sendMemberVerificationOtp:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const verifyMemberOtp = async (req, res) => {
+  try {
+    const { member_id, otp } = req.body || {};
+    return await adminService.verifyMemberOtpService(res, member_id, otp);
+  } catch (error) {
+    console.error('Error in verifyMemberOtp:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1290,5 +1310,7 @@ module.exports = {
   getGalleryById,
   deleteGallery,
   getInstallmentsByGroup,
-  recordWinner
+  recordWinner,
+  sendMemberVerificationOtp,
+  verifyMemberOtp
 };

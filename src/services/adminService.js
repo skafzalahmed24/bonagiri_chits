@@ -48,6 +48,9 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       role = 'company';
     } else if (type === 2) {
       user = await Member.findOne({ where: { other_info_user_code: user_code, other_info_user_password: password, is_deleted_status: 0 } });
+      if (user && !user.is_verified) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin will review your account, please wait.');
+      }
       role = 'member';
     }
 
@@ -942,6 +945,10 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
       await checkAndUpdateChitFullStatus(enrollment.group_id);
       return successResponse(res, statusCodes.OK, 'Enrollment updated successfully', enrollment);
     } else {
+      const subscriber = await Member.findByPk(enrollmentData.subscriber_id);
+      if (!subscriber || !subscriber.is_verified) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Subscriber must be verified before enrollment');
+      }
       const newEnrollment = await Enrollment.create(enrollmentData);
       await checkAndUpdateChitFullStatus(newEnrollment.group_id);
       return successResponse(res, statusCodes.CREATED, 'Enrollment stored successfully', newEnrollment);
@@ -3531,6 +3538,86 @@ const deleteGalleryService = async (res, id) => {
   }
 };
 
+const sendMemberVerificationOtpService = async (res, member_id) => {
+  try {
+    const member = await Member.findOne({ where: { id: member_id, is_deleted_status: 0 } });
+    if (!member) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+    }
+
+    const now = new Date();
+    if (member.verification_otp_expires_at) {
+      const expiresAt = new Date(member.verification_otp_expires_at);
+      const diffMs = expiresAt - now;
+      if (diffMs > 4 * 60 * 1000) { // If remaining time is > 4 mins, it was sent < 1 min ago
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Please wait before requesting another OTP');
+      }
+    }
+
+    const otp = '123456';
+    const expiry = new Date(now.getTime() + 5 * 60 * 1000);
+
+    await member.update({
+      verification_otp: otp,
+      verification_otp_expires_at: expiry,
+      verification_otp_attempts: 0
+    });
+
+    console.log(`[SMS MOCK] Member ID: ${member_id}, Mobile: ${member.mobile_number}, OTP: ${otp}`);
+
+    const maskedMobile = member.mobile_number ? member.mobile_number.replace(/.(?=.{2})/g, 'x') : null;
+    return successResponse(res, statusCodes.OK, 'OTP sent successfully', { member_id, mobile_number_masked: maskedMobile });
+  } catch (error) {
+    console.error('Error in sendMemberVerificationOtpService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const verifyMemberOtpService = async (res, member_id, otp) => {
+  try {
+    const member = await Member.findOne({ where: { id: member_id, is_deleted_status: 0 } });
+    if (!member) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+    }
+
+    if (!member.verification_otp) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'No OTP has been sent for this member');
+    }
+
+    if (member.verification_otp_attempts >= 3) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Too many failed attempts. Please request a new OTP after 15 minutes.');
+    }
+
+    const now = new Date();
+    if (now > new Date(member.verification_otp_expires_at)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'OTP has expired, please resend');
+    }
+
+    if (member.verification_otp !== otp) {
+      const attempts = member.verification_otp_attempts + 1;
+      let updateData = { verification_otp_attempts: attempts };
+      if (attempts >= 3) {
+        updateData.verification_otp_expires_at = new Date(now.getTime() + 15 * 60 * 1000); // 15 min lockout
+      }
+      await member.update(updateData);
+      const remaining = 3 - attempts;
+      return errorResponse(res, statusCodes.BAD_REQUEST, `Invalid OTP. ${remaining} attempts remaining.`);
+    }
+
+    await member.update({
+      is_verified: true,
+      verification_otp: null,
+      verification_otp_expires_at: null,
+      verification_otp_attempts: 0
+    });
+
+    return successResponse(res, statusCodes.OK, 'Member verified successfully', { member_id, is_verified: true });
+  } catch (error) {
+    console.error('Error in verifyMemberOtpService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -3647,5 +3734,7 @@ module.exports = {
   getAllGalleryService,
   getGalleryByIdService,
   deleteGalleryService,
-  recordWinnerService
+  recordWinnerService,
+  sendMemberVerificationOtpService,
+  verifyMemberOtpService
 };

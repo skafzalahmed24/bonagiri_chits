@@ -118,6 +118,24 @@ module.exports = (sequelize, DataTypes) => {
     is_favorites: {
       type: DataTypes.JSON,
       allowNull: true
+    },
+    is_verified: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false
+    },
+    verification_otp: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    verification_otp_expires_at: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    verification_otp_attempts: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+      allowNull: true
     }
   }, {
     sequelize,

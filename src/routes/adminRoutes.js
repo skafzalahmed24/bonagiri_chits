@@ -48,6 +48,8 @@ router.post('/company/delete', authMiddleware.authenticateToken, validate(adminV
 router.post('/member/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.memberValidator), adminController.storeOrUpdateMember);
 router.post('/member/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllMemberSchema), adminController.getAllMemberDetails);
 router.post('/member/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteMemberSchema), adminController.deleteMember);
+router.post('/member/verification/send-otp', authMiddleware.authenticateToken, validate(adminValidation.sendMemberOtpSchema), adminController.sendMemberVerificationOtp);
+router.post('/member/verification/verify-otp', authMiddleware.authenticateToken, validate(adminValidation.verifyMemberOtpSchema), adminController.verifyMemberOtp);
 
 // upload routes
 router.post('/upload/document', authMiddleware.authenticateToken, uploadMiddleware.array('document', 20), validate(adminValidation.uploadDocumentSchema), adminController.uploadDocument);
