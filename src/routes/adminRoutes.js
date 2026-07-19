@@ -73,7 +73,7 @@ router.post('/chits-group/update-status', authMiddleware.authenticateToken, auth
 router.post('/chits-group/check-capacity', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS), validate(adminValidation.getByIdSchema), adminController.checkChitsGroupCapacity);
 
 // audit logs route
-router.post('/audit-logs/get-all', authMiddleware.authenticateToken, adminController.getAllAuditLogs);
+router.post('/audit-logs/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.AUDIT_LOG), adminController.getAllAuditLogs);
 
 // import locations 
 router.post('/import-locations', authMiddleware.authenticateToken, adminController.importLocations);

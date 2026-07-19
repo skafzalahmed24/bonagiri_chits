@@ -24,12 +24,13 @@ const auditLogger = async (req, res, next) => {
       // Currently ignoring READ actions to prevent database bloat
       if (actionType === 'READ') return;
 
-      // Scrub sensitive data
+      // Scrub sensitive data dynamically
       const safeBody = { ...req.body };
-      delete safeBody.password;
-      delete safeBody.company_password;
-      delete safeBody.old_password;
-      delete safeBody.new_password;
+      Object.keys(safeBody).forEach(key => {
+        if (key.toLowerCase().includes('password')) {
+          delete safeBody[key];
+        }
+      });
 
       // Extract user info if available (depends on authMiddleware running before this)
       const userId = req.user ? req.user.id : null;

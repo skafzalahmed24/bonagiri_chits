@@ -1332,7 +1332,15 @@ const storeDirectPayment = async (req, res) => {
 const getAllAuditLogs = async (req, res) => {
   try {
     const { user_id, action_type, min, max, search } = req.body || {};
-    const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
+    
+    // STRICT TENANT SCOPING: ignore req.body for authorization
+    let companyId = null;
+    if (req.user && req.user.role === 'company') {
+      companyId = req.user.id;
+    } else if (req.user && req.user.role === 'staff') {
+      companyId = req.user.company_id;
+    }
+
     return await adminService.getAllAuditLogsService(res, user_id, action_type, min, max, search, companyId);
   } catch (error) {
     console.error('Error in getAllAuditLogs:', error);
