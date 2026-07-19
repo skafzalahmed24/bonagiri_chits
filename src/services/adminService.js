@@ -49,7 +49,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     if (type === 1) {
       user = await Company.findOne({ where: { company_id: user_code, company_password: password, is_deleted_status: 0 } });
       role = 'company';
-      
+
       if (!user) {
         const staffUser = await StaffUser.findOne({ where: { user_code, password, is_deleted_status: 0 } });
         if (staffUser) {
@@ -540,7 +540,7 @@ const createInstallaments = async (chits_group_id, chits_group_status) => {
       const schemeConfig = group.scheme_configuration_id
         ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id)
         : null;
-      
+
       const pricesArray = schemeConfig && schemeConfig.prices
         ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
         : [];
@@ -1490,7 +1490,7 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
     return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, `Auction ${isNew ? 'created' : 'updated'} successfully`, auctionResult);
   } catch (error) {
     await transaction.rollback();
-    
+
     // B6: Catch DB unique constraint errors
     if (error.name === 'SequelizeUniqueConstraintError') {
       const errItem = error.errors && error.errors[0];
@@ -1518,9 +1518,9 @@ const recordWinnerService = async (res, reqBody, userToken) => {
 
     // 1. Group checks
     const group = await ChitsGroup.findOne({
-      where: { 
-        id: group_id, 
-        is_deleted_status: 0, 
+      where: {
+        id: group_id,
+        is_deleted_status: 0,
         chits_group_status: 1,
         company_id: safeCompanyId // Secure scoping
       },
@@ -1548,7 +1548,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       where: { group_id, bidder_id },
       transaction
     });
-    
+
     if (existingWin) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
@@ -1560,12 +1560,12 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       order: [['auction_number', 'DESC']],
       transaction
     });
-    
+
     const lastRecorded = lastAuction ? parseInt(lastAuction.auction_number, 10) : 0;
 
     let schemeConfig = null;
     let companyMonths = 0;
-    
+
     if (group.scheme_configuration_id) {
       schemeConfig = await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction });
       if (schemeConfig) {
@@ -1614,13 +1614,13 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       const chitAmount = parseFloat(group.chit_amount) || 0;
       const installments = parseInt(group.no_of_installments, 10) || 1;
       const companyCommissionPct = parseFloat(group.company_commission) || 0;
-      
+
       const subscription = chitAmount / installments;
       const commission = chitAmount * (companyCommissionPct / 100);
       const gstPct = parseFloat(gst_number_percentage) || 18;
       const gst = commission * (gstPct / 100);
       const dividend = bid_amount - commission - gst;
-      
+
       // Calculate total enrollments for dividend distribution
       const totalEnrollments = await Enrollment.count({ where: { group_id, delete_status: 0 }, transaction });
       const membersCount = totalEnrollments > 0 ? totalEnrollments : installments;
@@ -1635,7 +1635,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
 
     // 6. Create auction row and apply adjustments
     const newAuction = await Auction.create(auctionData, { transaction });
-    
+
     if (schemeConfig) {
       await applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnrollment.id, transaction);
     }
@@ -1649,7 +1649,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     return successResponse(res, statusCodes.CREATED, 'Auction recorded successfully', { ...newAuction.toJSON(), auction_number: nextAuctionNumber });
   } catch (error) {
     await transaction.rollback();
-    
+
     // B6: Catch DB unique constraint errors
     if (error.name === 'SequelizeUniqueConstraintError') {
       const errItem = error.errors && error.errors[0];
@@ -3745,8 +3745,11 @@ const getStaffByIdService = async (res, id, companyId) => {
   }
 };
 
-const deleteStaffService = async (res, id, companyId) => {
+const deleteStaffService = async (res, id, companyId, userToken) => {
   try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can delete staff users');
+    }
     const staff = await StaffUser.findOne({ where: { id, company_id: companyId } });
     if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
     await staff.update({ is_deleted_status: 1 });
@@ -3786,7 +3789,7 @@ const storeOrUpdateRoleService = async (res, data = {}, userToken) => {
       await role.update(roleData);
       return successResponse(res, statusCodes.OK, 'Role updated successfully', role);
     }
-    
+
     const newRole = await Role.create({ ...roleData, company_id: companyId });
     return successResponse(res, statusCodes.CREATED, 'Role created successfully', newRole);
   } catch (error) {
@@ -3827,10 +3830,19 @@ const getRoleByIdService = async (res, id, companyId) => {
   }
 };
 
-const deleteRoleService = async (res, id, companyId) => {
+const deleteRoleService = async (res, id, companyId, userToken) => {
   try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can delete roles');
+    }
     const role = await Role.findOne({ where: { id, company_id: companyId } });
     if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
+    
+    const assignedStaffCount = await StaffUser.count({ where: { role_id: id, is_deleted_status: 0 } });
+    if (assignedStaffCount > 0) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, `Cannot delete this role — ${assignedStaffCount} staff user(s) are still assigned to it`);
+    }
+
     await role.update({ status: 0 });
     return successResponse(res, statusCodes.OK, 'Role deleted successfully');
   } catch (error) {

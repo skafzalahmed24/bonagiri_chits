@@ -720,7 +720,7 @@ const getEnrollmentById = async (req, res) => {
 const getUpcomingChitById = async (req, res) => {
   const { error, value } = getByIdSchema.validate(req.query);
   if (error) return errorResponse(res, statusCodes.BAD_REQUEST, error.details[0].message);
-  
+
   const companyId = await getCompanyIdFromUser(req.user, req.body);
   await getUpcomingChitByIdService(res, value.id, companyId);
 };
@@ -761,7 +761,7 @@ const deleteStaff = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await getCompanyIdFromUser(req.user, req.body);
-    return await adminService.deleteStaffService(res, id, companyId);
+    return await adminService.deleteStaffService(res, id, companyId, req.user);
   } catch (error) {
     console.error('Error in deleteStaff:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -814,7 +814,7 @@ const deleteRole = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await getCompanyIdFromUser(req.user, req.body);
-    return await adminService.deleteRoleService(res, id, companyId);
+    return await adminService.deleteRoleService(res, id, companyId, req.user);
   } catch (error) {
     console.error('Error in deleteRole:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
