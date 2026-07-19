@@ -2967,7 +2967,9 @@ const getHistoryByGroupIdService = async (res, group_id, min, max) => {
 
 const updateCollectionSubmissionStatusService = async (res, id, status) => {
   try {
-    const submission = await CollectionAgentAmount.findByPk(id);
+    const submission = await CollectionAgentAmount.findByPk(id, {
+      include: [{ model: Member, as: 'member' }]
+    });
     if (!submission) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Submission not found');
     }
@@ -2979,11 +2981,26 @@ const updateCollectionSubmissionStatusService = async (res, id, status) => {
     });
 
     if (status === 2) {
-      // Verified - Update pending CustomerPayments to paid
-      await CustomerPayment.update(
-        { payment_status: 1 },
-        { where: { collection_agent_amount_id: id, payment_status: 0 } }
-      );
+      // Verified - Generate receipt numbers and update pending CustomerPayments
+      const pendingPayments = await CustomerPayment.findAll({
+        where: { collection_agent_amount_id: id, payment_status: 0 }
+      });
+
+      const companyId = submission.member ? submission.member.company_id : null;
+      
+      for (const payment of pendingPayments) {
+        let newReceiptNumber = null;
+        if (companyId) {
+          newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId);
+        }
+        
+        await payment.update({ 
+          payment_status: 1,
+          receipt_number: newReceiptNumber
+        });
+      }
+
+      // FCM Notification logic follows (which we've already done elsewhere or below this block)
     } else if (status === 3) {
       // Rejected - Delete the pending CustomerPayments to revert clearance
       await CustomerPayment.destroy({
@@ -2997,6 +3014,41 @@ const updateCollectionSubmissionStatusService = async (res, id, status) => {
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
+
+const storeDirectPaymentService = async (res, user, data) => {
+  try {
+    const { chits_installment_id, received_amount, penalty_paid, payment_date, payment_mode, transaction_reference } = data;
+    
+    if (!chits_installment_id || received_amount === undefined) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Missing required payment fields');
+    }
+
+    const companyId = user.company_id;
+    if (!companyId) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin company ID is required');
+    }
+
+    // Generate gapless receipt number
+    const newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId);
+
+    const newPayment = await CustomerPayment.create({
+      chits_installment_id,
+      received_amount: parseFloat(received_amount) || 0.00,
+      penalty_paid: parseFloat(penalty_paid) || 0.00,
+      payment_status: 1, // Auto-verified for admin direct payments
+      payment_date: payment_date || new Date().toISOString().split('T')[0],
+      payment_mode: parseInt(payment_mode) || 1,
+      transaction_reference: transaction_reference || null,
+      receipt_number: newReceiptNumber
+    });
+
+    return successResponse(res, statusCodes.CREATED, 'Direct payment recorded successfully', newPayment);
+  } catch (error) {
+    console.error('Error in storeDirectPaymentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 
 const getCompanyByIdService = async (res, id) => {
   try {
@@ -4263,6 +4315,7 @@ module.exports = {
   getHistoryByGroupIdService,
   updateCollectionSubmissionStatusService,
   getAllCollectionSubmissionsService,
+  storeDirectPaymentService,
   storeOrUpdateGalleryService,
   getAllGalleryService,
   getGalleryByIdService,

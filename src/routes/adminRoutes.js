@@ -7,7 +7,6 @@ const { MODULES } = require('../utils/modules');
 const authMiddleware = require('../middlewares/authMiddleware');
 const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
-const MODULES = require('../utils/modules');
 
 // auth routes
 router.post('/login', authMiddleware.authenticateDefaultToken, validate(adminValidation.loginAdminSchema), adminController.loginAdmin);
@@ -186,6 +185,9 @@ router.post('/history-business-agent/history-by-group-id', authMiddleware.authen
 // collection-agent submissions update
 router.post('/collection-agent/submissions/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.updateCollectionSubmissionStatusSchema), adminController.updateCollectionSubmissionStatus);
 router.post('/collection-agent/submissions/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.getAllCollectionSubmissionsSchema), adminController.getAllCollectionSubmissions);
+
+// admin direct payment route
+router.post('/customer-payment/store-direct', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), adminController.storeDirectPayment);
 
 // gallery routes
 router.post('/gallery/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.galleryValidator), adminController.storeOrUpdateGallery);

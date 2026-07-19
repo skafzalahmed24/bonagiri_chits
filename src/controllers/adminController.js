@@ -1320,6 +1320,15 @@ const sendManualNotification = async (req, res) => {
   }
 };
 
+const storeDirectPayment = async (req, res) => {
+  try {
+    return await adminService.storeDirectPaymentService(res, req.user, req.body);
+  } catch (error) {
+    console.error('Error in storeDirectPayment:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1447,5 +1456,6 @@ module.exports = {
   deleteRole,
   getDashboardSummary,
   registerAdminToken,
-  sendManualNotification
+  sendManualNotification,
+  storeDirectPayment
 };
