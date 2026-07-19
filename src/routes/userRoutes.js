@@ -5,6 +5,7 @@ const fixedSchemeController = require('../controllers/fixedSchemeController');
 const validate = require('../middlewares/validate');
 const authMiddleware = require('../middlewares/authMiddleware');
 const userValidation = require('../validations/userValidation');
+const adminValidation = require('../validations/adminValidation');
 
 // get home record based on subscriber_id
 router.post('/home', authMiddleware.authenticateToken, validate(userValidation.getHomeRecordSchema), userController.getHomeRecord);

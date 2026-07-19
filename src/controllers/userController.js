@@ -2,6 +2,7 @@ const userService = require('../services/userService');
 const adminService = require('../services/adminService');
 const { errorResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
+const { ConfigureBusinessAgentCommission } = require('../models');
 
 const getHomeRecord = async (req, res) => {
   try {
@@ -109,6 +110,49 @@ const getBusinessListUnderMembers = async (req, res) => {
     return await adminService.getBusinessListUnderMembersService(res, business_agent_id, min, max);
   } catch (error) {
     console.error('Error in getBusinessListUnderMembers:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentCommissionSummary = async (req, res) => {
+  try {
+    const { min, max } = req.body || {};
+    const business_agent_id = req.user.id;
+    return await adminService.getBusinessAgentCommissionSummaryService(res, business_agent_id, min, max);
+  } catch (error) {
+    console.error('Error in getBusinessAgentCommissionSummary:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
+  try {
+    const data = req.body;
+    const configId = data.configure_business_agent_id;
+    
+    if (configId) {
+      const config = await ConfigureBusinessAgentCommission.findByPk(configId);
+      if (!config || config.business_agent_id !== req.user.id) {
+        return errorResponse(res, statusCodes.FORBIDDEN, 'You do not have permission to modify this record.');
+      }
+    } else {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'configure_business_agent_id is required');
+    }
+    
+    return await adminService.storeOrUpdateHistoryBusinessAgentService(res, data);
+  } catch (error) {
+    console.error('Error in storeOrUpdateHistoryBusinessAgent:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getHistoryByGroupId = async (req, res) => {
+  try {
+    const { group_id, min, max } = req.body;
+    const business_agent_id = req.user.id;
+    return await adminService.getHistoryByGroupIdService(res, group_id, min, max, business_agent_id);
+  } catch (error) {
+    console.error('Error in getHistoryByGroupId:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -228,6 +272,9 @@ module.exports = {
   getPaymentHistory,
   getPaymentReceipt,
   getBusinessListUnderMembers,
+  getBusinessAgentCommissionSummary,
+  storeOrUpdateHistoryBusinessAgent,
+  getHistoryByGroupId,
   getCollectionAgentDashboard,
   getCollectionAgentGroupDashboard,
   getCollectionAgentActiveGroups,

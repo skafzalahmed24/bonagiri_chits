@@ -2897,13 +2897,18 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
   }
 };
 
-const getHistoryByGroupIdService = async (res, group_id, min, max) => {
+const getHistoryByGroupIdService = async (res, group_id, min, max, business_agent_id = null) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
+    const whereClause = { group_id, is_deleted_status: 0 };
+    if (business_agent_id) {
+      whereClause.business_agent_id = business_agent_id;
+    }
+
     const records = await ConfigureBusinessAgentCommission.findAndCountAll({
-      where: { group_id, is_deleted_status: 0 },
+      where: whereClause,
       include: [
         { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
         { model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }

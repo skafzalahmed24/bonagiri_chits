@@ -7,6 +7,8 @@ const MODULES = require('../utils/modules');
 const authMiddleware = require('../middlewares/authMiddleware');
 const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
+const userController = require('../controllers/userController');
+const userValidation = require('../validations/userValidation');
 
 // auth routes
 router.post('/login', authMiddleware.authenticateDefaultToken, validate(adminValidation.loginAdminSchema), adminController.loginAdmin);
@@ -23,19 +25,19 @@ router.post('/change-password', authMiddleware.authenticateToken, validate(admin
 
 // Contact Us routes
 router.post('/contact-us/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_CONTACT_US), validate(adminValidation.storeOrUpdateContactUsSchema), adminController.storeOrUpdateContactUs);
-router.post('/contact-us/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_CONTACT_US), validate(adminValidation.getAllContactUsSchema), adminController.getAllContactUs);
-router.post('/contact-us/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_CONTACT_US), validate(adminValidation.getByIdSchema), adminController.getContactUsById);
+router.post('/contact-us/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllContactUsSchema), adminController.getAllContactUs);
+router.post('/contact-us/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getContactUsById);
 router.post('/contact-us/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_CONTACT_US), validate(adminValidation.deleteContactUsSchema), adminController.deleteContactUs);
 
 // FAQ routes
 router.post('/faq/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_FAQ), validate(adminValidation.storeOrUpdateFAQSchema), adminController.storeOrUpdateFAQ);
-router.post('/faq/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_FAQ), validate(adminValidation.getAllFAQSchema), adminController.getAllFAQ);
-router.post('/faq/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_FAQ), validate(adminValidation.getByIdSchema), adminController.getFAQById);
+router.post('/faq/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllFAQSchema), adminController.getAllFAQ);
+router.post('/faq/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getFAQById);
 router.post('/faq/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_FAQ), validate(adminValidation.deleteFAQSchema), adminController.deleteFAQ);
 
 // Terms & Privacy routes
 router.post('/terms-privacy/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_TERMS_PRIVACY), validate(adminValidation.storeOrUpdateTermsPrivacySchema), adminController.storeOrUpdateTermsPrivacy);
-router.post('/terms-privacy/get', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_TERMS_PRIVACY), validate(adminValidation.getTermsPrivacySchema), adminController.getTermsPrivacy);
+router.post('/terms-privacy/get', authMiddleware.authenticateToken, validate(adminValidation.getTermsPrivacySchema), adminController.getTermsPrivacy);
 
 // Logout route
 router.post('/logout', authMiddleware.authenticateToken, adminController.logout);
@@ -127,7 +129,7 @@ router.post('/agent/get-enrollments', authMiddleware.authenticateToken, authMidd
 router.post('/agent-target-entry/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AGENT_TARGETS), validate(adminValidation.storeOrUpdateAgentTargetEntrySchema), adminController.storeOrUpdateAgentTargetEntry);
 router.post('/member/get-filtered-by-group-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getFilteredMembersByGroupAndAgentSchema), adminController.getFilteredMembersByGroupAndAgent);
 router.post('/agent/transfer-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AGENT_TRANSFER), validate(adminValidation.transferAgentUpdateSchema), adminController.transferAgentUpdate);
-router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getBusinessListUnderMembersSchema), adminController.getBusinessListUnderMembers);
+router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(adminValidation.getBusinessListUnderMembersSchema), adminController.getBusinessListUnderMembers);
 
 //get by id routes 
 router.post('/company/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCompanyById);
@@ -182,7 +184,7 @@ router.post('/history-business-agent/get-by-id', authMiddleware.authenticateToke
 router.post('/history-business-agent/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteHistoryBusinessAgentSchema), adminController.deleteHistoryBusinessAgent);
 
 // business-agent summary route
-router.post('/configure-business-agent-commission/summary-by-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getBusinessAgentCommissionSummarySchema), adminController.getBusinessAgentCommissionSummary);
+router.post('/configure-business-agent-commission/summary-by-agent', authMiddleware.authenticateToken, validate(adminValidation.getBusinessAgentCommissionSummarySchema), adminController.getBusinessAgentCommissionSummary);
 router.post('/history-business-agent/history-by-group-id', authMiddleware.authenticateToken, validate(adminValidation.getHistoryByGroupIdSchema), adminController.getHistoryByGroupId);
 
 // collection-agent submissions update
