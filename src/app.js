@@ -37,6 +37,8 @@ app.use((req, res, next) => {
 });
 
 // Routes
+const auditLogger = require('./middlewares/auditMiddleware');
+app.use('/api', auditLogger); // Applies globally to all /api and /api/user routes exactly once
 app.use('/api', adminRoutes);
 app.use('/api/user', userRoutes);
 

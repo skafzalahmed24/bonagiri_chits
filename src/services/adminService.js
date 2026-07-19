@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
@@ -4203,6 +4203,41 @@ const sendManualNotificationService = async (res, userPayload, data) => {
   }
 };
 
+const getAllAuditLogsService = async (res, user_id, action_type, min, max, search, company_id) => {
+  try {
+    const whereCondition = {};
+    if (user_id) whereCondition.user_id = user_id;
+    if (action_type) whereCondition.action_type = action_type;
+    if (company_id) whereCondition.company_id = company_id;
+
+    if (search) {
+      whereCondition[Op.or] = [
+        { module_or_route: { [Op.iLike]: `%${search}%` } },
+        { action_type: { [Op.iLike]: `%${search}%` } }
+      ];
+    }
+
+    // Set pagination limits
+    const limit = max ? parseInt(max) : 10;
+    const offset = min ? parseInt(min) : 0;
+
+    const { count, rows } = await AuditLog.findAndCountAll({
+      where: whereCondition,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Audit logs retrieved successfully', {
+      total: count,
+      auditLogs: rows
+    });
+  } catch (error) {
+    console.error('Error fetching audit logs:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -4334,5 +4369,6 @@ module.exports = {
   deleteRoleService,
   getDashboardSummaryService,
   registerAdminTokenService,
-  sendManualNotificationService
+  sendManualNotificationService,
+  getAllAuditLogsService
 };

@@ -1329,6 +1329,17 @@ const storeDirectPayment = async (req, res) => {
   }
 };
 
+const getAllAuditLogs = async (req, res) => {
+  try {
+    const { user_id, action_type, min, max, search } = req.body || {};
+    const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
+    return await adminService.getAllAuditLogsService(res, user_id, action_type, min, max, search, companyId);
+  } catch (error) {
+    console.error('Error in getAllAuditLogs:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1457,5 +1468,6 @@ module.exports = {
   getDashboardSummary,
   registerAdminToken,
   sendManualNotification,
-  storeDirectPayment
+  storeDirectPayment,
+  getAllAuditLogs
 };

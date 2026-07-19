@@ -3,7 +3,7 @@ const router = express.Router();
 const adminController = require('../controllers/adminController');
 const fixedSchemeController = require('../controllers/fixedSchemeController');
 const validate = require('../middlewares/validate');
-const { MODULES } = require('../utils/modules');
+const MODULES = require('../utils/modules');
 const authMiddleware = require('../middlewares/authMiddleware');
 const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
@@ -71,6 +71,9 @@ router.post('/chits-group/get-all', authMiddleware.authenticateToken, authMiddle
 router.post('/chits-group/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS), validate(adminValidation.deleteChitsGroupSchema), adminController.deleteChitsGroup);
 router.post('/chits-group/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS), validate(adminValidation.updateChitsGroupStatusSchema), adminController.updateChitsGroupStatus);
 router.post('/chits-group/check-capacity', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS), validate(adminValidation.getByIdSchema), adminController.checkChitsGroupCapacity);
+
+// audit logs route
+router.post('/audit-logs/get-all', authMiddleware.authenticateToken, adminController.getAllAuditLogs);
 
 // import locations 
 router.post('/import-locations', authMiddleware.authenticateToken, adminController.importLocations);
