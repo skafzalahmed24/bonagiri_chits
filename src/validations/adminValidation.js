@@ -1005,8 +1005,18 @@ module.exports = {
   deleteStaffSchema: Joi.object({
     id: Joi.string().uuid().required()
   }),
-  changePasswordSchema: Joi.object({
+  staffChangePasswordSchema: Joi.object({
     member_id: Joi.string().uuid().required(),
     new_password: Joi.string().min(6).required()
+  }),
+  registerTokenSchema: Joi.object({
+    fcm_token: Joi.string().required(),
+  }),
+  sendManualNotificationSchema: Joi.object({
+    target_type: Joi.string().valid('ALL', 'GROUP', 'SPECIFIC_MEMBER').required(),
+    target_id: Joi.string().allow(null, '').optional(),
+    title: Joi.string().required(),
+    body: Joi.string().required(),
+    data_payload: Joi.object().optional(),
   })
 };

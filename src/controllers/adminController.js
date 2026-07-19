@@ -1223,9 +1223,8 @@ const updateCollectionSubmissionStatus = async (req, res) => {
 const getAllCollectionSubmissions = async (req, res) => {
   try {
     const { collection_agent_id, type, min, max } = req.body;
-    // I can reuse the userService's getSubmissionsService since it does exactly this, just needs to support optional collection_agent_id
-    // But since it's an admin endpoint, it's cleaner to have it in adminService
-    return await adminService.getAllCollectionSubmissionsService(res, collection_agent_id, type, min, max);
+    const companyId = req.user.role === 'staff' ? req.user.company_id : req.user.id;
+    return await adminService.getAllCollectionSubmissionsService(res, collection_agent_id, type, min, max, companyId);
   } catch (error) {
     console.error('Error in getAllCollectionSubmissions:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

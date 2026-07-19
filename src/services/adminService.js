@@ -2910,7 +2910,7 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
     const records = await ConfigureBusinessAgentCommission.findAndCountAll({
       where: whereClause,
       include: [
-        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status', 'createdAt'] },
         { model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }
       ],
       order: [['createdAt', 'DESC']],
@@ -2949,6 +2949,7 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
         group_name: group.group_name || null,
         chit_amount: group.chit_amount || null,
         group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
+        group_created_date: group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null,
         commission_amount: commission_amount,
         total_paid: total_paid,
         total_pending: commission_amount - total_paid,
@@ -3524,7 +3525,7 @@ const logoutService = async (res, userPayload) => {
   }
 };
 
-const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max) => {
+const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max, companyId) => {
   try {
     const whereClause = {};
     if (collection_agent_id) {
@@ -3542,7 +3543,12 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
       where: whereClause,
       include: [
         { model: Member, as: 'member' },
-        { model: Member, as: 'collection_agent' }
+        { 
+          model: Member, 
+          as: 'collection_agent',
+          where: companyId ? { company_id: companyId } : undefined,
+          required: !!companyId
+        }
       ],
       limit,
       offset,

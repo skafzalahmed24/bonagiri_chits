@@ -131,7 +131,7 @@ const registerTokenSchema = Joi.object({
 const getNotificationHistorySchema = Joi.object({
   min: Joi.number().integer().min(0).optional().default(0),
   max: Joi.number().integer().min(1).optional().default(20)
-});
+}).unknown(true);
 
 const markNotificationReadSchema = Joi.object({
   notification_id: Joi.string().uuid().required()

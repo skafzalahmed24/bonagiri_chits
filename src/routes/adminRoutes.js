@@ -211,7 +211,7 @@ router.post('/staff/store-or-update', authMiddleware.authenticateToken, validate
 router.post('/staff/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.S_USERS), validate(adminValidation.getAllStaffSchema), adminController.getAllStaff);
 router.post('/staff/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.S_USERS), validate(adminValidation.getByIdSchema), adminController.getStaffById);
 router.post('/staff/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteStaffSchema), adminController.deleteStaff);
-router.post('/staff/change-password', authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.staffChangePassword);
+router.post('/staff/change-password', authMiddleware.authenticateToken, validate(adminValidation.staffChangePasswordSchema), adminController.staffChangePassword);
 
 // role routes
 router.post('/role/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.roleValidator), adminController.storeOrUpdateRole);
