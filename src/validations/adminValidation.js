@@ -460,7 +460,6 @@ const getTermsPrivacySchema = Joi.object({
 });
 
 module.exports = {
-  storeDirectPaymentSchema,
   storeOrUpdateFAQSchema,
   getAllFAQSchema,
   deleteFAQSchema,
