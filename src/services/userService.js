@@ -1131,12 +1131,76 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id) => {
     });
     const today_collection = todayCollectionsList.reduce((sum, payment) => sum + (parseFloat(payment.received_amount) || 0), 0);
 
+    const activeGroupsLimit3 = await ChitsGroup.findAll({
+      where: {
+        id: { [Op.in]: Array.from(uniqueGroups) },
+        chits_group_status: 1,
+        is_deleted_status: 0
+      },
+      limit: 3,
+      order: [['createdAt', 'DESC']]
+    });
+
+    const groupInstallments = await ChitsInstallment.findAll({
+      where: { enrollment_id: { [Op.in]: enrollmentIds } }
+    });
+
+    const active_groups = activeGroupsLimit3.map(group => {
+      const groupEnrollments = enrollments.filter(e => e.group_id === group.id);
+      const groupEnrollmentIds = groupEnrollments.map(e => e.id);
+      
+      let pending_amount_group = 0;
+      let pendingMembersSet_group = new Set();
+      
+      const installmentsForGroup = groupInstallments.filter(inst => groupEnrollmentIds.includes(inst.enrollment_id));
+      let paidInstallmentCount = 0;
+
+      installmentsForGroup.forEach(inst => {
+        const payable = parseFloat(inst.payable_amount) || 0;
+        const relatedPayments = collectedInstallments.filter(p => p.chits_installment_id === inst.id);
+        const paidForInst = relatedPayments.reduce((s, p) => s + (parseFloat(p.received_amount) || 0), 0);
+        const pending_inst = payable - paidForInst;
+        
+        if (pending_inst > 0) {
+          pending_amount_group += pending_inst;
+          const e = groupEnrollments.find(e => e.id === inst.enrollment_id);
+          if (e) pendingMembersSet_group.add(e.subscriber_id);
+        }
+        
+        if (paidForInst >= payable && payable > 0) {
+          paidInstallmentCount++;
+        }
+      });
+
+      const total_members = new Set(groupEnrollments.map(e => e.subscriber_id)).size;
+      const pending_members = pendingMembersSet_group.size;
+
+      const totalInstallments = installmentsForGroup.length;
+      let completed_percentage = 0;
+      if (totalInstallments > 0) {
+        completed_percentage = ((paidInstallmentCount / totalInstallments) * 100).toFixed(0);
+      }
+
+      return {
+        group_id: group.id,
+        group_name: group.group_name,
+        status: 'Active',
+        chit_amount: parseFloat(group.chit_amount) || 0,
+        pending_amount: pending_amount_group,
+        pending_members,
+        total_members,
+        completed_percentage: parseInt(completed_percentage),
+        date: (group.chit_end_date || group.maturity_date || group.term_date) ? new Date(group.chit_end_date || group.maturity_date || group.term_date).toISOString().split('T')[0] : null
+      };
+    });
+
     const dashboardData = {
       total_pending_collection: pending_amount,
       from_members_count: pendingMembersSet.size,
       today_collection,
       from_collection_group_count,
-      active_chit_groups
+      active_chit_groups,
+      active_groups
     };
 
     return successResponse(res, statusCodes.OK, 'Collection agent dashboard retrieved successfully', dashboardData);
@@ -1236,7 +1300,7 @@ const getCollectionAgentActiveGroupsService = async (res, collection_agent_id, m
         pending_members,
         total_members,
         completed_percentage: parseInt(completed_percentage),
-        date: group.chit_end_date || group.maturity_date || group.term_date || null
+        date: (group.chit_end_date || group.maturity_date || group.term_date) ? new Date(group.chit_end_date || group.maturity_date || group.term_date).toISOString().split('T')[0] : null
       };
     });
 
@@ -1255,7 +1319,8 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
     }
 
     const enrollments = await Enrollment.findAll({
-      where: { group_id, delete_status: 0 }
+      where: { group_id, delete_status: 0 },
+      include: [{ model: Member, as: 'subscriber' }]
     });
     const enrollmentIds = enrollments.map(e => e.id);
 
@@ -1277,6 +1342,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
     let total_payable = 0;
     let total_pending = 0;
     let overdue_members_set = new Set();
+    const memberMap = {};
     
     const simulatedNow = getSimulatedNow(group);
     allInstallments.forEach(inst => {
@@ -1288,8 +1354,38 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
       
       if (pending > 0) {
         total_pending += pending;
+        const e = enrollments.find(e => e.id === inst.enrollment_id);
+        
+        if (e) {
+          const sub = e.subscriber;
+          if (sub) {
+            if (!memberMap[sub.id]) {
+              memberMap[sub.id] = {
+                id: sub.id,
+                member_name: sub.name,
+                member_id: sub.member_id,
+                profile_image: sub.upload_image,
+                gender: sub.gender,
+                pending_months: 0,
+                oldest_due_date: inst.due_date,
+                balance: 0,
+                penalty_amount: 0,
+                penalty_text: ""
+              };
+            }
+            
+            memberMap[sub.id].pending_months += 1;
+            memberMap[sub.id].balance += pending;
+            memberMap[sub.id].penalty_amount += (parseFloat(inst.penalty_amount) || 0);
+            memberMap[sub.id].penalty_text = `Penalty - ₹ ${memberMap[sub.id].penalty_amount}`;
+            
+            if (new Date(inst.due_date) < new Date(memberMap[sub.id].oldest_due_date)) {
+              memberMap[sub.id].oldest_due_date = inst.due_date;
+            }
+          }
+        }
+        
         if (new Date(inst.due_date) < simulatedNow) {
-          const e = enrollments.find(e => e.id === inst.enrollment_id);
           if (e) overdue_members_set.add(e.subscriber_id);
         }
       }
@@ -1297,13 +1393,25 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
 
     const percentage = total_payable > 0 ? ((total_collected / total_payable) * 100).toFixed(2) : 0;
 
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    let pending_members_list = Object.values(memberMap);
+    pending_members_list.sort((a, b) => new Date(a.oldest_due_date) - new Date(b.oldest_due_date));
+    pending_members_list = pending_members_list.slice(0, 3);
+    pending_members_list = pending_members_list.map(row => {
+      const d = new Date(row.oldest_due_date);
+      row.oldest_due = `${months[d.getMonth()]} ${d.getFullYear()}`;
+      delete row.oldest_due_date;
+      return row;
+    });
+
     return successResponse(res, statusCodes.OK, 'Group dashboard', {
       today_group_value_price: parseFloat(group.chit_amount) || 0,
       total_collected,
       pending_amount: total_pending,
       overdue_members: overdue_members_set.size,
       overall_collection_process_percentage: parseFloat(percentage),
-      current_date: new Date().toISOString().split('T')[0]
+      current_date: new Date().toISOString().split('T')[0],
+      pending_members: pending_members_list
     });
   } catch (error) {
     console.error('Error:', error);

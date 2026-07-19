@@ -721,8 +721,8 @@ const getUpcomingChitById = async (req, res) => {
   const { error, value } = getByIdSchema.validate(req.query);
   if (error) return errorResponse(res, statusCodes.BAD_REQUEST, error.details[0].message);
 
-  const companyId = await getCompanyIdFromUser(req.user, req.body);
-  await getUpcomingChitByIdService(res, value.id, companyId);
+  const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
+  await adminService.getUpcomingChitByIdService(res, value.id, companyId);
 };
 
 // Staff Controllers
@@ -738,7 +738,7 @@ const storeOrUpdateStaff = async (req, res) => {
 const getAllStaff = async (req, res) => {
   try {
     const { min, max, search } = req.body || {};
-    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
     return await adminService.getAllStaffService(res, companyId, min, max, search);
   } catch (error) {
     console.error('Error in getAllStaff:', error);
@@ -749,7 +749,7 @@ const getAllStaff = async (req, res) => {
 const getStaffById = async (req, res) => {
   try {
     const { id } = req.body || {};
-    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
     return await adminService.getStaffByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getStaffById:', error);
@@ -760,7 +760,7 @@ const getStaffById = async (req, res) => {
 const deleteStaff = async (req, res) => {
   try {
     const { id } = req.body || {};
-    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
     return await adminService.deleteStaffService(res, id, companyId, req.user);
   } catch (error) {
     console.error('Error in deleteStaff:', error);
@@ -791,7 +791,7 @@ const storeOrUpdateRole = async (req, res) => {
 const getAllRole = async (req, res) => {
   try {
     const { min, max, search } = req.body || {};
-    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
     return await adminService.getAllRoleService(res, companyId, min, max, search);
   } catch (error) {
     console.error('Error in getAllRole:', error);
@@ -802,7 +802,7 @@ const getAllRole = async (req, res) => {
 const getRoleById = async (req, res) => {
   try {
     const { id } = req.body || {};
-    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
     return await adminService.getRoleByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getRoleById:', error);
@@ -813,7 +813,7 @@ const getRoleById = async (req, res) => {
 const deleteRole = async (req, res) => {
   try {
     const { id } = req.body || {};
-    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
     return await adminService.deleteRoleService(res, id, companyId, req.user);
   } catch (error) {
     console.error('Error in deleteRole:', error);
