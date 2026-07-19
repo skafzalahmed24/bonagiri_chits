@@ -3851,6 +3851,49 @@ const deleteRoleService = async (res, id, companyId, userToken) => {
   }
 };
 
+const getDashboardSummaryService = async (res, companyId) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return successResponse(res, statusCodes.OK, 'Dashboard data retrieved successfully', {
+      financials: {
+        collection_today: collectionToday || 0,
+        collection_month: collectionMonth || 0,
+        outstanding_dues: 0, 
+        commission_earned: commissionEarned || 0,
+        dividend_distributed: dividendDistributed || 0
+      },
+      statistics: {
+        total_active_members: activeMembersCount || 0,
+        active_chit_groups: activeGroupsCount || 0,
+        new_enrollments_this_month: newEnrollmentsCount || 0,
+        available_group_capacity: 0 
+      },
+      alerts: {
+        upcoming_auctions: formattedUpcomingAuctions,
+        installments_due_this_week: installmentsDue || 0,
+        defaulters_count: 0 
+      },
+      leaderboards: {
+        top_collection_agents: topAgents || [],
+        top_business_agents: [] 
+      },
+      charts: {
+        monthly_collections: monthlyCollections || [],
+        group_status: {
+          not_started: 0,
+          running: activeGroupsCount || 0,
+          completed: 0
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error in getDashboardSummaryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -3978,5 +4021,7 @@ module.exports = {
   storeOrUpdateRoleService,
   getAllRoleService,
   getRoleByIdService,
-  deleteRoleService
+  deleteStaffService,
+  deleteRoleService,
+  getDashboardSummaryService
 };

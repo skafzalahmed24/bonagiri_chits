@@ -211,4 +211,7 @@ router.post('/role/get-all', authMiddleware.authenticateToken, authMiddleware.re
 router.post('/role/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.S_ROLES), validate(adminValidation.getByIdSchema), adminController.getRoleById);
 router.post('/role/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteRoleSchema), adminController.deleteRole);
 
+// dashboard route
+router.post('/dashboard/summary', authMiddleware.authenticateToken, adminController.getDashboardSummary);
+
 module.exports = router;

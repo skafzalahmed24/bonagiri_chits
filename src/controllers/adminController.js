@@ -1291,6 +1291,16 @@ const verifyMemberOtp = async (req, res) => {
   }
 };
 
+const getDashboardSummary = async (req, res) => {
+  try {
+    const companyId = await getCompanyIdFromUser(req.user, req.body);
+    await adminService.getDashboardSummaryService(res, companyId);
+  } catch (error) {
+    console.error('Error in getDashboardSummary:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1415,5 +1425,6 @@ module.exports = {
   storeOrUpdateRole,
   getAllRole,
   getRoleById,
-  deleteRole
+  deleteRole,
+  getDashboardSummary
 };
