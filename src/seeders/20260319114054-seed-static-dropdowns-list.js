@@ -47,7 +47,7 @@ module.exports = {
 
       // type id 8 - Auction Type
       { id: 35, dropdown_name: 'Monthly', type_id: 8, status: 1, is_default: 1, createdAt: new Date(), updatedAt: new Date() },
-      { id: 36, dropdown_name: 'Bi Monnthly', type_id: 8, status: 1, is_default: 0, createdAt: new Date(), updatedAt: new Date() },
+      { id: 36, dropdown_name: 'Bi Monthly', type_id: 8, status: 1, is_default: 0, createdAt: new Date(), updatedAt: new Date() },
       { id: 37, dropdown_name: 'Weekly', type_id: 8, status: 1, is_default: 0, createdAt: new Date(), updatedAt: new Date() },
       { id: 38, dropdown_name: 'Daily', type_id: 8, status: 1, is_default: 0, createdAt: new Date(), updatedAt: new Date() },
 

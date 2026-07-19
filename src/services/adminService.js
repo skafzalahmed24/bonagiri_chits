@@ -2875,7 +2875,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
         member_name: member.name || null,
         member_id: member.id || null,
         commission_amount: config.commission_amount,
-        received_date: h.createdAt,
+        received_date: h.createdAt ? new Date(h.createdAt).toISOString().split('T')[0] : null,
         status: config.status,
         paid_amount: h.paid_amount
       };

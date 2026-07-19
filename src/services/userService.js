@@ -727,6 +727,11 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
           model: Member,
           as: 'business_agent',
           attributes: ['id', 'name']
+        },
+        {
+          model: Member,
+          as: 'collection_agent',
+          attributes: ['id', 'name']
         }
       ],
       order: [['group_position_number', 'ASC']]
@@ -742,11 +747,15 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
       return "#" + String(pos).padStart(2, '0');
     }).join(', ');
 
-    // 3. Resolve Business Agent Name
-    // Pick first enrollment's agent, if not found fallback to Mr. Venkatesh Rao (mockup)
-    let agentName = 'Mr. Venkatesh Rao';
+    // 3. Resolve Business Agent and Collection Agent Names
+    let agentName = 'N/A';
     if (userEnrollments[0].business_agent && userEnrollments[0].business_agent.name) {
       agentName = userEnrollments[0].business_agent.name;
+    }
+
+    let collectionAgentName = 'N/A';
+    if (userEnrollments[0].collection_agent && userEnrollments[0].collection_agent.name) {
+      collectionAgentName = userEnrollments[0].collection_agent.name;
     }
 
     // 4. Count total members (active enrollments) in this group
@@ -1030,7 +1039,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         total_amount: parseFloat(group.chit_amount) || 0.00,
         running_status_label: group.chits_group_status === 1 ? 'Active chit' : (group.chits_group_status === 2 ? 'Completed' : 'Upcoming'),
         ticket_member_number: positionNumbersFormatted,
-        collection_agent_name: 'Mr. Collection Agent',
+        collection_agent_name: collectionAgentName,
         business_agent_name: agentName,
         total_members: `${totalMembersCount} Members`
       },
