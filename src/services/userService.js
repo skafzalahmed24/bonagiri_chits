@@ -1654,7 +1654,10 @@ const submitCollectionPaymentService = async (res, payload) => {
             received_amount: payment_for_this_inst,
             penalty_paid: penalty_for_this_inst,
             payment_status: 0, // Pending Admin Approval
-            collection_agent_amount_id: submission.id
+            collection_agent_amount_id: submission.id,
+            payment_date: submission.paid_date || null,
+            payment_mode: submission.payment_type || null,
+            transaction_reference: submission.transaction_id || submission.cheque_number || null
           }, { transaction });
         }
       }
@@ -1692,7 +1695,190 @@ const getAllGalleryService = async (res, reqBody) => {
   }
 };
 
+
+const getPaymentHistoryService = async (res, userPayload, group_id, min = 0, max = 20) => {
+  try {
+    if (!userPayload) {
+      return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    }
+    const subscriber_id = userPayload.id;
+
+    // Resolve member's enrollments
+    const enrollmentWhere = { subscriber_id, delete_status: 0 };
+    if (group_id) {
+      enrollmentWhere.group_id = group_id;
+    }
+
+    const enrollments = await Enrollment.findAll({
+      where: enrollmentWhere,
+      attributes: ['id']
+    });
+
+    if (!enrollments || enrollments.length === 0) {
+      return successResponse(res, statusCodes.OK, 'No payment history found', { count: 0, rows: [] });
+    }
+    const enrollmentIds = enrollments.map(e => e.id);
+
+    const limit = parseInt(max, 10) || 20;
+    const offset = parseInt(min, 10) || 0;
+
+    const { count, rows } = await CustomerPayment.findAndCountAll({
+      where: { payment_status: 1 },
+      include: [
+        {
+          model: ChitsInstallment,
+          as: 'installment',
+          required: true,
+          where: { enrollment_id: { [Op.in]: enrollmentIds } },
+          include: [
+            {
+              model: Enrollment,
+              as: 'enrollment',
+              required: true,
+              include: [
+                {
+                  model: ChitsGroup,
+                  as: 'group',
+                  attributes: ['id', 'group_name', 'chit_amount']
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      order: [
+        ['payment_date', 'DESC'],
+        ['createdAt', 'DESC']
+      ],
+      limit,
+      offset
+    });
+
+    const formattedRows = rows.map(payment => {
+      const inst = payment.installment;
+      const group = inst.enrollment ? inst.enrollment.group : null;
+      
+      const received = parseFloat(payment.received_amount) || 0;
+      const penalty = parseFloat(payment.penalty_paid) || 0;
+
+      return {
+        id: payment.id,
+        receipt_number: payment.receipt_number,
+        payment_date: payment.payment_date || null,
+        group_id: group ? group.id : null,
+        group_name: group ? group.group_name : 'Unknown',
+        installment_no: inst ? inst.installment_no : null,
+        received_amount: received.toFixed(2),
+        penalty_paid: penalty.toFixed(2),
+        total_paid: (received + penalty).toFixed(2),
+        payment_mode: payment.payment_mode,
+        transaction_reference: payment.transaction_reference
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Payment history retrieved successfully', {
+      count,
+      rows: formattedRows
+    });
+  } catch (error) {
+    console.error('Error in getPaymentHistoryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getPaymentReceiptService = async (res, userPayload, payment_id) => {
+  try {
+    if (!userPayload) {
+      return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    }
+    const subscriber_id = userPayload.id;
+
+    const payment = await CustomerPayment.findOne({
+      where: { id: payment_id, payment_status: 1 },
+      include: [
+        {
+          model: ChitsInstallment,
+          as: 'installment',
+          required: true,
+          include: [
+            {
+              model: Enrollment,
+              as: 'enrollment',
+              required: true,
+              include: [
+                {
+                  model: Member,
+                  as: 'subscriber',
+                  attributes: ['id', 'name', 'member_id']
+                },
+                {
+                  model: ChitsGroup,
+                  as: 'group',
+                  include: [
+                    {
+                      model: Company,
+                      as: 'company',
+                      attributes: ['id', 'company_name', 'company_address']
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+
+    if (!payment) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Receipt not found or not fully verified yet');
+    }
+
+    const inst = payment.installment;
+    const enrollment = inst.enrollment;
+
+    // Verify it belongs to this subscriber
+    if (enrollment.subscriber_id !== subscriber_id) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'You are not authorized to view this receipt');
+    }
+
+    const group = enrollment.group;
+    const subscriber = enrollment.subscriber;
+    const company = group ? group.company : null;
+
+    const received = parseFloat(payment.received_amount) || 0;
+    const penalty = parseFloat(payment.penalty_paid) || 0;
+
+    const responseData = {
+      id: payment.id,
+      receipt_number: payment.receipt_number,
+      payment_date: payment.payment_date || null,
+      group_id: group ? group.id : null,
+      group_name: group ? group.group_name : 'Unknown',
+      chit_value: group ? group.chit_amount : null,
+      subscriber_position: enrollment.group_position_number,
+      installment_no: inst.installment_no,
+      due_date: inst.due_date,
+      received_amount: received.toFixed(2),
+      penalty_paid: penalty.toFixed(2),
+      total_paid: (received + penalty).toFixed(2),
+      payment_mode: payment.payment_mode,
+      transaction_reference: payment.transaction_reference,
+      member_name: subscriber ? subscriber.name : 'Unknown',
+      member_code: subscriber ? (subscriber.member_id || `#${subscriber.id}`) : null,
+      company_name: company ? company.company_name : 'Bonagiri Chits',
+      company_address: company ? company.company_address : ''
+    };
+
+    return successResponse(res, statusCodes.OK, 'Receipt retrieved successfully', responseData);
+  } catch (error) {
+    console.error('Error in getPaymentReceiptService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
+  getPaymentHistoryService,
+  getPaymentReceiptService,
   getHomeRecordService,
   getAllHomeRecordsService,
   getUpcomingChitsService,

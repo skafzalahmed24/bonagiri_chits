@@ -35,6 +35,24 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER,
       defaultValue: 0,
       comment: '0 - no action, 1 - paid, 2 - due date'
+    },
+    payment_date: {
+      type: DataTypes.DATEONLY,
+      allowNull: true
+    },
+    payment_mode: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: '1 cash, 2 upi, 3 cheque, 4 bank, 5 others'
+    },
+    transaction_reference: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    receipt_number: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      unique: true
     }
   }, {
     sequelize,

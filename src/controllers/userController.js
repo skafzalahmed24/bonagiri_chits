@@ -83,6 +83,26 @@ const getChitDetails = async (req, res) => {
   }
 };
 
+const getPaymentHistory = async (req, res) => {
+  try {
+    const { group_id, min, max } = req.body || {};
+    return await userService.getPaymentHistoryService(res, req.user, group_id, min, max);
+  } catch (error) {
+    console.error('Error in getPaymentHistory:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getPaymentReceipt = async (req, res) => {
+  try {
+    const { payment_id } = req.body;
+    return await userService.getPaymentReceiptService(res, req.user, payment_id);
+  } catch (error) {
+    console.error('Error in getPaymentReceipt:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getBusinessListUnderMembers = async (req, res) => {
   try {
     const { business_agent_id, min, max } = req.body || {};
@@ -175,6 +195,8 @@ module.exports = {
   getBids,
   getBidDetails,
   getChitDetails,
+  getPaymentHistory,
+  getPaymentReceipt,
   getBusinessListUnderMembers,
   getCollectionAgentDashboard,
   getCollectionAgentGroupDashboard,

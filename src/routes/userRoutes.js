@@ -22,6 +22,10 @@ router.post('/bids', authMiddleware.authenticateToken, validate(userValidation.g
 router.post('/bid-details', authMiddleware.authenticateToken, validate(userValidation.getBidDetailsSchema), userController.getBidDetails);
 router.post('/chit-details', authMiddleware.authenticateToken, validate(userValidation.getChitDetailsSchema), userController.getChitDetails);
 
+// payment history & receipt routes (authenticated)
+router.post('/payment-history', authMiddleware.authenticateToken, validate(userValidation.getPaymentHistorySchema), userController.getPaymentHistory);
+router.post('/payment-receipt', authMiddleware.authenticateToken, validate(userValidation.getPaymentReceiptSchema), userController.getPaymentReceipt);
+
 // business-agent routes (authenticated)
 router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(userValidation.getBusinessListUnderMembersSchema), userController.getBusinessListUnderMembers);
 

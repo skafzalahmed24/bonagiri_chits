@@ -56,6 +56,19 @@ const getChitDetailsSchema = Joi.object({
   })
 });
 
+const getPaymentHistorySchema = Joi.object({
+  group_id: Joi.string().uuid().optional().allow(null, ''),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(20)
+});
+
+const getPaymentReceiptSchema = Joi.object({
+  payment_id: Joi.string().uuid().required().messages({
+    'any.required': 'Payment ID is required',
+    'string.uuid': 'Invalid Payment ID format'
+  })
+});
+
 const getBusinessListUnderMembersSchema = Joi.object({
   business_agent_id: Joi.number().integer().required(),
   min: Joi.number().integer().min(0).optional(),
@@ -120,6 +133,8 @@ module.exports = {
   getBidsSchema,
   getBidDetailsSchema,
   getChitDetailsSchema,
+  getPaymentHistorySchema,
+  getPaymentReceiptSchema,
   getBusinessListUnderMembersSchema,
   getCollectionAgentDashboardSchema,
   getCollectionAgentGroupDashboardSchema,

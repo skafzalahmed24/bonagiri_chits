@@ -3856,11 +3856,162 @@ const getDashboardSummaryService = async (res, companyId) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    const nextWeek = new Date(today);
+    nextWeek.setDate(today.getDate() + 7);
+
+    // 1. collection_today & collection_month
+    // NOTE: Falling back to createdAt because payment_date migration has not shipped yet.
+    const collectionToday = await CustomerPayment.sum('received_amount', {
+      where: {
+        payment_status: 1,
+        createdAt: { [Op.gte]: today }
+      },
+      include: [{
+        model: ChitsInstallment, as: 'installment', required: true,
+        include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId }, required: true }]
+      }]
+    });
+
+    const collectionMonth = await CustomerPayment.sum('received_amount', {
+      where: {
+        payment_status: 1,
+        createdAt: { [Op.gte]: firstDayOfMonth }
+      },
+      include: [{
+        model: ChitsInstallment, as: 'installment', required: true,
+        include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId }, required: true }]
+      }]
+    });
+
+    // 2. outstanding_dues & defaulters_count
+    const pendingInstallments = await ChitsInstallment.findAll({
+      where: {
+        id: {
+          [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+        }
+      },
+      include: [{
+        model: Enrollment,
+        as: 'enrollment',
+        where: { company_id: companyId, delete_status: 0 },
+        required: true,
+        include: [{
+          model: ChitsGroup,
+          as: 'group',
+          where: { chits_group_status: 1, is_deleted_status: 0 }, // Only started groups
+          required: true
+        }]
+      }]
+    });
+
+    let outstandingDues = 0;
+    const defaulterMembers = new Set();
+    
+    pendingInstallments.forEach(inst => {
+      outstandingDues += (parseFloat(inst.payable_amount) || 0);
+      if (inst.due_date) {
+        const dueDate = new Date(inst.due_date);
+        dueDate.setHours(0,0,0,0);
+        if (dueDate < today) {
+          defaulterMembers.add(inst.enrollment.subscriber_id);
+        }
+      }
+    });
+
+    // 3. commission_earned & dividend_distributed
+    const commissionEarned = await Auction.sum('company_commission', { where: { company_id: companyId } });
+    const dividendDistributed = await Auction.sum('dividend_payable', { where: { company_id: companyId } });
+
+    // 4. Statistics
+    const activeMembersCount = await Member.count({ where: { company_id: companyId, is_deleted_status: 0 } });
+    const activeGroupsCount = await ChitsGroup.count({ where: { company_id: companyId, chits_group_status: 1, is_deleted_status: 0 } });
+    const newEnrollmentsCount = await Enrollment.count({
+      where: { company_id: companyId, delete_status: 0, createdAt: { [Op.gte]: firstDayOfMonth } }
+    });
+
+    // 5. Alerts
+    const upcomingAuctions = await ChitsGroup.findAll({
+      where: { company_id: companyId, auction_date: { [Op.between]: [today.toISOString().split('T')[0], nextWeek.toISOString().split('T')[0]] }, is_deleted_status: 0 },
+      attributes: ['group_name', 'auction_date'],
+      limit: 10,
+      order: [['auction_date', 'ASC']]
+    });
+
+    const installmentsDueThisWeek = await ChitsInstallment.count({
+      where: {
+        due_date: { [Op.between]: [today.toISOString().split('T')[0], nextWeek.toISOString().split('T')[0]] },
+        id: {
+          [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+        }
+      },
+      include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId, delete_status: 0 }, required: true }]
+    });
+
+    // 6. Leaderboards
+    const topCollectionAgents = await CollectionAgentAmount.findAll({
+      attributes: [
+        'collection_agent_id',
+        [sequelize.fn('sum', sequelize.col('amount')), 'collected_amount']
+      ],
+      where: { createdAt: { [Op.gte]: firstDayOfMonth } },
+      include: [{
+        model: Member,
+        as: 'collection_agent',
+        attributes: ['id', 'name'],
+        where: { company_id: companyId },
+        required: true
+      }],
+      group: ['collection_agent_id', 'collection_agent.id', 'collection_agent.name'],
+      order: [[sequelize.literal('collected_amount'), 'DESC']],
+      limit: 5
+    });
+
+    const topAgents = topCollectionAgents.map(a => ({
+      collection_agent_id: a.collection_agent_id,
+      agent_name: a.collection_agent ? a.collection_agent.name : 'Unknown',
+      collected_amount: parseFloat(a.get('collected_amount') || 0)
+    }));
+
+    // 7. Charts
+    const monthlyCollections = await CustomerPayment.findAll({
+      attributes: [
+        [sequelize.fn('MONTH', sequelize.col('CustomerPayment.createdAt')), 'month'],
+        [sequelize.fn('YEAR', sequelize.col('CustomerPayment.createdAt')), 'year'],
+        [sequelize.fn('sum', sequelize.literal('received_amount + penalty_paid')), 'amount']
+      ],
+      where: { payment_status: 1 },
+      include: [{
+        model: ChitsInstallment, as: 'installment', attributes: [], required: true,
+        include: [{ model: Enrollment, as: 'enrollment', attributes: [], where: { company_id: companyId }, required: true }]
+      }],
+      group: ['year', 'month'],
+      order: [['year', 'DESC'], ['month', 'DESC']],
+      limit: 6
+    });
+
+    const groupStatusCounts = await ChitsGroup.findAll({
+      attributes: [
+        'chits_group_status',
+        [sequelize.fn('count', sequelize.col('id')), 'count']
+      ],
+      where: { company_id: companyId, is_deleted_status: 0 },
+      group: ['chits_group_status']
+    });
+
+    let not_started = 0, running = 0, completed = 0;
+    groupStatusCounts.forEach(g => {
+      if (g.chits_group_status === 0) not_started = parseInt(g.get('count'), 10);
+      else if (g.chits_group_status === 1) running = parseInt(g.get('count'), 10);
+      else if (g.chits_group_status === 2) completed = parseInt(g.get('count'), 10);
+    });
+
     return successResponse(res, statusCodes.OK, 'Dashboard data retrieved successfully', {
       financials: {
         collection_today: collectionToday || 0,
         collection_month: collectionMonth || 0,
-        outstanding_dues: 0, 
+        outstanding_dues: outstandingDues, 
         commission_earned: commissionEarned || 0,
         dividend_distributed: dividendDistributed || 0
       },
@@ -3868,23 +4019,23 @@ const getDashboardSummaryService = async (res, companyId) => {
         total_active_members: activeMembersCount || 0,
         active_chit_groups: activeGroupsCount || 0,
         new_enrollments_this_month: newEnrollmentsCount || 0,
-        available_group_capacity: 0 
+        available_group_capacity: 0 // Will implement with slot_filled_count logic later if needed
       },
       alerts: {
-        upcoming_auctions: formattedUpcomingAuctions,
-        installments_due_this_week: installmentsDue || 0,
-        defaulters_count: 0 
+        upcoming_auctions: upcomingAuctions.map(g => ({ group_name: g.group_name, auction_date: g.auction_date })),
+        installments_due_this_week: installmentsDueThisWeek || 0,
+        defaulters_count: defaulterMembers.size
       },
       leaderboards: {
         top_collection_agents: topAgents || [],
         top_business_agents: [] 
       },
       charts: {
-        monthly_collections: monthlyCollections || [],
+        monthly_collections: monthlyCollections.map(m => ({ month: m.get('month'), year: m.get('year'), amount: parseFloat(m.get('amount') || 0) })),
         group_status: {
-          not_started: 0,
-          running: activeGroupsCount || 0,
-          completed: 0
+          not_started,
+          running,
+          completed
         }
       }
     });
