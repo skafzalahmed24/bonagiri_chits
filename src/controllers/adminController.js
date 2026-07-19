@@ -1293,7 +1293,7 @@ const verifyMemberOtp = async (req, res) => {
 
 const getDashboardSummary = async (req, res) => {
   try {
-    const companyId = req.user.company_id;
+    const companyId = await adminService.getCompanyIdFromUser(req.user, req.body);
     return await adminService.getDashboardSummaryService(res, companyId);
   } catch (error) {
     console.error('Error in getDashboardSummary:', error);

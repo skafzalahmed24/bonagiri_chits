@@ -3984,8 +3984,8 @@ const getDashboardSummaryService = async (res, companyId) => {
         createdAt: { [Op.gte]: today }
       },
       include: [{
-        model: ChitsInstallment, as: 'installment', required: true,
-        include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId }, required: true }]
+        model: ChitsInstallment, as: 'installment', required: true, attributes: [],
+        include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId }, required: true, attributes: [] }]
       }]
     });
 
@@ -3995,8 +3995,8 @@ const getDashboardSummaryService = async (res, companyId) => {
         createdAt: { [Op.gte]: firstDayOfMonth }
       },
       include: [{
-        model: ChitsInstallment, as: 'installment', required: true,
-        include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId }, required: true }]
+        model: ChitsInstallment, as: 'installment', required: true, attributes: [],
+        include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId }, required: true, attributes: [] }]
       }]
     });
 
@@ -4065,35 +4065,51 @@ const getDashboardSummaryService = async (res, companyId) => {
     });
 
     // 6. Leaderboards
-    const topCollectionAgents = await CollectionAgentAmount.findAll({
+    const topCollectionAgents = await CustomerPayment.findAll({
       attributes: [
-        'collection_agent_id',
-        [sequelize.fn('sum', sequelize.col('amount')), 'collected_amount']
+        [sequelize.col('collection_submission.collection_agent_id'), 'collection_agent_id'],
+        [sequelize.fn('sum', sequelize.col('CustomerPayment.received_amount')), 'collected_amount'],
+        [sequelize.col('collection_submission->collection_agent.id'), 'agent_id'],
+        [sequelize.col('collection_submission->collection_agent.name'), 'agent_name']
       ],
-      where: { createdAt: { [Op.gte]: firstDayOfMonth } },
+      where: {
+        payment_status: 1,
+        createdAt: { [Op.gte]: firstDayOfMonth }
+      },
       include: [{
-        model: Member,
-        as: 'collection_agent',
-        attributes: ['id', 'name'],
-        where: { company_id: companyId },
-        required: true
+        model: CollectionAgentAmount,
+        as: 'collection_submission',
+        required: true,
+        attributes: [],
+        include: [{
+          model: Member,
+          as: 'collection_agent',
+          where: { company_id: companyId },
+          required: true,
+          attributes: []
+        }]
       }],
-      group: ['collection_agent_id', 'collection_agent.id', 'collection_agent.name'],
+      group: [
+        'collection_submission.collection_agent_id',
+        'collection_submission->collection_agent.id',
+        'collection_submission->collection_agent.name'
+      ],
       order: [[sequelize.literal('collected_amount'), 'DESC']],
-      limit: 5
+      limit: 5,
+      raw: true
     });
 
     const topAgents = topCollectionAgents.map(a => ({
-      collection_agent_id: a.collection_agent_id,
-      agent_name: a.collection_agent ? a.collection_agent.name : 'Unknown',
-      collected_amount: parseFloat(a.get('collected_amount') || 0)
+      collection_agent_id: a.collection_agent_id || a.agent_id,
+      agent_name: a.agent_name || 'Unknown',
+      collected_amount: parseFloat(a.collected_amount || 0)
     }));
 
     // 7. Charts
     const monthlyCollections = await CustomerPayment.findAll({
       attributes: [
-        [sequelize.fn('MONTH', sequelize.col('CustomerPayment.createdAt')), 'month'],
-        [sequelize.fn('YEAR', sequelize.col('CustomerPayment.createdAt')), 'year'],
+        [sequelize.literal('EXTRACT(MONTH FROM "CustomerPayment"."createdAt")'), 'month'],
+        [sequelize.literal('EXTRACT(YEAR FROM "CustomerPayment"."createdAt")'), 'year'],
         [sequelize.fn('sum', sequelize.literal('received_amount + penalty_paid')), 'amount']
       ],
       where: { payment_status: 1 },
