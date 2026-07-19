@@ -186,6 +186,36 @@ const getAllGallery = async (req, res) => {
   return await userService.getAllGalleryService(res, req.body);
 };
 
+const registerDeviceToken = async (req, res) => {
+  try {
+    const { fcm_token } = req.body;
+    return await userService.registerDeviceTokenService(res, req.user, fcm_token);
+  } catch (error) {
+    console.error('Error in registerDeviceToken:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getNotificationHistory = async (req, res) => {
+  try {
+    const { min, max } = req.body || {};
+    return await userService.getNotificationHistoryService(res, req.user, min, max);
+  } catch (error) {
+    console.error('Error in getNotificationHistory:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const markNotificationRead = async (req, res) => {
+  try {
+    const { notification_id } = req.body;
+    return await userService.markNotificationReadService(res, req.user, notification_id);
+  } catch (error) {
+    console.error('Error in markNotificationRead:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecord,
   getAllHomeRecords,
@@ -205,5 +235,8 @@ module.exports = {
   getMemberDues,
   getSubmissions,
   submitCollectionPayment,
-  getAllGallery
+  getAllGallery,
+  registerDeviceToken,
+  getNotificationHistory,
+  markNotificationRead
 };

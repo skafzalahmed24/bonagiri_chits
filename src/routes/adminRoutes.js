@@ -3,6 +3,7 @@ const router = express.Router();
 const adminController = require('../controllers/adminController');
 const fixedSchemeController = require('../controllers/fixedSchemeController');
 const validate = require('../middlewares/validate');
+const { MODULES } = require('../utils/modules');
 const authMiddleware = require('../middlewares/authMiddleware');
 const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
@@ -213,5 +214,9 @@ router.post('/role/delete', authMiddleware.authenticateToken, validate(adminVali
 
 // dashboard route
 router.post('/dashboard/summary', authMiddleware.authenticateToken, adminController.getDashboardSummary);
+
+// fcm notifications routes
+router.post('/notifications/register-token', authMiddleware.authenticateToken, validate(adminValidation.registerTokenSchema), adminController.registerAdminToken);
+router.post('/notifications/send-manual', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.sendManualNotificationSchema), adminController.sendManualNotification);
 
 module.exports = router;

@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { ChitsInstallment, Enrollment, ChitsGroup, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const { getSimulatedNow } = require('./timeSimulator');
+const fcmService = require('../services/fcmService');
 
 const startDailyPenaltyCron = () => {
   // Run every 1 minute for testing
@@ -23,6 +24,10 @@ const startDailyPenaltyCron = () => {
               {
                 model: ChitsGroup,
                 as: 'group'
+              },
+              {
+                model: sequelize.models.Member,
+                as: 'subscriber'
               }
             ]
           }
@@ -58,7 +63,34 @@ const startDailyPenaltyCron = () => {
           penalty_amount: newPenaltyAmount
         });
 
+        // Send FCM Notification on first day of overdue
+        if (newOverdueCount === 1) {
+          const subscriber = installment.enrollment?.subscriber;
+          if (subscriber && subscriber.fcm_token) {
+            fcmService.sendPushToMember(
+              subscriber,
+              'Payment Overdue!',
+              `Your payment for Chit ${group.chit_group_name} is overdue. A penalty has been applied.`,
+              { type: 'PAYMENT_OVERDUE', group_id: String(group.id) }
+            );
+          }
+        }
+
         processedCount++;
+        } else if (dueDate.getTime() === simulatedNow.getTime() + 86400000) {
+          // Due tomorrow
+          const subscriber = installment.enrollment?.subscriber;
+          if (subscriber && subscriber.fcm_token) {
+            // Note: In a production environment with cron running every minute, 
+            // a database flag (e.g. notified_due_date) is needed to prevent spam.
+            // For now, it will fire based on the simulated time loop.
+            fcmService.sendPushToMember(
+              subscriber,
+              'Payment Due Tomorrow',
+              `Friendly reminder: Your payment for Chit ${group.chit_group_name} is due tomorrow.`,
+              { type: 'PAYMENT_DUE_REMINDER', group_id: String(group.id) }
+            );
+          }
         }
       }
 

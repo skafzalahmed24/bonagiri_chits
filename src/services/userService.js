@@ -1,6 +1,6 @@
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, UpcomingChit, UpcomingChitInterest, Auction, ChitsInstallment, CustomerPayment, CollectionAgentAmount, GroupUnderStaticList, SelfChit, FixedSchemeChitsConfiguration, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, UpcomingChit, UpcomingChitInterest, Auction, ChitsInstallment, CustomerPayment, CollectionAgentAmount, GroupUnderStaticList, SelfChit, FixedSchemeChitsConfiguration, NotificationHistory, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 const { getSimulatedNow } = require('../utils/timeSimulator');
@@ -1876,6 +1876,58 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
   }
 };
 
+const registerDeviceTokenService = async (res, userPayload, fcm_token) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    await Member.update({ fcm_token }, { where: { id: userPayload.id } });
+    return successResponse(res, statusCodes.OK, 'Device token registered successfully');
+  } catch (error) {
+    console.error('Error in registerDeviceTokenService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getNotificationHistoryService = async (res, userPayload, min = 0, max = 20) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    
+    const limit = parseInt(max, 10) || 20;
+    const offset = parseInt(min, 10) || 0;
+
+    const { count, rows } = await NotificationHistory.findAndCountAll({
+      where: { user_id: String(userPayload.id), user_type: 'MEMBER' },
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+
+    return successResponse(res, statusCodes.OK, 'Notification history retrieved successfully', { count, rows });
+  } catch (error) {
+    console.error('Error in getNotificationHistoryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const markNotificationReadService = async (res, userPayload, notification_id) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    
+    const notification = await NotificationHistory.findOne({
+      where: { id: notification_id, user_id: String(userPayload.id), user_type: 'MEMBER' }
+    });
+
+    if (!notification) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Notification not found');
+    }
+
+    await notification.update({ is_read: true });
+    return successResponse(res, statusCodes.OK, 'Notification marked as read');
+  } catch (error) {
+    console.error('Error in markNotificationReadService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getPaymentHistoryService,
   getPaymentReceiptService,
@@ -1894,5 +1946,8 @@ module.exports = {
   getMemberDuesService,
   getSubmissionsService,
   submitCollectionPaymentService,
-  getAllGalleryService
+  getAllGalleryService,
+  registerDeviceTokenService,
+  getNotificationHistoryService,
+  markNotificationReadService
 };

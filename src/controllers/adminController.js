@@ -1293,10 +1293,29 @@ const verifyMemberOtp = async (req, res) => {
 
 const getDashboardSummary = async (req, res) => {
   try {
-    const companyId = await getCompanyIdFromUser(req.user, req.body);
-    await adminService.getDashboardSummaryService(res, companyId);
+    const companyId = req.user.company_id;
+    return await adminService.getDashboardSummaryService(res, companyId);
   } catch (error) {
     console.error('Error in getDashboardSummary:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const registerAdminToken = async (req, res) => {
+  try {
+    const { fcm_token } = req.body;
+    return await adminService.registerAdminTokenService(res, req.user, fcm_token);
+  } catch (error) {
+    console.error('Error in registerAdminToken:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const sendManualNotification = async (req, res) => {
+  try {
+    return await adminService.sendManualNotificationService(res, req.user, req.body);
+  } catch (error) {
+    console.error('Error in sendManualNotification:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1426,5 +1445,7 @@ module.exports = {
   getAllRole,
   getRoleById,
   deleteRole,
-  getDashboardSummary
+  getDashboardSummary,
+  registerAdminToken,
+  sendManualNotification
 };

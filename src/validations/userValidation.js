@@ -124,6 +124,19 @@ const getAllGallerySchema = Joi.object({
   max: Joi.number().integer().min(1).optional()
 });
 
+const registerTokenSchema = Joi.object({
+  fcm_token: Joi.string().required()
+});
+
+const getNotificationHistorySchema = Joi.object({
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(20)
+});
+
+const markNotificationReadSchema = Joi.object({
+  notification_id: Joi.string().uuid().required()
+});
+
 module.exports = {  
   getHomeRecordSchema,
   getAllHomeRecordsSchema,
@@ -143,5 +156,8 @@ module.exports = {
   getMemberDuesSchema,
   getSubmissionsSchema,
   submitCollectionPaymentSchema,
-  getAllGallerySchema
+  getAllGallerySchema,
+  registerTokenSchema,
+  getNotificationHistorySchema,
+  markNotificationReadSchema
 };

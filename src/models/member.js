@@ -136,6 +136,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER,
       defaultValue: 0,
       allowNull: true
+    },
+    fcm_token: {
+      type: DataTypes.STRING,
+      allowNull: true
     }
   }, {
     sequelize,

@@ -695,6 +695,16 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
       // Step case: Trigger createInstallaments on create
       await createInstallaments(newChitsGroup.id, newChitsGroup.chits_group_status);
 
+      // Trigger FCM Notification for Marketing (New Group)
+      try {
+        const allMembers = await Member.findAll({ where: { company_id: newChitsGroup.company_id || chitsGroupData.company_id, is_deleted_status: 0, fcm_token: { [Op.ne]: null } } });
+        if (allMembers.length > 0) {
+          fcmService.sendPushToMulticast(allMembers, newChitsGroup.company_id || chitsGroupData.company_id, 'New Chit Group Launched!', `We have launched a new Chit Group: ${newChitsGroup.chit_group_name}. Enroll now!`, { type: 'MARKETING_NEW_GROUP', group_id: String(newChitsGroup.id) });
+        }
+      } catch (pushErr) {
+        console.error('Error sending FCM push for new group marketing:', pushErr);
+      }
+
       return successResponse(res, statusCodes.CREATED, 'Chits group created successfully', newChitsGroup);
     }
   } catch (error) {
@@ -776,6 +786,25 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
 
     if (updateData.chits_group_status !== undefined) {
       await createInstallaments(chitsGroup.id, updateData.chits_group_status);
+
+      // Trigger FCM Notifications
+      try {
+        const enrollments = await Enrollment.findAll({
+          where: { group_id: chitsGroup.id, delete_status: 0, company_id: chitsGroup.company_id },
+          include: [{ model: Member, as: 'subscriber', where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } }, required: true }]
+        });
+        const members = enrollments.map(e => e.subscriber);
+
+        if (members.length > 0) {
+          if (Number(updateData.chits_group_status) === 1) {
+            fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Commenced!', `The Chit Group ${chitsGroup.chit_group_name} has officially commenced.`, { type: 'GROUP_STARTED', group_id: String(chitsGroup.id) });
+          } else if (Number(updateData.chits_group_status) === 2) {
+            fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Completed', `Congratulations! The Chit Group ${chitsGroup.chit_group_name} has successfully completed its term.`, { type: 'GROUP_COMPLETED', group_id: String(chitsGroup.id) });
+          }
+        }
+      } catch (pushErr) {
+        console.error('Error sending FCM push for group status:', pushErr);
+      }
     }
 
     return successResponse(res, statusCodes.OK, 'Chits group status updated successfully', chitsGroup);
@@ -1000,6 +1029,13 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
       }
       const newEnrollment = await Enrollment.create(enrollmentData);
       await checkAndUpdateChitFullStatus(newEnrollment.group_id);
+
+      // Send push notification
+      const chitGroup = await ChitsGroup.findByPk(newEnrollment.group_id);
+      if (subscriber && chitGroup) {
+        fcmService.sendPushToMember(subscriber, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${chitGroup.chit_group_name}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
+      }
+
       return successResponse(res, statusCodes.CREATED, 'Enrollment stored successfully', newEnrollment);
     }
   } catch (error) {
@@ -1646,6 +1682,30 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     }
 
     await transaction.commit();
+
+    // FCM Notification Trigger
+    try {
+      const winner = await Member.findByPk(bidder_id);
+      if (winner && winner.fcm_token) {
+        fcmService.sendPushToMember(winner, 'Auction Won', `Congratulations! You won the auction for Chit ${group.chit_group_name}`, { type: 'AUCTION_WIN', group_id: String(group_id) });
+      }
+
+      const allEnrollments = await Enrollment.findAll({
+        where: { group_id, delete_status: 0, company_id: safeCompanyId || group.company_id },
+        include: [{ model: Member, as: 'subscriber', where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } }, required: true }]
+      });
+      const groupMembers = allEnrollments.map(e => e.subscriber).filter(s => s.id !== bidder_id);
+      
+      let dividendText = '';
+      if (schemeConfig && schemeConfig.scheme_type !== 63 && schemeConfig.scheme_type !== 64) {
+        const dividend = auctionData.net_payable > 0 ? (group.chit_value - auctionData.net_payable) / group.no_of_members : 0;
+        if (dividend > 0) dividendText = ` A dividend of Rs. ${dividend.toFixed(2)} has been applied.`;
+      }
+      fcmService.sendPushToMulticast(groupMembers, safeCompanyId || group.company_id, 'Auction Concluded', `The auction for Chit ${group.chit_group_name} has concluded.${dividendText}`, { type: 'AUCTION_CONCLUDED', group_id: String(group_id) });
+    } catch (pushErr) {
+      console.error('Error sending auction pushes:', pushErr);
+    }
+
     return successResponse(res, statusCodes.CREATED, 'Auction recorded successfully', { ...newAuction.toJSON(), auction_number: nextAuctionNumber });
   } catch (error) {
     await transaction.rollback();
@@ -3392,7 +3452,10 @@ const logoutService = async (res, userPayload) => {
     } else if (role === 'member') {
       const user = await Member.findByPk(id);
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
-      await user.update({ device_id: null, device_unique_id: null });
+      await user.update({ device_id: null, device_unique_id: null, fcm_token: null });
+    } else if (role === 'staff' || role === 'collection_agent' || role === 'business_agent') {
+      const user = await StaffUser.findByPk(id);
+      if (user) await user.update({ fcm_token: null });
     } else {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid user role for logout');
     }
@@ -4045,6 +4108,49 @@ const getDashboardSummaryService = async (res, companyId) => {
   }
 };
 
+const fcmService = require('./fcmService');
+
+const registerAdminTokenService = async (res, userPayload, fcm_token) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    await StaffUser.update({ fcm_token }, { where: { id: userPayload.id } });
+    return successResponse(res, statusCodes.OK, 'Admin device token registered successfully');
+  } catch (error) {
+    console.error('Error in registerAdminTokenService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const sendManualNotificationService = async (res, userPayload, data) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    
+    const { target_type, target_id, title, body, data_payload } = data;
+    const companyId = userPayload.company_id;
+
+    if (target_type === 'ALL') {
+      const allMembers = await Member.findAll({ where: { company_id: companyId, is_deleted_status: 0, fcm_token: { [Op.ne]: null } } });
+      fcmService.sendPushToMulticast(allMembers, companyId, title, body, data_payload);
+    } else if (target_type === 'SPECIFIC_MEMBER') {
+      const member = await Member.findOne({ where: { id: target_id, company_id: companyId, is_deleted_status: 0 } });
+      if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      fcmService.sendPushToMember(member, title, body, data_payload);
+    } else if (target_type === 'GROUP') {
+      const enrollments = await Enrollment.findAll({
+        where: { group_id: target_id, company_id: companyId, delete_status: 0 },
+        include: [{ model: Member, as: 'subscriber', where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } }, required: true }]
+      });
+      const members = enrollments.map(e => e.subscriber);
+      fcmService.sendPushToMulticast(members, companyId, title, body, data_payload);
+    }
+
+    return successResponse(res, statusCodes.OK, 'Notification sending triggered successfully');
+  } catch (error) {
+    console.error('Error in sendManualNotificationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -4172,7 +4278,8 @@ module.exports = {
   storeOrUpdateRoleService,
   getAllRoleService,
   getRoleByIdService,
-  deleteStaffService,
   deleteRoleService,
-  getDashboardSummaryService
+  getDashboardSummaryService,
+  registerAdminTokenService,
+  sendManualNotificationService
 };

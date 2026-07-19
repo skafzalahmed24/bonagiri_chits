@@ -50,6 +50,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    fcm_token: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
   }, {
     tableName: 'staff_user',
     timestamps: true,

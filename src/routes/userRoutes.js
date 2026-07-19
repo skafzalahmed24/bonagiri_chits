@@ -44,4 +44,9 @@ router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(userV
 // Fixed Scheme Chits Routes (Public / No Authorization)
 router.post('/fixed-scheme-details', fixedSchemeController.getFixedSchemeByType);
 
+// fcm notifications routes
+router.post('/notifications/register-token', authMiddleware.authenticateToken, validate(userValidation.registerTokenSchema), userController.registerDeviceToken);
+router.post('/notifications/history', authMiddleware.authenticateToken, validate(userValidation.getNotificationHistorySchema), userController.getNotificationHistory);
+router.post('/notifications/mark-read', authMiddleware.authenticateToken, validate(userValidation.markNotificationReadSchema), userController.markNotificationRead);
+
 module.exports = router;
