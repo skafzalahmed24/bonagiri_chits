@@ -732,6 +732,11 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
           model: Member,
           as: 'collection_agent',
           attributes: ['id', 'name']
+        },
+        {
+          model: Member,
+          as: 'subscriber',
+          attributes: ['id', 'name', 'member_id']
         }
       ],
       order: [['group_position_number', 'ASC']]
@@ -948,19 +953,19 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
       const originalAmountVal = getSchemeOriginalAmount(schemeConfig, auction);
       let profitAmountVal = 0.00;
 
-      // Check if we have subscriber's installment record for this installment number
-      const matchingInstallment = allUserInstallments.find(inst => inst.installment_no === auction.auction_number);
-      if (matchingInstallment) {
-        const payableVal = parseFloat(matchingInstallment.payable_amount) || 0.00;
-        profitAmountVal = originalAmountVal - payableVal;
+      // Calculate profit primarily from auction dividend if available
+      if (auction.dividend && parseFloat(auction.dividend) > 0) {
+        const divVal = parseFloat(auction.dividend);
+        if (divVal < originalAmountVal) {
+          profitAmountVal = divVal;
+        } else {
+          profitAmountVal = divVal / (totalMembersCount || 20);
+        }
       } else {
-        if (auction.dividend) {
-          const divVal = parseFloat(auction.dividend);
-          if (divVal < originalAmountVal) {
-            profitAmountVal = divVal;
-          } else {
-            profitAmountVal = divVal / (totalMembersCount || 20);
-          }
+        const matchingInstallment = allUserInstallments.find(inst => inst.installment_no === auction.auction_number);
+        if (matchingInstallment) {
+          const payableVal = parseFloat(matchingInstallment.payable_amount) || 0.00;
+          profitAmountVal = originalAmountVal - payableVal;
         }
       }
 
@@ -981,19 +986,14 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
       let totalProfit = 0.00;
       let totalPayable = 0.00;
 
-      for (const ge of allGroupEnrollments) {
+      for (const ge of userEnrollments) {
         const memberOriginal = originalAmountVal;
         let memberPayable = memberOriginal;
         let memberProfit = 0.00;
 
-        const geInstallment = allInstallmentsForAuction.find(inst => inst.enrollment_id === ge.id);
-        if (geInstallment) {
-          memberPayable = parseFloat(geInstallment.payable_amount) || 0.00;
-          memberProfit = memberOriginal - memberPayable;
-        } else {
-          memberProfit = profitAmountVal;
-          memberPayable = memberOriginal - memberProfit;
-        }
+        // Use calculated profitAmountVal to guarantee accuracy even if DB installments aren't fully updated yet
+        memberProfit = profitAmountVal;
+        memberPayable = memberOriginal - memberProfit;
 
         totalOriginal += memberOriginal;
         totalProfit += memberProfit;
@@ -1044,7 +1044,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         total_members: `${totalMembersCount} Members`
       },
       my_chit_overview: {
-        monthly_bid_amount: parseFloat(group.installment_amount) || 0.00,
+        monthly_bid_amount: parseFloat(group.installment_amount) || (parseFloat(group.chit_amount) / parseFloat(group.no_of_installments)) || 0.00,
         total_paid_amount: parseFloat(totalPaidAmount.toFixed(2)),
         next_payment_due: nextPaymentDue
       },

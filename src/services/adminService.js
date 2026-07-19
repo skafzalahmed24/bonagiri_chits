@@ -1349,7 +1349,7 @@ const getInstallmentsByGroupService = async (res, group_id, enrollment_id, min, 
         payable_amount: inst.payable_amount,
         penalty_amount: inst.penalty_amount,
         is_paid: !!payment,
-        paid_amount: payment ? payment.amount : "0.00",
+        paid_amount: payment ? payment.received_amount : "0.00",
         payment_date: payment ? payment.payment_date : null
       };
     });
@@ -3029,9 +3029,30 @@ const storeDirectPaymentService = async (res, user, data) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Missing required payment fields');
     }
 
-    const companyId = user.company_id;
+    const companyId = user.role === 'company' ? user.id : user.company_id;
     if (!companyId) {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin company ID is required');
+    }
+
+    // Verify installment belongs to the caller's company
+    const installmentInfo = await ChitsInstallment.findByPk(chits_installment_id, {
+      include: [{
+        model: Enrollment,
+        as: 'enrollment',
+        include: [{
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['company_id']
+        }]
+      }]
+    });
+
+    if (!installmentInfo || !installmentInfo.enrollment || !installmentInfo.enrollment.group) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Installment not found');
+    }
+
+    if (installmentInfo.enrollment.group.company_id !== companyId) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized access to this installment');
     }
 
     // Generate gapless receipt number

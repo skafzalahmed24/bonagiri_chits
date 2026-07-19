@@ -460,6 +460,7 @@ const getTermsPrivacySchema = Joi.object({
 });
 
 module.exports = {
+  storeDirectPaymentSchema,
   storeOrUpdateFAQSchema,
   getAllFAQSchema,
   deleteFAQSchema,
@@ -1018,5 +1019,13 @@ module.exports = {
     title: Joi.string().required(),
     body: Joi.string().required(),
     data_payload: Joi.object().optional(),
+  }),
+  storeDirectPaymentSchema: Joi.object({
+    chits_installment_id: Joi.string().uuid().required(),
+    received_amount: Joi.number().min(0).required(),
+    penalty_paid: Joi.number().min(0).optional(),
+    payment_date: Joi.date().iso().optional(),
+    payment_mode: Joi.number().integer().optional(),
+    transaction_reference: Joi.string().allow('', null).optional()
   })
 };
