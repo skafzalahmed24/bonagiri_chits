@@ -1538,7 +1538,7 @@ const getPendingMembersService = async (res, collection_agent_id, min, max) => {
 
 const getMemberDuesService = async (res, member_id, userPayload) => {
   try {
-    if (userPayload && userPayload.role === 'collection_agent') {
+    if (userPayload) {
       const isAssigned = await GroupUnderStaticList.findOne({
         where: {
           collection_agent_id: userPayload.id,

@@ -200,7 +200,7 @@ const getPendingMembers = async (req, res) => {
 const getMemberDues = async (req, res) => {
   try {
     const { member_id } = req.body;
-    return await userService.getMemberDuesService(res, req.user);
+    return await userService.getMemberDuesService(res, member_id, req.user);
   } catch (error) {
     console.error('Error in getMemberDues:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

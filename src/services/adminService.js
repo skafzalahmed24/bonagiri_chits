@@ -3237,7 +3237,7 @@ const getCountryByIdService = async (res, id, companyId) => {
 
 const getStateByIdService = async (res, id, companyId) => {
   try {
-    const state = await State.findOne({ where: { id, company_id: companyId },
+    const state = await State.findOne({ where: { id },
       include: [{ model: Country }]
     });
     if (!state) return errorResponse(res, statusCodes.NOT_FOUND, 'State not found');
