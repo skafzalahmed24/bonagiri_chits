@@ -1539,28 +1539,29 @@ const getPendingMembersService = async (res, collection_agent_id, min, max) => {
 const getMemberDuesService = async (res, member_id, userPayload) => {
   try {
     if (userPayload) {
-      if (userPayload.role === 'member' && String(userPayload.id) !== String(member_id)) {
-        return errorResponse(res, 403, 'You are not authorized to view this member\'s dues');
-      } else if (userPayload.role === 'collection_agent') {
-        const isAssigned = await GroupUnderStaticList.findOne({
-          where: {
-            collection_agent_id: userPayload.id,
-            is_deleted_status: 0
-          },
-          include: [{
-            model: ChitsGroup,
-            as: 'group',
-            required: true,
+      if (userPayload.role === 'member') {
+        if (String(userPayload.id) !== String(member_id)) {
+          // If accessing someone else's dues, verify they are a collection agent assigned to this member
+          const isAssigned = await GroupUnderStaticList.findOne({
+            where: {
+              collection_agent_id: userPayload.id,
+              is_deleted_status: 0
+            },
             include: [{
-              model: Enrollment,
-              as: 'enrollments',
-              where: { subscriber_id: member_id, delete_status: 0 },
-              required: true
+              model: ChitsGroup,
+              as: 'group',
+              required: true,
+              include: [{
+                model: Enrollment,
+                as: 'enrollments',
+                where: { subscriber_id: member_id, delete_status: 0 },
+                required: true
+              }]
             }]
-          }]
-        });
-        if (!isAssigned) {
-          return errorResponse(res, 403, 'You are not assigned as a collection agent for this member');
+          });
+          if (!isAssigned) {
+            return errorResponse(res, 403, 'You are not authorized to view this member\'s dues');
+          }
         }
       }
     }

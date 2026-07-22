@@ -3636,7 +3636,7 @@ const logoutService = async (req, res, userPayload) => {
     const companyId = await resolveCompanyIdForAuth(userPayload);
     
     if (role === 'company') {
-      const user = await Company.findOne({ where: { id, company_id: companyId } });
+      const user = await Company.findOne({ where: { id } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
       await user.update({ device_id: null, device_unique_id: null });
     } else if (role === 'member') {
