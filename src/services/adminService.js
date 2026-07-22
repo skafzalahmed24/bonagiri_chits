@@ -1,3 +1,4 @@
+const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
@@ -2816,7 +2817,14 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
       where: { business_agent_id, is_deleted_status: 0 },
       include: [
         { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
-        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'gender'] }
+        { 
+          model: Member, 
+          as: 'member', 
+          attributes: ['id', 'name', 'member_id', 'gender', 'other_info_user_code', 'createdAt'],
+          include: [
+            { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
+          ]
+        }
       ]
     });
 
@@ -2860,6 +2868,9 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
         upload_document,
         member_id: member.id || null,
         member_name: member.name || null,
+        gender_dropdown: member.gender_dropdown || null,
+        other_info_user_code: member.other_info_user_code ? `MEM-${member.other_info_user_code}` : null,
+        registered_date: member.createdAt || null,
         status: config.status
       };
     });

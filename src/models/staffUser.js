@@ -42,6 +42,15 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true,
     },
+    otp_expires_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    otp_attempts: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+      allowNull: false,
+    },
     is_active: {
       type: DataTypes.BOOLEAN,
       defaultValue: true,

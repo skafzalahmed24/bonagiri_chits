@@ -110,6 +110,13 @@ module.exports = (sequelize, DataTypes) => {
     mobile_otp: {
       type: DataTypes.STRING,
     },
+    mobile_otp_expires_at: {
+      type: DataTypes.DATE,
+    },
+    mobile_otp_attempts: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
     type: {
       type: DataTypes.INTEGER,
       defaultValue: 2,

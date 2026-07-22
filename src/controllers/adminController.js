@@ -74,8 +74,8 @@ const verifyOtp = async (req, res) => {
 
 const resetPassword = async (req, res) => {
   try {
-    const { user_code, type, password } = req.body;
-    return await adminService.resetPasswordService(res, user_code, type, password);
+    const { user_code, type, password, reset_token } = req.body;
+    return await adminService.resetPasswordService(res, user_code, type, password, reset_token);
   } catch (error) {
     console.error('Error in resetPassword:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1086,7 +1086,7 @@ const getTermsPrivacy = async (req, res) => {
 
 const logout = async (req, res) => {
   try {
-    return await adminService.logoutService(res, req.user);
+    return await adminService.logoutService(req, res, req.user);
   } catch (error) {
     console.error('Error in logout:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

@@ -115,7 +115,8 @@ const verifyMemberOtpSchema = Joi.object({
 const resetPasswordSchema = Joi.object({
   user_code: Joi.string().required(),
   type: Joi.number().integer().valid(1, 2).required(),
-  password: Joi.string().required()
+  password: Joi.string().required(),
+  reset_token: Joi.string().required()
 });
 
 const refreshTokenSchema = Joi.object({

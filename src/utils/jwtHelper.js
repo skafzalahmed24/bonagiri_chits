@@ -1,7 +1,12 @@
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secret_key_here';
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'your_super_secret_refresh_key_here';
+if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET) {
+  console.error("FATAL ERROR: JWT_SECRET or JWT_REFRESH_SECRET is not defined in the environment.");
+  process.exit(1);
+}
+
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h'; // 1 hour for access token
 const JWT_REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '7d'; // 7 days for refresh token
@@ -16,6 +21,20 @@ const generateTokens = (payload) => {
   const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, { expiresIn: JWT_REFRESH_EXPIRES_IN });
 
   return { accessToken, refreshToken };
+};
+
+/**
+ * Generates a short-lived reset token for password resets
+ */
+const generateResetToken = (payload) => {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '15m' });
+};
+
+/**
+ * Verifies the Reset Token
+ */
+const verifyResetToken = (reset_token) => {
+  return jwt.verify(reset_token, JWT_SECRET);
 };
 
 /**
@@ -38,6 +57,8 @@ const verifyAccessToken = (access_token) => {
 
 module.exports = {
   generateTokens,
+  generateResetToken,
+  verifyResetToken,
   verifyRefreshToken,
   verifyAccessToken
 };

@@ -9,19 +9,20 @@ const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
 const userController = require('../controllers/userController');
 const userValidation = require('../validations/userValidation');
+const { authRateLimiter } = require('../middlewares/rateLimiter');
 
 // auth routes
-router.post('/login', authMiddleware.authenticateDefaultToken, validate(adminValidation.loginAdminSchema), adminController.loginAdmin);
+router.post('/login', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.loginAdminSchema), adminController.loginAdmin);
 router.post('/refresh-token', authMiddleware.authenticateDefaultToken, validate(adminValidation.refreshTokenSchema), adminController.refreshToken);
 
 // company routes
-router.post('/user/login', authMiddleware.authenticateDefaultToken, validate(adminValidation.companyLoginSchema), adminController.loginCompany);
+router.post('/user/login', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.companyLoginSchema), adminController.loginCompany);
 
 // forgot password routes
-router.post('/forgot-password', authMiddleware.authenticateDefaultToken, validate(adminValidation.forgotPasswordSchema), adminController.forgotPassword);
-router.post('/verify-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyOtpSchema), adminController.verifyOtp);
-router.post('/reset-password', authMiddleware.authenticateDefaultToken, validate(adminValidation.resetPasswordSchema), adminController.resetPassword);
-router.post('/change-password', authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.changePassword);
+router.post('/forgot-password', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.forgotPasswordSchema), adminController.forgotPassword);
+router.post('/verify-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyOtpSchema), adminController.verifyOtp);
+router.post('/reset-password', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resetPasswordSchema), adminController.resetPassword);
+router.post('/change-password', authRateLimiter, authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.changePassword);
 
 // Contact Us routes
 router.post('/contact-us/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_CONTACT_US), validate(adminValidation.storeOrUpdateContactUsSchema), adminController.storeOrUpdateContactUs);

@@ -2,7 +2,12 @@ const { errorResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 const { verifyAccessToken } = require('../utils/jwtHelper');
 
-const DEFAULT_API_TOKEN = process.env.DEFAULT_API_TOKEN || 'secure-default-rest-api-token';
+if (!process.env.DEFAULT_API_TOKEN) {
+  console.error("FATAL ERROR: DEFAULT_API_TOKEN is not defined in the environment.");
+  process.exit(1);
+}
+
+const DEFAULT_API_TOKEN = process.env.DEFAULT_API_TOKEN;
 
 const authenticateDefaultToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -19,7 +24,7 @@ const authenticateDefaultToken = (req, res, next) => {
   next();
 };
 
-const authenticateToken = (req, res, next) => {
+const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   
   let token = authHeader;
@@ -33,8 +38,13 @@ const authenticateToken = (req, res, next) => {
   }
 
   try {
+    const { RevokedToken } = require('../models');
+    const isRevoked = await RevokedToken.findOne({ where: { token } });
+    if (isRevoked) {
+      return errorResponse(res, statusCodes.UNAUTHORIZED, 'Token has been revoked or logged out');
+    }
+
     const decoded = verifyAccessToken(token);
-    console.log("=== Decoded User Token Payload ===", decoded);
     // Attach the decoded token payload to the request object so downstream controllers can use it
     req.user = decoded;
     next();
