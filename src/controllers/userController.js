@@ -7,7 +7,7 @@ const { ConfigureBusinessAgentCommission } = require('../models');
 const getHomeRecord = async (req, res) => {
   try {
     const { subscriber_id } = req.body;
-    return await userService.getHomeRecordService(res, subscriber_id);
+    return await userService.getHomeRecordService(res, req.user);
   } catch (error) {
     console.error('Error in getHomeRecord:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -17,7 +17,7 @@ const getHomeRecord = async (req, res) => {
 const getAllHomeRecords = async (req, res) => {
   try {
     const { subscriber_id, type, min, max } = req.body;
-    return await userService.getAllHomeRecordsService(res, subscriber_id, type, min, max);
+    return await userService.getAllHomeRecordsService(res, req.user, type, min, max);
   } catch (error) {
     console.error('Error in getAllHomeRecords:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -47,7 +47,7 @@ const submitChitInterest = async (req, res) => {
 const getPendingPayments = async (req, res) => {
   try {
     const { subscriber_id, min, max } = req.body || {};
-    return await userService.getPendingPaymentsService(res, req.user, subscriber_id, min, max);
+    return await userService.getPendingPaymentsService(res, req.user, null, min, max);
   } catch (error) {
     console.error('Error in getPendingPayments:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -160,7 +160,7 @@ const getHistoryByGroupId = async (req, res) => {
 const getCollectionAgentDashboard = async (req, res) => {
   try {
     const { collection_agent_id } = req.body;
-    return await userService.getCollectionAgentDashboardService(res, collection_agent_id);
+    return await userService.getCollectionAgentDashboardService(res, req.user.id);
   } catch (error) {
     console.error('Error in getCollectionAgentDashboard:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -180,7 +180,7 @@ const getCollectionAgentGroupDashboard = async (req, res) => {
 const getCollectionAgentActiveGroups = async (req, res) => {
   try {
     const { collection_agent_id, min, max } = req.body;
-    return await userService.getCollectionAgentActiveGroupsService(res, collection_agent_id, min, max);
+    return await userService.getCollectionAgentActiveGroupsService(res, req.user.id, min, max);
   } catch (error) {
     console.error('Error in getCollectionAgentActiveGroups:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -190,7 +190,7 @@ const getCollectionAgentActiveGroups = async (req, res) => {
 const getPendingMembers = async (req, res) => {
   try {
     const { collection_agent_id, min, max } = req.body;
-    return await userService.getPendingMembersService(res, collection_agent_id, min, max);
+    return await userService.getPendingMembersService(res, req.user.id, min, max);
   } catch (error) {
     console.error('Error in getPendingMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -200,7 +200,7 @@ const getPendingMembers = async (req, res) => {
 const getMemberDues = async (req, res) => {
   try {
     const { member_id } = req.body;
-    return await userService.getMemberDuesService(res, member_id);
+    return await userService.getMemberDuesService(res, req.user);
   } catch (error) {
     console.error('Error in getMemberDues:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -219,7 +219,7 @@ const getSubmissions = async (req, res) => {
 
 const submitCollectionPayment = async (req, res) => {
   try {
-    return await userService.submitCollectionPaymentService(res, req.body);
+    return await userService.submitCollectionPaymentService(res, req.body, req.user);
   } catch (error) {
     console.error('Error in submitCollectionPayment:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

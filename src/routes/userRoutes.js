@@ -9,7 +9,7 @@ const adminValidation = require('../validations/adminValidation');
 
 // get home record based on subscriber_id
 router.post('/home', authMiddleware.authenticateToken, validate(userValidation.getHomeRecordSchema), userController.getHomeRecord);
-router.post('/all-chits-groups',  validate(userValidation.getAllHomeRecordsSchema), userController.getAllHomeRecords);
+router.post('/all-chits-groups', authMiddleware.authenticateToken, validate(userValidation.getAllHomeRecordsSchema), userController.getAllHomeRecords);
 
 // upcoming chits routes (authenticated)
 router.post('/upcoming-chits', authMiddleware.authenticateToken, validate(userValidation.getUpcomingChitsSchema), userController.getUpcomingChits);

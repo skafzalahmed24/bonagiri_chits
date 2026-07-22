@@ -5,7 +5,8 @@ const { Op } = require('sequelize');
 
 const { getSimulatedNow } = require('../utils/timeSimulator');
 
-const getHomeRecordService = async (res, subscriber_id) => {
+const getHomeRecordService = async (res, userPayload) => {
+  const subscriber_id = userPayload ? userPayload.id : null;
   try {
     // 1. Fetch only essential Enrollment fields
     const enrollment = await Enrollment.findOne({
@@ -119,7 +120,8 @@ const getHomeRecordService = async (res, subscriber_id) => {
   }
 };
 
-const getAllHomeRecordsService = async (res, subscriber_id, type = 0, min = 0, max = 10) => {
+const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max = 10) => {
+  const subscriber_id = userPayload ? userPayload.id : null;
   try {
     const enrollments = await Enrollment.findAll({
       where: {
@@ -1534,7 +1536,8 @@ const getPendingMembersService = async (res, collection_agent_id, min, max) => {
   }
 };
 
-const getMemberDuesService = async (res, member_id) => {
+const getMemberDuesService = async (res, userPayload) => {
+  const member_id = userPayload ? userPayload.id : null;
   try {
     const member = await Member.findByPk(member_id);
     if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');

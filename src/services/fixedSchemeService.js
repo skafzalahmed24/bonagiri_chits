@@ -110,7 +110,7 @@ const getAllFixedSchemesService = async (res, company_id, scheme_type, status, m
 // ─────────────────────────────────────────────────────────────────────────────
 const getFixedSchemeByIdService = async (res, id) => {
   try {
-    const record = await FixedSchemeChitsConfiguration.findByPk(id);
+    const record = await FixedSchemeChitsConfiguration.findOne({ where: { id, company_id: companyId } });
     if (!record) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Record not found');
     }
@@ -139,7 +139,7 @@ const getFixedSchemeByTypeService = async (res, scheme_type) => {
 // ─────────────────────────────────────────────────────────────────────────────
 const deleteFixedSchemeService = async (res, id) => {
   try {
-    const record = await FixedSchemeChitsConfiguration.findByPk(id);
+    const record = await FixedSchemeChitsConfiguration.findOne({ where: { id, company_id: companyId } });
     if (!record) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Record not found');
     }

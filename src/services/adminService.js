@@ -7,10 +7,14 @@ const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 
-const getCompanyIdFromUser = async (userPayload, reqBody = {}) => {
+const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
   if (reqBody && reqBody.company_id) {
     return reqBody.company_id;
   }
+  return resolveCompanyIdForAuth(userPayload);
+};
+
+const resolveCompanyIdForAuth = async (userPayload) => {
   if (!userPayload) return null;
 
   if (userPayload.role === 'company') {
@@ -400,7 +404,7 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
 
 const deleteMemberService = async (res, id) => {
   try {
-    const member = await Member.findByPk(id);
+    const member = await Member.findOne({ where: { id, company_id: companyId } });
     if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
     await member.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'Member deleted successfully');
@@ -452,7 +456,7 @@ const getAllRouteDetailsService = async (res, company_id, min, max, search) => {
 
 const deleteRouteService = async (res, id) => {
   try {
-    const route = await Route.findByPk(id);
+    const route = await Route.findOne({ where: { id, company_id: companyId } });
     if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
     await route.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'Route deleted successfully');
@@ -508,7 +512,7 @@ const getAllAreaDetailsService = async (res, company_id, min, max, search) => {
 
 const deleteAreaService = async (res, id) => {
   try {
-    const area = await Area.findByPk(id);
+    const area = await Area.findOne({ where: { id, company_id: companyId } });
     if (!area) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
     await area.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'Area deleted successfully');
@@ -558,7 +562,22 @@ const createInstallaments = async (chits_group_id, chits_group_status) => {
         const existingInstallmentRecord = await ChitsInstallment.findOne({ where: { enrollment_id: data.id } });
         if (existingInstallmentRecord) continue;
 
+        const dueDayOfMonth = group.due_date_number_count;
+        const daysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+        
         const dateIterator = new Date(initialDateStr);
+        
+        if (mappedType === 1 || !mappedType) { // Monthly (default)
+          dateIterator.setMonth(dateIterator.getMonth() + 1);
+          if (dueDayOfMonth && dueDayOfMonth >= 1 && dueDayOfMonth <= 31) {
+            dateIterator.setDate(Math.min(dueDayOfMonth, daysInMonth(dateIterator)));
+          }
+        } else if (mappedType === 2) { // Weekly
+          dateIterator.setDate(dateIterator.getDate() + 7);
+        } else if (mappedType === 3) { // Daily
+          dateIterator.setDate(dateIterator.getDate() + 1);
+        }
+
         const installmentsJsonArray = [];
 
         // Generate JSON data array directly
@@ -588,8 +607,11 @@ const createInstallaments = async (chits_group_id, chits_group_status) => {
           });
 
           // Move iterator forward to the next due date based on schedule type
-          if (mappedType === 1) {
+          if (mappedType === 1 || !mappedType) {
             dateIterator.setMonth(dateIterator.getMonth() + 1); // 1 = Monthly
+            if (dueDayOfMonth && dueDayOfMonth >= 1 && dueDayOfMonth <= 31) {
+              dateIterator.setDate(Math.min(dueDayOfMonth, daysInMonth(dateIterator)));
+            }
           } else if (mappedType === 2) {
             dateIterator.setDate(dateIterator.getDate() + 7); // 2 = Weekly
           } else if (mappedType === 3) {
@@ -752,7 +774,7 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search)
 
 const deleteChitsGroupService = async (res, id) => {
   try {
-    const chitsGroup = await ChitsGroup.findByPk(id);
+    const chitsGroup = await ChitsGroup.findOne({ where: { id, company_id: companyId } });
     if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
     await chitsGroup.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'Chits group deleted successfully');
@@ -968,7 +990,7 @@ const getDistrictsListService = async (res, company_id, state_id, search) => {
 
 const deleteCityService = async (res, id) => {
   try {
-    const city = await City.findByPk(id);
+    const city = await City.findOne({ where: { id, company_id: companyId } });
     if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
     await city.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'City deleted successfully');
@@ -1080,7 +1102,7 @@ const getAllEnrollmentDetailsService = async (res, company_id, min, max, search)
 
 const deleteEnrollmentService = async (res, id) => {
   try {
-    const enrollment = await Enrollment.findByPk(id);
+    const enrollment = await Enrollment.findOne({ where: { id, company_id: companyId } });
     if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
     await enrollment.update({ delete_status: 1 });
     await checkAndUpdateChitFullStatus(enrollment.group_id);
@@ -1175,7 +1197,7 @@ const getAllUpcomingChitsService = async (res, company_id, status, chit_date, mi
 
 const deleteUpcomingChitService = async (res, id) => {
   try {
-    const upcomingChit = await UpcomingChit.findByPk(id);
+    const upcomingChit = await UpcomingChit.findOne({ where: { id, company_id: companyId } });
     if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Upcoming chit not found');
     await upcomingChit.destroy();
     return successResponse(res, statusCodes.OK, 'Upcoming chit deleted successfully');
@@ -1426,7 +1448,7 @@ const getAllSuitFileInformationService = async (res, company_id, group_id, subsc
 
 const deleteSuitFileInformationService = async (res, id) => {
   try {
-    const suitInfo = await SuitFileInformation.findByPk(id);
+    const suitInfo = await SuitFileInformation.findOne({ where: { id, company_id: companyId } });
     if (!suitInfo) return errorResponse(res, statusCodes.NOT_FOUND, 'Suit File Information not found');
     await suitInfo.destroy();
     return successResponse(res, statusCodes.OK, 'Suit File Information deleted successfully');
@@ -1551,6 +1573,12 @@ const recordWinnerService = async (res, reqBody, userToken) => {
   const transaction = await sequelize.transaction();
   try {
     const { company_id, group_id, bidder_id, auction_date, pb_bo_proxy, gst_number_percentage, due_date, next_auction_date } = reqBody;
+
+    const effectiveAuctionDate = auction_date || new Date().toISOString().split('T')[0];
+    if (due_date && new Date(due_date) < new Date(effectiveAuctionDate)) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'due_date cannot be before auction_date');
+    }
 
     // 1. Group checks
     const group = await ChitsGroup.findOne({
@@ -1770,7 +1798,7 @@ const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, 
 
 const deleteAuctionService = async (res, id) => {
   try {
-    const auction = await Auction.findByPk(id);
+    const auction = await Auction.findOne({ where: { id, company_id: companyId } });
     if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
     await auction.destroy();
     return successResponse(res, statusCodes.OK, 'Auction deleted successfully');
@@ -2253,7 +2281,7 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
 
 const deleteGroupUnderStaticListService = async (res, id) => {
   try {
-    const existing = await GroupUnderStaticList.findByPk(id);
+    const existing = await GroupUnderStaticList.findOne({ where: { id, company_id: companyId } });
     if (!existing) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Group under static list not found');
     }
@@ -2284,7 +2312,7 @@ const storeOrUpdateAccountCreationDetailService = async (res, comp_id, login_use
     if (comp_id) restData.company_id = comp_id;
     if (id) {
       if (login_user_id) restData.updated_by = String(login_user_id);
-      const existing = await AccountCreationDetail.findByPk(id);
+      const existing = await AccountCreationDetail.findOne({ where: { id, company_id: companyId } });
       if (!existing) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
       }
@@ -2428,7 +2456,7 @@ const getAccountCreationDetailByIdService = async (res, id) => {
 
 const deleteAccountCreationDetailService = async (res, id) => {
   try {
-    const existing = await AccountCreationDetail.findByPk(id);
+    const existing = await AccountCreationDetail.findOne({ where: { id, company_id: companyId } });
     if (!existing) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
     }
@@ -2451,7 +2479,7 @@ const bulkEditAccountCreationDetailsService = async (res, comp_id, login_user_id
       if (!id) continue;
       if (comp_id) restData.company_id = comp_id;
       if (login_user_id) restData.updated_by = String(login_user_id);
-      const existing = await AccountCreationDetail.findByPk(id);
+      const existing = await AccountCreationDetail.findOne({ where: { id, company_id: companyId } });
       if (existing) {
         await existing.update(restData);
         results.push(existing);
@@ -2528,7 +2556,7 @@ const getSelfChitByIdService = async (res, id) => {
 
 const deleteSelfChitService = async (res, id) => {
   try {
-    const selfChit = await SelfChit.findByPk(id);
+    const selfChit = await SelfChit.findOne({ where: { id, company_id: companyId } });
     if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
     await selfChit.update({ is_deleted_status: 1 });
     await checkAndUpdateChitFullStatus(selfChit.group_id);
@@ -2543,7 +2571,7 @@ const storeOrUpdateConfigureBusinessAgentCommissionService = async (res, data = 
   try {
     const { id, ...configData } = data;
     if (id) {
-      const config = await ConfigureBusinessAgentCommission.findByPk(id);
+      const config = await ConfigureBusinessAgentCommission.findOne({ where: { id, company_id: companyId } });
       if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
 
       const existing = await ConfigureBusinessAgentCommission.findOne({
@@ -2663,7 +2691,7 @@ const getConfigureBusinessAgentCommissionByIdService = async (res, id) => {
 
 const deleteConfigureBusinessAgentCommissionService = async (res, id) => {
   try {
-    const config = await ConfigureBusinessAgentCommission.findByPk(id);
+    const config = await ConfigureBusinessAgentCommission.findOne({ where: { id, company_id: companyId } });
     if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
     await config.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'Configuration deleted successfully');
@@ -2677,7 +2705,7 @@ const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
   try {
     const { id, ...historyData } = data;
 
-    const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findByPk(id))?.configure_business_agent_id : null);
+    const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findOne({ where: { id, company_id: companyId } }))?.configure_business_agent_id : null);
     if (!configId) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration ID is required');
 
     const config = await ConfigureBusinessAgentCommission.findByPk(configId);
@@ -2764,7 +2792,7 @@ const getHistoryBusinessAgentByIdService = async (res, id) => {
 
 const deleteHistoryBusinessAgentService = async (res, id) => {
   try {
-    const history = await HistoryBusinessAgent.findByPk(id);
+    const history = await HistoryBusinessAgent.findOne({ where: { id, company_id: companyId } });
     if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
     await history.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'History record deleted successfully');
@@ -2973,7 +3001,7 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
 
 const updateCollectionSubmissionStatusService = async (res, id, status) => {
   try {
-    const submission = await CollectionAgentAmount.findByPk(id, {
+    const submission = await CollectionAgentAmount.findOne({ where: { id, company_id: companyId },
       include: [{ model: Member, as: 'member' }]
     });
     if (!submission) {
@@ -3079,7 +3107,7 @@ const storeDirectPaymentService = async (res, user, data) => {
 
 const getCompanyByIdService = async (res, id) => {
   try {
-    const company = await Company.findByPk(id);
+    const company = await Company.findOne({ where: { id, company_id: companyId } });
     if (!company) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
     }
@@ -3098,7 +3126,7 @@ const getCompanyByIdService = async (res, id) => {
 
 const getMemberByIdService = async (res, id) => {
   try {
-    const member = await Member.findByPk(id, {
+    const member = await Member.findOne({ where: { id, company_id: companyId },
       attributes: { exclude: ['verification_otp', 'verification_otp_expires_at', 'verification_otp_attempts', 'other_info_user_password'] },
       include: [
         { model: StaticDropdownsList, as: 'title' },
@@ -3152,7 +3180,7 @@ const getMemberByIdService = async (res, id) => {
 
 const getRouteByIdService = async (res, id) => {
   try {
-    const route = await Route.findByPk(id);
+    const route = await Route.findOne({ where: { id, company_id: companyId } });
     if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
     return successResponse(res, statusCodes.OK, 'Route retrieved successfully', route);
   } catch (error) {
@@ -3163,7 +3191,7 @@ const getRouteByIdService = async (res, id) => {
 
 const getAreaByIdService = async (res, id) => {
   try {
-    const area = await Area.findByPk(id, {
+    const area = await Area.findOne({ where: { id, company_id: companyId },
       include: [{ model: Route, as: 'route' }]
     });
     if (!area) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
@@ -3176,7 +3204,7 @@ const getAreaByIdService = async (res, id) => {
 
 const getChitsGroupByIdService = async (res, id) => {
   try {
-    const group = await ChitsGroup.findByPk(id);
+    const group = await ChitsGroup.findOne({ where: { id, company_id: companyId } });
     if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'ChitsGroup not found');
     return successResponse(res, statusCodes.OK, 'ChitsGroup retrieved successfully', group);
   } catch (error) {
@@ -3187,7 +3215,7 @@ const getChitsGroupByIdService = async (res, id) => {
 
 const getCountryByIdService = async (res, id) => {
   try {
-    const country = await Country.findByPk(id);
+    const country = await Country.findOne({ where: { id, company_id: companyId } });
     if (!country) return errorResponse(res, statusCodes.NOT_FOUND, 'Country not found');
     return successResponse(res, statusCodes.OK, 'Country retrieved successfully', country);
   } catch (error) {
@@ -3198,7 +3226,7 @@ const getCountryByIdService = async (res, id) => {
 
 const getStateByIdService = async (res, id) => {
   try {
-    const state = await State.findByPk(id, {
+    const state = await State.findOne({ where: { id, company_id: companyId },
       include: [{ model: Country }]
     });
     if (!state) return errorResponse(res, statusCodes.NOT_FOUND, 'State not found');
@@ -3211,7 +3239,7 @@ const getStateByIdService = async (res, id) => {
 
 const getDistrictByIdService = async (res, id) => {
   try {
-    const district = await District.findByPk(id, {
+    const district = await District.findOne({ where: { id, company_id: companyId },
       include: [{ model: State }]
     });
     if (!district) return errorResponse(res, statusCodes.NOT_FOUND, 'District not found');
@@ -3224,7 +3252,7 @@ const getDistrictByIdService = async (res, id) => {
 
 const getCityByIdService = async (res, id) => {
   try {
-    const city = await City.findByPk(id, {
+    const city = await City.findOne({ where: { id, company_id: companyId },
       include: [{ model: District }]
     });
     if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
@@ -3237,7 +3265,7 @@ const getCityByIdService = async (res, id) => {
 
 const getEnrollmentByIdService = async (res, id) => {
   try {
-    const enrollment = await Enrollment.findByPk(id, {
+    const enrollment = await Enrollment.findOne({ where: { id, company_id: companyId },
       include: [
         { model: ChitsGroup, as: 'group' },
         { model: Member, as: 'subscriber' },
@@ -3255,7 +3283,7 @@ const getEnrollmentByIdService = async (res, id) => {
 
 const getUpcomingChitByIdService = async (res, id) => {
   try {
-    const upcomingChit = await UpcomingChit.findByPk(id);
+    const upcomingChit = await UpcomingChit.findOne({ where: { id, company_id: companyId } });
     if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'UpcomingChit not found');
     return successResponse(res, statusCodes.OK, 'UpcomingChit retrieved successfully', upcomingChit);
   } catch (error) {
@@ -3266,7 +3294,7 @@ const getUpcomingChitByIdService = async (res, id) => {
 
 const getSuitFileInformationByIdService = async (res, id) => {
   try {
-    const info = await SuitFileInformation.findByPk(id, {
+    const info = await SuitFileInformation.findOne({ where: { id, company_id: companyId },
       include: [
         { model: Member, as: 'subscriber' },
         { model: ChitsGroup, as: 'group' }
@@ -3282,7 +3310,7 @@ const getSuitFileInformationByIdService = async (res, id) => {
 
 const getAuctionByIdService = async (res, id) => {
   try {
-    const auction = await Auction.findByPk(id, {
+    const auction = await Auction.findOne({ where: { id, company_id: companyId },
       include: [
         { model: ChitsGroup, as: 'group' },
         { model: Member, as: 'bidder' }
@@ -3525,15 +3553,15 @@ const logoutService = async (res, userPayload) => {
   try {
     const { id, role } = userPayload;
     if (role === 'company') {
-      const user = await Company.findByPk(id);
+      const user = await Company.findOne({ where: { id, company_id: companyId } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
       await user.update({ device_id: null, device_unique_id: null });
     } else if (role === 'member') {
-      const user = await Member.findByPk(id);
+      const user = await Member.findOne({ where: { id, company_id: companyId } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
       await user.update({ device_id: null, device_unique_id: null, fcm_token: null });
     } else if (role === 'staff' || role === 'collection_agent' || role === 'business_agent') {
-      const user = await StaffUser.findByPk(id);
+      const user = await StaffUser.findOne({ where: { id, company_id: companyId } });
       if (user) await user.update({ fcm_token: null });
     } else {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid user role for logout');
@@ -3663,11 +3691,11 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
 const storeOrUpdateGalleryService = async (res, reqBody, userPayload) => {
   try {
     const { id, gallery_image, status } = reqBody;
-    const company_id = await getCompanyIdFromUser(userPayload, reqBody);
+    const company_id = await resolveCompanyIdForAuth(userPayload);
 
     if (id) {
       // Update
-      const gallery = await Gallery.findByPk(id);
+      const gallery = await Gallery.findOne({ where: { id, company_id: companyId } });
       if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
 
       await gallery.update({ gallery_image, status });
@@ -3713,7 +3741,7 @@ const getAllGalleryService = async (res, reqBody) => {
 
 const getGalleryByIdService = async (res, id) => {
   try {
-    const gallery = await Gallery.findByPk(id);
+    const gallery = await Gallery.findOne({ where: { id, company_id: companyId } });
     if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
     return successResponse(res, statusCodes.OK, 'Gallery retrieved successfully', gallery);
   } catch (error) {
@@ -3724,7 +3752,7 @@ const getGalleryByIdService = async (res, id) => {
 
 const deleteGalleryService = async (res, id) => {
   try {
-    const gallery = await Gallery.findByPk(id);
+    const gallery = await Gallery.findOne({ where: { id, company_id: companyId } });
     if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
 
     await gallery.destroy();
@@ -4372,7 +4400,8 @@ module.exports = {
   getUpcomingChitByIdService,
   getSuitFileInformationByIdService,
   getAuctionByIdService,
-  getCompanyIdFromUser,
+  resolveCompanyIdForAssociation,
+  resolveCompanyIdForAuth,
   storeOrUpdateGroupUnderStaticListService,
   deleteGroupUnderStaticListService,
   getGroupUnderStaticListByIdService,

@@ -5,7 +5,7 @@ const statusCodes = require('../utils/statusCodes');
 
 const storeOrUpdateFixedScheme = async (req, res) => {
   try {
-    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
     return await fixedSchemeService.storeOrUpdateFixedSchemeService(res, comp_id, req.body);
   } catch (error) {
     console.error('Error in storeOrUpdateFixedScheme:', error);
@@ -15,7 +15,7 @@ const storeOrUpdateFixedScheme = async (req, res) => {
 
 const getAllFixedSchemes = async (req, res) => {
   try {
-    const comp_id = await adminService.getCompanyIdFromUser(req.user, req.body);
+    const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
     const { scheme_type, status, min, max, search } = req.body || {};
     return await fixedSchemeService.getAllFixedSchemesService(res, comp_id, scheme_type, status, min, max, search);
   } catch (error) {
@@ -27,7 +27,8 @@ const getAllFixedSchemes = async (req, res) => {
 const getFixedSchemeById = async (req, res) => {
   try {
     const { id } = req.body || {};
-    return await fixedSchemeService.getFixedSchemeByIdService(res, id);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+      return await fixedSchemeService.(res, id, companyId);
   } catch (error) {
     console.error('Error in getFixedSchemeById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -47,7 +48,8 @@ const getFixedSchemeByType = async (req, res) => {
 const deleteFixedScheme = async (req, res) => {
   try {
     const { id } = req.body || {};
-    return await fixedSchemeService.deleteFixedSchemeService(res, id);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+      return await fixedSchemeService.(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteFixedScheme:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
