@@ -108,7 +108,7 @@ const getAllFixedSchemesService = async (res, company_id, scheme_type, status, m
 // ─────────────────────────────────────────────────────────────────────────────
 // GET BY ID
 // ─────────────────────────────────────────────────────────────────────────────
-const getFixedSchemeByIdService = async (res, id) => {
+const getFixedSchemeByIdService = async (res, id, companyId) => {
   try {
     const record = await FixedSchemeChitsConfiguration.findOne({ where: { id, company_id: companyId } });
     if (!record) {
@@ -137,7 +137,7 @@ const getFixedSchemeByTypeService = async (res, scheme_type) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE
 // ─────────────────────────────────────────────────────────────────────────────
-const deleteFixedSchemeService = async (res, id) => {
+const deleteFixedSchemeService = async (res, id, companyId) => {
   try {
     const record = await FixedSchemeChitsConfiguration.findOne({ where: { id, company_id: companyId } });
     if (!record) {

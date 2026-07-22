@@ -402,7 +402,7 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
   }
 };
 
-const deleteMemberService = async (res, id) => {
+const deleteMemberService = async (res, id, companyId) => {
   try {
     const member = await Member.findOne({ where: { id, company_id: companyId } });
     if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
@@ -454,7 +454,7 @@ const getAllRouteDetailsService = async (res, company_id, min, max, search) => {
   }
 };
 
-const deleteRouteService = async (res, id) => {
+const deleteRouteService = async (res, id, companyId) => {
   try {
     const route = await Route.findOne({ where: { id, company_id: companyId } });
     if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
@@ -510,7 +510,7 @@ const getAllAreaDetailsService = async (res, company_id, min, max, search) => {
   }
 };
 
-const deleteAreaService = async (res, id) => {
+const deleteAreaService = async (res, id, companyId) => {
   try {
     const area = await Area.findOne({ where: { id, company_id: companyId } });
     if (!area) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
@@ -772,7 +772,7 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search)
   }
 };
 
-const deleteChitsGroupService = async (res, id) => {
+const deleteChitsGroupService = async (res, id, companyId) => {
   try {
     const chitsGroup = await ChitsGroup.findOne({ where: { id, company_id: companyId } });
     if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
@@ -988,7 +988,7 @@ const getDistrictsListService = async (res, company_id, state_id, search) => {
   }
 };
 
-const deleteCityService = async (res, id) => {
+const deleteCityService = async (res, id, companyId) => {
   try {
     const city = await City.findOne({ where: { id, company_id: companyId } });
     if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
@@ -1100,7 +1100,7 @@ const getAllEnrollmentDetailsService = async (res, company_id, min, max, search)
   }
 };
 
-const deleteEnrollmentService = async (res, id) => {
+const deleteEnrollmentService = async (res, id, companyId) => {
   try {
     const enrollment = await Enrollment.findOne({ where: { id, company_id: companyId } });
     if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
@@ -1195,7 +1195,7 @@ const getAllUpcomingChitsService = async (res, company_id, status, chit_date, mi
   }
 };
 
-const deleteUpcomingChitService = async (res, id) => {
+const deleteUpcomingChitService = async (res, id, companyId) => {
   try {
     const upcomingChit = await UpcomingChit.findOne({ where: { id, company_id: companyId } });
     if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Upcoming chit not found');
@@ -1446,7 +1446,7 @@ const getAllSuitFileInformationService = async (res, company_id, group_id, subsc
   }
 };
 
-const deleteSuitFileInformationService = async (res, id) => {
+const deleteSuitFileInformationService = async (res, id, companyId) => {
   try {
     const suitInfo = await SuitFileInformation.findOne({ where: { id, company_id: companyId } });
     if (!suitInfo) return errorResponse(res, statusCodes.NOT_FOUND, 'Suit File Information not found');
@@ -1796,7 +1796,7 @@ const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, 
   }
 };
 
-const deleteAuctionService = async (res, id) => {
+const deleteAuctionService = async (res, id, companyId) => {
   try {
     const auction = await Auction.findOne({ where: { id, company_id: companyId } });
     if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
@@ -2279,7 +2279,7 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
   }
 };
 
-const deleteGroupUnderStaticListService = async (res, id) => {
+const deleteGroupUnderStaticListService = async (res, id, companyId) => {
   try {
     const existing = await GroupUnderStaticList.findOne({ where: { id, company_id: companyId } });
     if (!existing) {
@@ -2293,7 +2293,7 @@ const deleteGroupUnderStaticListService = async (res, id) => {
   }
 };
 
-const getGroupUnderStaticListByIdService = async (res, id) => {
+const getGroupUnderStaticListByIdService = async (res, id, companyId) => {
   try {
     const record = await GroupUnderStaticList.findOne({ where: { id, is_deleted_status: 0 } });
     if (!record) {
@@ -2434,7 +2434,7 @@ const getAllAccountTreeService = async (res, comp_id, group_under_id, search) =>
   }
 };
 
-const getAccountCreationDetailByIdService = async (res, id) => {
+const getAccountCreationDetailByIdService = async (res, id, companyId) => {
   try {
     const record = await AccountCreationDetail.findOne({
       where: { id, is_deleted_status: 0 },
@@ -2454,7 +2454,7 @@ const getAccountCreationDetailByIdService = async (res, id) => {
   }
 };
 
-const deleteAccountCreationDetailService = async (res, id) => {
+const deleteAccountCreationDetailService = async (res, id, companyId) => {
   try {
     const existing = await AccountCreationDetail.findOne({ where: { id, company_id: companyId } });
     if (!existing) {
@@ -2536,7 +2536,7 @@ const getAllSelfChitDetailsService = async (res, company_id, min, max) => {
   }
 };
 
-const getSelfChitByIdService = async (res, id) => {
+const getSelfChitByIdService = async (res, id, companyId) => {
   try {
     const selfChit = await SelfChit.findOne({
       where: { id, is_deleted_status: 0 },
@@ -2554,7 +2554,7 @@ const getSelfChitByIdService = async (res, id) => {
   }
 };
 
-const deleteSelfChitService = async (res, id) => {
+const deleteSelfChitService = async (res, id, companyId) => {
   try {
     const selfChit = await SelfChit.findOne({ where: { id, company_id: companyId } });
     if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
@@ -2657,7 +2657,7 @@ const getAllConfigureBusinessAgentCommissionsService = async (res, filters = {},
   }
 };
 
-const getConfigureBusinessAgentCommissionByIdService = async (res, id) => {
+const getConfigureBusinessAgentCommissionByIdService = async (res, id, companyId) => {
   try {
     const config = await ConfigureBusinessAgentCommission.findOne({
       where: { id, is_deleted_status: 0 },
@@ -2689,7 +2689,7 @@ const getConfigureBusinessAgentCommissionByIdService = async (res, id) => {
   }
 };
 
-const deleteConfigureBusinessAgentCommissionService = async (res, id) => {
+const deleteConfigureBusinessAgentCommissionService = async (res, id, companyId) => {
   try {
     const config = await ConfigureBusinessAgentCommission.findOne({ where: { id, company_id: companyId } });
     if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
@@ -2777,7 +2777,7 @@ const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_
   }
 };
 
-const getHistoryBusinessAgentByIdService = async (res, id) => {
+const getHistoryBusinessAgentByIdService = async (res, id, companyId) => {
   try {
     const history = await HistoryBusinessAgent.findOne({
       where: { id, is_deleted_status: 0 }
@@ -2790,7 +2790,7 @@ const getHistoryBusinessAgentByIdService = async (res, id) => {
   }
 };
 
-const deleteHistoryBusinessAgentService = async (res, id) => {
+const deleteHistoryBusinessAgentService = async (res, id, companyId) => {
   try {
     const history = await HistoryBusinessAgent.findOne({ where: { id, company_id: companyId } });
     if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
@@ -2816,7 +2816,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
       where: { business_agent_id, is_deleted_status: 0 },
       include: [
         { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
-        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }
+        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'gender'] }
       ]
     });
 
@@ -3105,9 +3105,9 @@ const storeDirectPaymentService = async (res, user, data) => {
 };
 
 
-const getCompanyByIdService = async (res, id) => {
+const getCompanyByIdService = async (res, id, companyId) => {
   try {
-    const company = await Company.findOne({ where: { id, company_id: companyId } });
+    const company = await Company.findByPk(id);
     if (!company) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
     }
@@ -3124,7 +3124,7 @@ const getCompanyByIdService = async (res, id) => {
   }
 };
 
-const getMemberByIdService = async (res, id) => {
+const getMemberByIdService = async (res, id, companyId) => {
   try {
     const member = await Member.findOne({ where: { id, company_id: companyId },
       attributes: { exclude: ['verification_otp', 'verification_otp_expires_at', 'verification_otp_attempts', 'other_info_user_password'] },
@@ -3178,7 +3178,7 @@ const getMemberByIdService = async (res, id) => {
   }
 };
 
-const getRouteByIdService = async (res, id) => {
+const getRouteByIdService = async (res, id, companyId) => {
   try {
     const route = await Route.findOne({ where: { id, company_id: companyId } });
     if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
@@ -3189,7 +3189,7 @@ const getRouteByIdService = async (res, id) => {
   }
 };
 
-const getAreaByIdService = async (res, id) => {
+const getAreaByIdService = async (res, id, companyId) => {
   try {
     const area = await Area.findOne({ where: { id, company_id: companyId },
       include: [{ model: Route, as: 'route' }]
@@ -3202,7 +3202,7 @@ const getAreaByIdService = async (res, id) => {
   }
 };
 
-const getChitsGroupByIdService = async (res, id) => {
+const getChitsGroupByIdService = async (res, id, companyId) => {
   try {
     const group = await ChitsGroup.findOne({ where: { id, company_id: companyId } });
     if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'ChitsGroup not found');
@@ -3213,9 +3213,9 @@ const getChitsGroupByIdService = async (res, id) => {
   }
 };
 
-const getCountryByIdService = async (res, id) => {
+const getCountryByIdService = async (res, id, companyId) => {
   try {
-    const country = await Country.findOne({ where: { id, company_id: companyId } });
+    const country = await Country.findByPk(id);
     if (!country) return errorResponse(res, statusCodes.NOT_FOUND, 'Country not found');
     return successResponse(res, statusCodes.OK, 'Country retrieved successfully', country);
   } catch (error) {
@@ -3224,7 +3224,7 @@ const getCountryByIdService = async (res, id) => {
   }
 };
 
-const getStateByIdService = async (res, id) => {
+const getStateByIdService = async (res, id, companyId) => {
   try {
     const state = await State.findOne({ where: { id, company_id: companyId },
       include: [{ model: Country }]
@@ -3237,7 +3237,7 @@ const getStateByIdService = async (res, id) => {
   }
 };
 
-const getDistrictByIdService = async (res, id) => {
+const getDistrictByIdService = async (res, id, companyId) => {
   try {
     const district = await District.findOne({ where: { id, company_id: companyId },
       include: [{ model: State }]
@@ -3250,7 +3250,7 @@ const getDistrictByIdService = async (res, id) => {
   }
 };
 
-const getCityByIdService = async (res, id) => {
+const getCityByIdService = async (res, id, companyId) => {
   try {
     const city = await City.findOne({ where: { id, company_id: companyId },
       include: [{ model: District }]
@@ -3263,7 +3263,7 @@ const getCityByIdService = async (res, id) => {
   }
 };
 
-const getEnrollmentByIdService = async (res, id) => {
+const getEnrollmentByIdService = async (res, id, companyId) => {
   try {
     const enrollment = await Enrollment.findOne({ where: { id, company_id: companyId },
       include: [
@@ -3281,7 +3281,7 @@ const getEnrollmentByIdService = async (res, id) => {
   }
 };
 
-const getUpcomingChitByIdService = async (res, id) => {
+const getUpcomingChitByIdService = async (res, id, companyId) => {
   try {
     const upcomingChit = await UpcomingChit.findOne({ where: { id, company_id: companyId } });
     if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'UpcomingChit not found');
@@ -3292,7 +3292,7 @@ const getUpcomingChitByIdService = async (res, id) => {
   }
 };
 
-const getSuitFileInformationByIdService = async (res, id) => {
+const getSuitFileInformationByIdService = async (res, id, companyId) => {
   try {
     const info = await SuitFileInformation.findOne({ where: { id, company_id: companyId },
       include: [
@@ -3308,7 +3308,7 @@ const getSuitFileInformationByIdService = async (res, id) => {
   }
 };
 
-const getAuctionByIdService = async (res, id) => {
+const getAuctionByIdService = async (res, id, companyId) => {
   try {
     const auction = await Auction.findOne({ where: { id, company_id: companyId },
       include: [
@@ -3406,7 +3406,7 @@ const getAllContactUsService = async (res, company_id, min, max, search) => {
   }
 };
 
-const getContactUsByIdService = async (res, id) => {
+const getContactUsByIdService = async (res, id, companyId) => {
   try {
     const contact = await ContactUs.findOne({
       where: { id, is_deleted_status: 0 },
@@ -3420,7 +3420,7 @@ const getContactUsByIdService = async (res, id) => {
   }
 };
 
-const deleteContactUsService = async (res, id) => {
+const deleteContactUsService = async (res, id, companyId) => {
   try {
     const contact = await ContactUs.findOne({ where: { id, is_deleted_status: 0 } });
     if (!contact) return errorResponse(res, statusCodes.NOT_FOUND, 'Contact record not found');
@@ -3481,7 +3481,7 @@ const getAllFAQService = async (res, company_id, min, max, search) => {
   }
 };
 
-const getFAQByIdService = async (res, id) => {
+const getFAQByIdService = async (res, id, companyId) => {
   try {
     const faq = await FAQ.findOne({
       where: { id, is_deleted_status: 0 },
@@ -3495,7 +3495,7 @@ const getFAQByIdService = async (res, id) => {
   }
 };
 
-const deleteFAQService = async (res, id) => {
+const deleteFAQService = async (res, id, companyId) => {
   try {
     const faq = await FAQ.findOne({ where: { id, is_deleted_status: 0 } });
     if (!faq) return errorResponse(res, statusCodes.NOT_FOUND, 'FAQ not found');
@@ -3739,7 +3739,7 @@ const getAllGalleryService = async (res, reqBody) => {
   }
 };
 
-const getGalleryByIdService = async (res, id) => {
+const getGalleryByIdService = async (res, id, companyId) => {
   try {
     const gallery = await Gallery.findOne({ where: { id, company_id: companyId } });
     if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
@@ -3750,7 +3750,7 @@ const getGalleryByIdService = async (res, id) => {
   }
 };
 
-const deleteGalleryService = async (res, id) => {
+const deleteGalleryService = async (res, id, companyId) => {
   try {
     const gallery = await Gallery.findOne({ where: { id, company_id: companyId } });
     if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
@@ -4449,3 +4449,4 @@ module.exports = {
   sendManualNotificationService,
   getAllAuditLogsService
 };
+

@@ -28,7 +28,7 @@ const getFixedSchemeById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await fixedSchemeService.(res, id, companyId);
+      return await fixedSchemeService.getFixedSchemeByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getFixedSchemeById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -49,7 +49,7 @@ const deleteFixedScheme = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await fixedSchemeService.(res, id, companyId);
+      return await fixedSchemeService.deleteFixedSchemeService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteFixedScheme:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

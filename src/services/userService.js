@@ -1536,9 +1536,30 @@ const getPendingMembersService = async (res, collection_agent_id, min, max) => {
   }
 };
 
-const getMemberDuesService = async (res, userPayload) => {
-  const member_id = userPayload ? userPayload.id : null;
+const getMemberDuesService = async (res, member_id, userPayload) => {
   try {
+    if (userPayload && userPayload.role === 'collection_agent') {
+      const isAssigned = await GroupUnderStaticList.findOne({
+        where: {
+          collection_agent_id: userPayload.id,
+          is_deleted_status: 0
+        },
+        include: [{
+          model: ChitsGroup,
+          as: 'group',
+          required: true,
+          include: [{
+            model: Enrollment,
+            as: 'enrollments',
+            where: { subscriber_id: member_id, delete_status: 0 },
+            required: true
+          }]
+        }]
+      });
+      if (!isAssigned) {
+        return errorResponse(res, 403, 'You are not assigned as a collection agent for this member');
+      }
+    }
     const member = await Member.findByPk(member_id);
     if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
 
@@ -1712,10 +1733,12 @@ const getSubmissionsService = async (res, collection_agent_id, type, min, max) =
   }
 };
 
-const submitCollectionPaymentService = async (res, payload) => {
+const submitCollectionPaymentService = async (res, payload, userPayload) => {
   const transaction = await sequelize.transaction();
   try {
-    const { collection_agent_id, member_id, payment_type, amount, cash, transaction_id, cheque_number, bank_details, other_details } = payload;
+    const { member_id, payment_type, amount, cash, transaction_id, cheque_number, bank_details, other_details } = payload;
+    
+    const collection_agent_id = userPayload ? userPayload.id : payload.collection_agent_id;
     
     // Create CollectionAgentAmount (status 0: Pending)
     const submission = await CollectionAgentAmount.create({

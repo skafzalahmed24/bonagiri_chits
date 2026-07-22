@@ -34,7 +34,7 @@ const deleteCompany = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteCompanyService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteCompany:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -120,7 +120,7 @@ const deleteMember = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteMemberService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteMember:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -176,7 +176,7 @@ const deleteRoute = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteRouteService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteRoute:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -208,7 +208,7 @@ const deleteArea = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteAreaService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteArea:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -244,7 +244,7 @@ const deleteChitsGroup = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteChitsGroupService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteChitsGroup:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -346,7 +346,7 @@ const deleteCity = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteCityService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteCity:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -401,7 +401,7 @@ const deleteEnrollment = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteEnrollmentService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteEnrollment:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -442,7 +442,7 @@ const deleteUpcomingChit = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteUpcomingChitService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteUpcomingChit:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -498,7 +498,7 @@ const deleteSuitFileInformation = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteSuitFileInformationService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteSuitFileInformation:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -533,7 +533,7 @@ const deleteAuction = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteAuctionService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteAuction:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -631,7 +631,7 @@ const getCompanyById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getCompanyByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getCompanyById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -642,7 +642,7 @@ const getMemberById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getMemberByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getMemberById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -653,7 +653,7 @@ const getRouteById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getRouteByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getRouteById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -664,7 +664,7 @@ const getAreaById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getAreaByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getAreaById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -675,7 +675,7 @@ const getChitsGroupById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getChitsGroupByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getChitsGroupById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -686,7 +686,7 @@ const getCountryById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getCountryByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getCountryById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -697,7 +697,7 @@ const getStateById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getStateByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getStateById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -708,7 +708,7 @@ const getDistrictById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getDistrictByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getDistrictById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -719,7 +719,7 @@ const getCityById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getCityByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getCityById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -730,7 +730,7 @@ const getEnrollmentById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getEnrollmentByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getEnrollmentById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -845,7 +845,7 @@ const getSuitFileInformationById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getSuitFileInformationByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getSuitFileInformationById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -856,7 +856,7 @@ const getAuctionById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getAuctionByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getAuctionById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -877,7 +877,7 @@ const deleteGroupUnderStaticList = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteGroupUnderStaticListService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteGroupUnderStaticList:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -888,7 +888,7 @@ const getGroupUnderStaticListById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getGroupUnderStaticListByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getGroupUnderStaticListById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -932,7 +932,7 @@ const getAccountCreationDetailById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getAccountCreationDetailByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getAccountCreationDetailById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -943,7 +943,7 @@ const deleteAccountCreationDetail = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteAccountCreationDetailService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteAccountCreationDetail:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -999,7 +999,7 @@ const getContactUsById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getContactUsByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getContactUsById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1010,7 +1010,7 @@ const deleteContactUs = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteContactUsService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteContactUs:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1044,7 +1044,7 @@ const getFAQById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getFAQByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getFAQById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1055,7 +1055,7 @@ const deleteFAQ = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteFAQService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteFAQ:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1121,7 +1121,7 @@ const getSelfChitById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getSelfChitByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getSelfChitById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1132,7 +1132,7 @@ const deleteSelfChit = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteSelfChitService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteSelfChit:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1166,7 +1166,7 @@ const getConfigureBusinessAgentCommissionById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getConfigureBusinessAgentCommissionByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getConfigureBusinessAgentCommissionById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1177,7 +1177,7 @@ const deleteConfigureBusinessAgentCommission = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteConfigureBusinessAgentCommissionService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteConfigureBusinessAgentCommission:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1208,7 +1208,7 @@ const getHistoryBusinessAgentById = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.getHistoryBusinessAgentByIdService(res, id, companyId);
   } catch (error) {
     console.error('Error in getHistoryBusinessAgentById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1219,7 +1219,7 @@ const deleteHistoryBusinessAgent = async (req, res) => {
   try {
     const { id } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.(res, id, companyId);
+      return await adminService.deleteHistoryBusinessAgentService(res, id, companyId);
   } catch (error) {
     console.error('Error in deleteHistoryBusinessAgent:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1514,3 +1514,5 @@ module.exports = {
   storeDirectPayment,
   getAllAuditLogs
 };
+
+
