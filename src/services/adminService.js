@@ -4,7 +4,7 @@ const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
 const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, sequelize } = require('../models');
-const { generateTokens, verifyRefreshToken } = require('../utils/jwtHelper');
+const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 
@@ -52,12 +52,16 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     let user;
     let role;
     if (type === 1) {
-      user = await Company.findOne({ where: { company_id: user_code, company_password: password, is_deleted_status: 0 } });
+      user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
       role = 'company';
 
+      if (user && !(await bcrypt.compare(password, user.company_password))) {
+        user = null;
+      }
+
       if (!user) {
-        const staffUser = await StaffUser.findOne({ where: { user_code, password, is_deleted_status: 0 } });
-        if (staffUser) {
+        const staffUser = await StaffUser.findOne({ where: { user_code, is_deleted_status: 0 } });
+        if (staffUser && (await bcrypt.compare(password, staffUser.password))) {
           if (!staffUser.is_active) {
             return errorResponse(res, statusCodes.FORBIDDEN, "You don't have access to login");
           }
@@ -66,11 +70,15 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
         }
       }
     } else if (type === 2) {
-      user = await Member.findOne({ where: { other_info_user_code: user_code, other_info_user_password: password, is_deleted_status: 0 } });
-      if (user && !user.is_verified) {
-        return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin will review your account, please wait.');
+      user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+      if (user && (await bcrypt.compare(password, user.other_info_user_password))) {
+        if (!user.is_verified) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin will review your account, please wait.');
+        }
+        role = 'member';
+      } else {
+        user = null;
       }
-      role = 'member';
     }
 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Invalid credentials');
@@ -164,7 +172,13 @@ const forgotPasswordService = async (res, user_code, type) => {
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
 
     const otp = '123456'; // Default as per request
-    await user.update(role === 'staff' ? { otp } : { mobile_otp: otp });
+    const expiresAt = new Date(Date.now() + 15 * 60000);
+
+    if (role === 'staff') {
+      await user.update({ otp, otp_expires_at: expiresAt, otp_attempts: 0 });
+    } else {
+      await user.update({ mobile_otp: otp, mobile_otp_expires_at: expiresAt, mobile_otp_attempts: 0 });
+    }
 
     // TODO: Call sendMesageOtpMobile(user.mobile_number, otp) if implemented
     return successResponse(res, statusCodes.OK, 'OTP sent successfully', { user_code, type });
@@ -175,27 +189,6 @@ const forgotPasswordService = async (res, user_code, type) => {
 };
 
 const verifyOtpService = async (res, user_code, type, otp) => {
-  try {
-    let user;
-    if (type === 1) {
-      user = await Company.findOne({ where: { company_id: user_code, mobile_otp: otp, is_deleted_status: 0 } });
-      if (!user) {
-        user = await StaffUser.findOne({ where: { user_code, otp, is_deleted_status: 0 } });
-      }
-    } else {
-      user = await Member.findOne({ where: { other_info_user_code: user_code, mobile_otp: otp, is_deleted_status: 0 } });
-    }
-
-    if (!user) return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid OTP');
-
-    return successResponse(res, statusCodes.OK, 'OTP verified successfully');
-  } catch (error) {
-    console.error('Error in verifyOtpService:', error);
-    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'OTP verification failed');
-  }
-};
-
-const resetPasswordService = async (res, user_code, type, password) => {
   try {
     let user, role;
     if (type === 1) {
@@ -212,9 +205,84 @@ const resetPasswordService = async (res, user_code, type, password) => {
 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
 
-    if (role === 'company') await user.update({ company_password: password, mobile_otp: null });
-    else if (role === 'staff') await user.update({ password: password, otp: null });
-    else await user.update({ other_info_user_password: password, mobile_otp: null });
+    const maxAttempts = 3;
+    const now = new Date();
+    
+    let dbOtp, dbExpiresAt, dbAttempts;
+    if (role === 'staff') {
+      dbOtp = user.otp;
+      dbExpiresAt = user.otp_expires_at;
+      dbAttempts = user.otp_attempts || 0;
+    } else {
+      dbOtp = user.mobile_otp;
+      dbExpiresAt = user.mobile_otp_expires_at;
+      dbAttempts = user.mobile_otp_attempts || 0;
+    }
+
+    if (dbAttempts >= maxAttempts) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Maximum OTP attempts exceeded');
+    }
+
+    if (dbExpiresAt && now > new Date(dbExpiresAt)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'OTP has expired');
+    }
+
+    if (String(dbOtp) !== String(otp)) {
+      if (role === 'staff') {
+        await user.update({ otp_attempts: dbAttempts + 1 });
+      } else {
+        await user.update({ mobile_otp_attempts: dbAttempts + 1 });
+      }
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid OTP');
+    }
+
+    if (role === 'staff') {
+      await user.update({ otp: null, otp_expires_at: null, otp_attempts: 0 });
+    } else {
+      await user.update({ mobile_otp: null, mobile_otp_expires_at: null, mobile_otp_attempts: 0 });
+    }
+
+    const resetToken = generateResetToken({ user_code, type });
+
+    return successResponse(res, statusCodes.OK, 'OTP verified successfully', { reset_token: resetToken });
+  } catch (error) {
+    console.error('Error in verifyOtpService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'OTP verification failed');
+  }
+};
+
+const resetPasswordService = async (res, user_code, type, password, reset_token) => {
+  try {
+    let decoded;
+    try {
+      decoded = verifyResetToken(reset_token);
+    } catch (err) {
+      return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid or expired reset token');
+    }
+
+    user_code = decoded.user_code;
+    type = decoded.type;
+
+    let user, role;
+    if (type === 1) {
+      user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+      role = 'company';
+      if (!user) {
+        user = await StaffUser.findOne({ where: { user_code, is_deleted_status: 0 } });
+        role = 'staff';
+      }
+    } else {
+      user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+      role = 'member';
+    }
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    if (role === 'company') await user.update({ company_password: hashedPassword, mobile_otp: null });
+    else if (role === 'staff') await user.update({ password: hashedPassword, otp: null });
+    else await user.update({ other_info_user_password: hashedPassword, mobile_otp: null });
 
     return successResponse(res, statusCodes.OK, 'Password reset successfully');
   } catch (error) {
@@ -2296,7 +2364,7 @@ const deleteGroupUnderStaticListService = async (res, id, companyId) => {
 
 const getGroupUnderStaticListByIdService = async (res, id, companyId) => {
   try {
-    const record = await GroupUnderStaticList.findOne({ where: { id, is_deleted_status: 0 } });
+    const record = await GroupUnderStaticList.findOne({ where: { id, company_id: companyId, is_deleted_status: 0 } });
     if (!record) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Group under static list not found');
     }
@@ -2438,7 +2506,7 @@ const getAllAccountTreeService = async (res, comp_id, group_under_id, search) =>
 const getAccountCreationDetailByIdService = async (res, id, companyId) => {
   try {
     const record = await AccountCreationDetail.findOne({
-      where: { id, is_deleted_status: 0 },
+      where: { id, company_id: companyId, is_deleted_status: 0 },
       include: [{
         model: GroupUnderStaticList,
         as: 'account_group',
@@ -2540,7 +2608,7 @@ const getAllSelfChitDetailsService = async (res, company_id, min, max) => {
 const getSelfChitByIdService = async (res, id, companyId) => {
   try {
     const selfChit = await SelfChit.findOne({
-      where: { id, is_deleted_status: 0 },
+      where: { id, company_id: companyId, is_deleted_status: 0 },
       include: [
         { model: Company, as: 'company', attributes: ['company_name'] },
         { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
@@ -2661,7 +2729,7 @@ const getAllConfigureBusinessAgentCommissionsService = async (res, filters = {},
 const getConfigureBusinessAgentCommissionByIdService = async (res, id, companyId) => {
   try {
     const config = await ConfigureBusinessAgentCommission.findOne({
-      where: { id, is_deleted_status: 0 },
+      where: { id, company_id: companyId, is_deleted_status: 0 },
       include: [
         { model: Company, as: 'company', attributes: ['company_name'] },
         { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
@@ -2781,7 +2849,7 @@ const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_
 const getHistoryBusinessAgentByIdService = async (res, id, companyId) => {
   try {
     const history = await HistoryBusinessAgent.findOne({
-      where: { id, is_deleted_status: 0 }
+      where: { id, company_id: companyId, is_deleted_status: 0 }
     });
     if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
     return successResponse(res, statusCodes.OK, 'History record retrieved successfully', history);
@@ -3343,17 +3411,19 @@ const changePasswordService = async (res, userPayload, old_password, new_passwor
     if (role === 'company') {
       user = await Company.findOne({ where: { id, is_deleted_status: 0 } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
-      if (user.company_password !== old_password) {
+      if (!(await bcrypt.compare(old_password, user.company_password))) {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Incorrect old password');
       }
-      await user.update({ company_password: new_password });
+      const hashedPassword = await bcrypt.hash(new_password, 10);
+      await user.update({ company_password: hashedPassword });
     } else if (role === 'member') {
       user = await Member.findOne({ where: { id, is_deleted_status: 0 } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
-      if (user.other_info_user_password !== old_password) {
+      if (!(await bcrypt.compare(old_password, user.other_info_user_password))) {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Incorrect old password');
       }
-      await user.update({ other_info_user_password: new_password });
+      const hashedPassword = await bcrypt.hash(new_password, 10);
+      await user.update({ other_info_user_password: hashedPassword });
     } else {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Unsupported user role');
     }
@@ -3420,7 +3490,7 @@ const getAllContactUsService = async (res, company_id, min, max, search) => {
 const getContactUsByIdService = async (res, id, companyId) => {
   try {
     const contact = await ContactUs.findOne({
-      where: { id, is_deleted_status: 0 },
+      where: { id, company_id: companyId, is_deleted_status: 0 },
       include: [{ model: Company, as: 'company', attributes: ['company_name'] }]
     });
     if (!contact) return errorResponse(res, statusCodes.NOT_FOUND, 'Contact record not found');
@@ -3433,7 +3503,7 @@ const getContactUsByIdService = async (res, id, companyId) => {
 
 const deleteContactUsService = async (res, id, companyId) => {
   try {
-    const contact = await ContactUs.findOne({ where: { id, is_deleted_status: 0 } });
+    const contact = await ContactUs.findOne({ where: { id, company_id: companyId, is_deleted_status: 0 } });
     if (!contact) return errorResponse(res, statusCodes.NOT_FOUND, 'Contact record not found');
     await contact.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'Contact record deleted successfully');
@@ -3495,7 +3565,7 @@ const getAllFAQService = async (res, company_id, min, max, search) => {
 const getFAQByIdService = async (res, id, companyId) => {
   try {
     const faq = await FAQ.findOne({
-      where: { id, is_deleted_status: 0 },
+      where: { id, company_id: companyId, is_deleted_status: 0 },
       include: [{ model: Company, as: 'company', attributes: ['company_name'] }]
     });
     if (!faq) return errorResponse(res, statusCodes.NOT_FOUND, 'FAQ not found');
@@ -3508,7 +3578,7 @@ const getFAQByIdService = async (res, id, companyId) => {
 
 const deleteFAQService = async (res, id, companyId) => {
   try {
-    const faq = await FAQ.findOne({ where: { id, is_deleted_status: 0 } });
+    const faq = await FAQ.findOne({ where: { id, company_id: companyId, is_deleted_status: 0 } });
     if (!faq) return errorResponse(res, statusCodes.NOT_FOUND, 'FAQ not found');
     await faq.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'FAQ deleted successfully');
@@ -3560,9 +3630,11 @@ const getTermsPrivacyService = async (res, company_id, type) => {
   }
 };
 
-const logoutService = async (res, userPayload) => {
+const logoutService = async (req, res, userPayload) => {
   try {
     const { id, role } = userPayload;
+    const companyId = await resolveCompanyIdForAuth(userPayload);
+    
     if (role === 'company') {
       const user = await Company.findOne({ where: { id, company_id: companyId } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
@@ -3576,6 +3648,23 @@ const logoutService = async (res, userPayload) => {
       if (user) await user.update({ fcm_token: null });
     } else {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid user role for logout');
+    }
+
+    // Revoke the token
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token) {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.decode(token);
+      let expires_at = new Date();
+      if (decoded && decoded.exp) {
+        expires_at = new Date(decoded.exp * 1000);
+      } else {
+        expires_at.setDate(expires_at.getDate() + 1); // fallback 1 day
+      }
+
+      const { RevokedToken } = require('../models');
+      await RevokedToken.create({ token, expires_at });
     }
 
     return successResponse(res, statusCodes.OK, 'Logged out successfully');
