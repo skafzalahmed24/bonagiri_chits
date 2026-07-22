@@ -919,6 +919,14 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
       }
     });
 
+    const userInstallmentIds = allUserInstallments.map(i => i.id);
+    const userPayments = await CustomerPayment.findAll({
+      where: {
+        chits_installment_id: { [Op.in]: userInstallmentIds },
+        payment_status: 1
+      }
+    });
+
     const monthlyActivity = [];
     const monthsList = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -985,11 +993,21 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
       let totalOriginal = 0.00;
       let totalProfit = 0.00;
       let totalPayable = 0.00;
+      let totalPaidAmountForAuction = 0.00;
 
       for (const ge of userEnrollments) {
         const memberOriginal = originalAmountVal;
         let memberPayable = memberOriginal;
         let memberProfit = 0.00;
+        let memberPaidAmount = 0.00;
+
+        const geInstallment = allInstallmentsForAuction.find(inst => inst.enrollment_id === ge.id);
+        if (geInstallment) {
+           const gePayment = userPayments.find(p => p.chits_installment_id === geInstallment.id);
+           if (gePayment) {
+             memberPaidAmount = parseFloat(gePayment.received_amount) || 0.00;
+           }
+        }
 
         // Use calculated profitAmountVal to guarantee accuracy even if DB installments aren't fully updated yet
         memberProfit = profitAmountVal;
@@ -998,18 +1016,21 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         totalOriginal += memberOriginal;
         totalProfit += memberProfit;
         totalPayable += memberPayable;
+        totalPaidAmountForAuction += memberPaidAmount;
 
         memberBreakdown.push({
           position_label: `Member #${ge.group_position_number}`,
           name: ge.subscriber ? ge.subscriber.name : 'Unknown Subscriber',
           payable_amount: parseFloat(memberPayable.toFixed(2)),
           profit_amount: parseFloat(memberProfit.toFixed(2)),
-          original_amount: parseFloat(memberOriginal.toFixed(2))
+          original_amount: parseFloat(memberOriginal.toFixed(2)),
+          paid_amount: parseFloat(memberPaidAmount.toFixed(2))
         });
       }
 
       const rawBidAmount = parseFloat(auction.bid_amount) || 0.00;
       const bidWinningAmount = getSchemeWinningAmount(schemeConfig, auction.auction_number) ?? rawBidAmount;
+      const isWinnerStatus = auction.bidder_id === subscriber_id;
 
       monthlyActivity.push({
         id: auction.id,
@@ -1019,9 +1040,11 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         bid_winning_amount: parseFloat(bidWinningAmount.toFixed(2)),
         winner_name: auction.bidder ? auction.bidder.name : 'N/A',
         winner_member_id: winnerTicketFormatted,
+        is_winner_status: isWinnerStatus,
         payable_amount: parseFloat(payableAmountVal.toFixed(2)),
         profit_amount: parseFloat(profitAmountVal.toFixed(2)),
         original_amount: parseFloat(originalAmountVal.toFixed(2)),
+        paid_amount: parseFloat(totalPaidAmountForAuction.toFixed(2)),
         member_breakdown: memberBreakdown,
         breakdown_summary: {
           total_payable: parseFloat(totalPayable.toFixed(2)),
