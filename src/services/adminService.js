@@ -1332,7 +1332,7 @@ const updateFavoritesService = async (res, user_id, type, is_favorites_input) =>
 
 const getGroupMembersService = async (res, company_id, group_id, min, max) => {
   try {
-    const limit = parseInt(max, 10) || 10;
+    const limit = parseInt(max, 10) || 200;
     const offset = parseInt(min, 10) || 0;
 
     const whereClause = { group_id, delete_status: 0 };
@@ -1364,6 +1364,7 @@ const getGroupMembersService = async (res, company_id, group_id, min, max) => {
       const winData = auctions.find(a => a.bidder_id === memberId);
       return {
         id: memberId,
+        enrollment_id: e.id,
         name: e.subscriber ? e.subscriber.name : null,
         position: e.group_position_number,
         has_won: !!winData,
@@ -1534,9 +1535,59 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
   const safeCompanyId = userToken.id;
   const transaction = await sequelize.transaction();
   try {
-    const { id, ...auctionData } = data;
+    const { id, ...inputData } = data;
+    
+    // Strip client-supplied financial fields
+    delete inputData.bid_loss;
+    delete inputData.bid_payable;
+    delete inputData.company_commission;
+    delete inputData.gst_amount;
+    delete inputData.dividend_payable;
+    delete inputData.subscription_amount;
+    delete inputData.dividend;
+    delete inputData.net_payable;
+
+    let auctionData = { ...inputData };
     let auctionResult = null;
     let isNew = false;
+    
+    const targetGroupId = auctionData.group_id || (id ? (await Auction.findByPk(id)).group_id : null);
+    const groupForMath = targetGroupId ? await ChitsGroup.findOne({
+      where: { id: targetGroupId, company_id: safeCompanyId },
+      transaction
+    }) : null;
+
+    if (groupForMath && !groupForMath.scheme_configuration_id && auctionData.bid_amount) {
+      const bid_amount = parseFloat(auctionData.bid_amount);
+      const chitAmount = parseFloat(groupForMath.chit_amount) || 0;
+      const installments = parseInt(groupForMath.no_of_installments, 10) || 1;
+      const companyCommissionPct = parseFloat(groupForMath.company_commission) || 0;
+      
+      const subscription = chitAmount / installments;
+      const commission = chitAmount * (companyCommissionPct / 100);
+      const gstPct = 18; // Fixed GST rate
+      const gst = commission * (gstPct / 100);
+      
+      const bidDiscount = chitAmount - bid_amount;
+      const totalDividend = bidDiscount - commission - gst;
+      
+      const totalEnrollments = await Enrollment.count({ where: { group_id: targetGroupId, delete_status: 0 }, transaction });
+      const membersCount = totalEnrollments > 0 ? totalEnrollments : installments;
+      
+      const dividendPerMember = totalDividend / membersCount;
+      const netPayable = subscription - dividendPerMember;
+      const winnerReceives = bid_amount - commission - gst;
+      
+      auctionData.subscription_amount = subscription;
+      auctionData.company_commission = commission;
+      auctionData.gst_amount = gst;
+      
+      auctionData.bid_loss = bidDiscount;
+      auctionData.dividend_payable = totalDividend;
+      auctionData.dividend = totalDividend;
+      auctionData.bid_payable = winnerReceives;
+      auctionData.net_payable = netPayable;
+    }
 
     if (id) {
       const auction = await Auction.findByPk(id, { transaction });
@@ -1665,6 +1716,17 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Group is not started, does not exist, or you have no access');
     }
 
+    // Bid discount floor check
+    if (reqBody.bid_amount && !group.scheme_configuration_id) {
+      const maxDiscountPct = parseFloat(group.max_ceiling_in) || 0;
+      const chitAmount = parseFloat(group.chit_amount) || 0;
+      const minBid = chitAmount * (1 - maxDiscountPct / 100);
+      if (parseFloat(reqBody.bid_amount) < minBid) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, `Bid amount cannot be lower than the maximum discount floor (₹${minBid})`);
+      }
+    }
+
     // 2. Bidder checks
     const winnerEnrollment = await Enrollment.findOne({
       where: { group_id, subscriber_id: bidder_id, delete_status: 0 },
@@ -1750,19 +1812,27 @@ const recordWinnerService = async (res, reqBody, userToken) => {
 
       const subscription = chitAmount / installments;
       const commission = chitAmount * (companyCommissionPct / 100);
-      const gstPct = parseFloat(gst_number_percentage) || 18;
+      const gstPct = 18; // Fixed GST rate
       const gst = commission * (gstPct / 100);
-      const dividend = bid_amount - commission - gst;
+      
+      const bidDiscount = chitAmount - bid_amount;
+      const totalDividend = bidDiscount - commission - gst;
 
       // Calculate total enrollments for dividend distribution
       const totalEnrollments = await Enrollment.count({ where: { group_id, delete_status: 0 }, transaction });
       const membersCount = totalEnrollments > 0 ? totalEnrollments : installments;
-      const netPayable = subscription - (dividend / membersCount);
+      const dividendPerMember = totalDividend / membersCount;
+      const netPayable = subscription - dividendPerMember;
+      const winnerReceives = bid_amount - commission - gst;
 
       auctionData.subscription_amount = subscription;
       auctionData.company_commission = commission;
       auctionData.gst_amount = gst;
-      auctionData.dividend = dividend;
+      
+      auctionData.bid_loss = bidDiscount;
+      auctionData.dividend_payable = totalDividend;
+      auctionData.dividend = totalDividend;
+      auctionData.bid_payable = winnerReceives;
       auctionData.net_payable = netPayable;
     }
 
@@ -1771,6 +1841,31 @@ const recordWinnerService = async (res, reqBody, userToken) => {
 
     if (schemeConfig) {
       await applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnrollment.id, transaction);
+    } else {
+      // Finding 2: Open Auction apply adjustments
+      const currentMonthInstallments = await ChitsInstallment.findAll({
+        where: { group_id: auctionData.group_id, auction_number: auctionData.auction_number },
+        transaction
+      });
+      for (const inst of currentMonthInstallments) {
+        if (inst.enrollment_id === winnerEnrollment.id) {
+          await inst.update({ payable_amount: auctionData.subscription_amount }, { transaction });
+        } else {
+          await inst.update({ payable_amount: auctionData.net_payable }, { transaction });
+        }
+      }
+      // Set winner future installments to base subscription
+      await ChitsInstallment.update(
+        { payable_amount: auctionData.subscription_amount },
+        {
+          where: {
+            group_id: auctionData.group_id,
+            enrollment_id: winnerEnrollment.id,
+            auction_number: { [Op.gt]: auctionData.auction_number }
+          },
+          transaction
+        }
+      );
     }
 
     // 7. Update ChitsGroup auction_date

@@ -311,7 +311,9 @@ const chitsGroupValidator = Joi.object({
   enrollment_fee: Joi.number().precision(2).allow(null).optional(),
   company_chit_number: Joi.number().integer().allow(null).optional(),
   no_auction_installment: Joi.number().integer().allow(null).optional(),
-  company_commission: Joi.number().precision(2).allow(null).optional(),
+  company_commission: Joi.number().precision(2).max(5).allow(null).optional().messages({
+    'number.max': 'Commission cannot exceed 5% by statutory cap'
+  }),
   max_ceiling_in: Joi.number().precision(2).allow(null).optional(),
   penality_for_nps: Joi.number().precision(2).allow(null).optional(),
   penality_for_ps: Joi.number().precision(2).allow(null).optional(),
@@ -691,15 +693,7 @@ module.exports = {
     pb_bo_proxy: Joi.string().allow('', null).optional(),
     minutes_filing_date: Joi.date().iso().allow('', null).optional(),
     installments: Joi.number().integer().allow(null).optional(),
-    chit_amount: Joi.number().precision(2).allow(null).optional(),
-    bid_loss: Joi.number().precision(2).allow(null).optional(),
-    bid_payable: Joi.number().precision(2).allow(null).optional(),
-    company_commission: Joi.number().precision(2).allow(null).optional(),
-    gst_amount: Joi.number().precision(2).allow(null).optional(),
-    dividend_payable: Joi.number().precision(2).allow(null).optional(),
-    subscription_amount: Joi.number().precision(2).allow(null).optional(),
-    dividend: Joi.number().precision(2).allow(null).optional(),
-    net_payable: Joi.number().precision(2).allow(null).optional()
+    chit_amount: Joi.number().precision(2).allow(null).optional()
   }),
   getAllAuctionsSchema: Joi.object({
     company_id: Joi.string().uuid().required(),

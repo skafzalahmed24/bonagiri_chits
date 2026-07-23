@@ -35,11 +35,27 @@ const startDailyPenaltyCron = () => {
       });
 
       let processedCount = 0;
+      const winnerCache = {};
 
       for (const installment of unpaidInstallments) {
         // Follow foreign-keys up the chain to the master root definition
         const group = installment.enrollment?.group;
         if (!group) continue;
+        
+        const subscriberId = installment.enrollment?.subscriber?.id;
+        let isWinner = false;
+        if (subscriberId) {
+          const cacheKey = `${group.id}_${subscriberId}`;
+          if (winnerCache[cacheKey] !== undefined) {
+             isWinner = winnerCache[cacheKey];
+          } else {
+             const auctionWin = await sequelize.models.Auction.findOne({
+               where: { group_id: group.id, bidder_id: subscriberId }
+             });
+             isWinner = !!auctionWin;
+             winnerCache[cacheKey] = isWinner;
+          }
+        }
         
         // Calculate simulated time for this specific group
         const simulatedNow = getSimulatedNow(group);
@@ -52,7 +68,9 @@ const startDailyPenaltyCron = () => {
         if (dueDate < simulatedNow) {
 
         // Retrieve exactly what the admin specified for this exact root group
-        const penaltyAmountPerDay = parseFloat(group.penality_for_nps) || 0;
+        const penaltyAmountPerDay = isWinner
+          ? (parseFloat(group.penality_for_ps) || 0)
+          : (parseFloat(group.penality_for_nps) || 0);
 
         // Math: Add exactly 1 simulated day and physically stack the exact defined fraction incrementally limitlessly
         const newOverdueCount = (installment.over_due_days_count || 0) + 1;
