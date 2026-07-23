@@ -2341,7 +2341,15 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
       ]
     });
 
-    return successResponse(res, statusCodes.OK, 'Members under business agent retrieved successfully', { count: commissions.count, rows: commissions.rows });
+    const rows = commissions.rows.map(row => {
+      const rowData = row.toJSON();
+      if (rowData.commission_amount) {
+        rowData.commission_amount = parseFloat(rowData.commission_amount) || 0;
+      }
+      return rowData;
+    });
+
+    return successResponse(res, statusCodes.OK, 'Members under business agent retrieved successfully', { count: commissions.count, rows });
   } catch (error) {
     console.error('Error in getBusinessListUnderMembersService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -2928,7 +2936,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
       return {
         id: config.id,
         group_name: group.group_name || null,
-        chit_amount: group.chit_amount || null,
+        chit_amount: parseFloat(group.chit_amount) || 0,
         group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
         commission_amount,
         total_paid,
@@ -2978,13 +2986,13 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
         id: h.id,
         group_id: config.group_id,
         group_name: group.group_name,
-        chit_amount: group.chit_amount,
+        chit_amount: parseFloat(group.chit_amount) || 0,
         member_name: member.name || null,
         member_id: member.id || null,
-        commission_amount: config.commission_amount,
+        commission_amount: parseFloat(config.commission_amount) || 0,
         received_date: h.createdAt ? new Date(h.createdAt).toISOString().split('T')[0] : null,
         status: config.status,
-        paid_amount: h.paid_amount
+        paid_amount: parseFloat(h.paid_amount) || 0
       };
     });
 
@@ -3054,7 +3062,7 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
       return {
         id: config.id,
         group_name: group.group_name || null,
-        chit_amount: group.chit_amount || null,
+        chit_amount: parseFloat(group.chit_amount) || 0,
         group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
         group_created_date: group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null,
         commission_amount: commission_amount,
