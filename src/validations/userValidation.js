@@ -118,6 +118,19 @@ const submitCollectionPaymentSchema = Joi.object({
   other_details: Joi.string().optional()
 });
 
+const getMemberDocumentsSchema = Joi.object({
+  group_id: Joi.string().uuid().required(),
+  member_id: Joi.number().integer().required()
+});
+
+const uploadMemberDocumentSchema = Joi.object({
+  group_id: Joi.string().uuid().required(),
+  member_id: Joi.number().integer().required(),
+  document_type: Joi.string().valid('aadhar', 'bank_id', 'upi_details', 'certificates').required(),
+  document_url: Joi.string().required()
+});
+
+
 const getAllGallerySchema = Joi.object({
   company_id: Joi.string().uuid().optional(),
   min: Joi.number().integer().min(0).optional(),
@@ -156,6 +169,8 @@ module.exports = {
   getMemberDuesSchema,
   getSubmissionsSchema,
   submitCollectionPaymentSchema,
+  getMemberDocumentsSchema,
+  uploadMemberDocumentSchema,
   getAllGallerySchema,
   registerTokenSchema,
   getNotificationHistorySchema,

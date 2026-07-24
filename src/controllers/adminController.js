@@ -1357,9 +1357,28 @@ const sendManualNotification = async (req, res) => {
 
 const storeDirectPayment = async (req, res) => {
   try {
-    return await adminService.storeDirectPaymentService(res, req.user, req.body);
+    return await adminService.storeDirectPaymentService(res, req.body, req.user);
   } catch (error) {
     console.error('Error in storeDirectPayment:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMemberDocumentsAdmin = async (req, res) => {
+  try {
+    const { group_id, member_id } = req.body;
+    return await adminService.getMemberDocumentsAdminService(res, group_id, member_id);
+  } catch (error) {
+    console.error('Error in getMemberDocumentsAdmin:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const verifyMemberDocument = async (req, res) => {
+  try {
+    return await adminService.verifyMemberDocumentService(res, req.body);
+  } catch (error) {
+    console.error('Error in verifyMemberDocument:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1512,7 +1531,9 @@ module.exports = {
   registerAdminToken,
   sendManualNotification,
   storeDirectPayment,
-  getAllAuditLogs
+  getAllAuditLogs,
+  getMemberDocumentsAdmin,
+  verifyMemberDocument
 };
 
 

@@ -38,6 +38,8 @@ router.post('/collection-agent/pending-members', authMiddleware.authenticateToke
 router.post('/collection-agent/member-dues', authMiddleware.authenticateToken, validate(userValidation.getMemberDuesSchema), userController.getMemberDues);
 router.post('/collection-agent/submissions', authMiddleware.authenticateToken, validate(userValidation.getSubmissionsSchema), userController.getSubmissions);
 router.post('/collection-agent/submit-payment', authMiddleware.authenticateToken, validate(userValidation.submitCollectionPaymentSchema), userController.submitCollectionPayment);
+router.post('/collection-agent/documents/list', authMiddleware.authenticateToken, validate(userValidation.getMemberDocumentsSchema), userController.getMemberDocuments);
+router.post('/collection-agent/documents/upload', authMiddleware.authenticateToken, validate(userValidation.uploadMemberDocumentSchema), userController.uploadMemberDocument);
 
 // gallery routes
 router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(userValidation.getAllGallerySchema), userController.getAllGallery);

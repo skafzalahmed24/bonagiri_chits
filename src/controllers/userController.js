@@ -260,6 +260,25 @@ const markNotificationRead = async (req, res) => {
   }
 };
 
+const getMemberDocuments = async (req, res) => {
+  try {
+    const { group_id, member_id } = req.body;
+    return await userService.getMemberDocumentsService(res, group_id, member_id);
+  } catch (error) {
+    console.error('Error in getMemberDocuments:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const uploadMemberDocument = async (req, res) => {
+  try {
+    return await userService.uploadMemberDocumentService(res, req.body, req.user);
+  } catch (error) {
+    console.error('Error in uploadMemberDocument:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecord,
   getAllHomeRecords,
@@ -285,5 +304,7 @@ module.exports = {
   getAllGallery,
   registerDeviceToken,
   getNotificationHistory,
-  markNotificationRead
+  markNotificationRead,
+  getMemberDocuments,
+  uploadMemberDocument
 };

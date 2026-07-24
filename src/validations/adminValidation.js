@@ -911,6 +911,16 @@ module.exports = {
   deleteGallerySchema: Joi.object({
     id: Joi.string().uuid().required()
   }),
+  getMemberDocumentsAdminSchema: Joi.object({
+    group_id: Joi.string().uuid().required(),
+    member_id: Joi.number().integer().required()
+  }),
+  verifyMemberDocumentSchema: Joi.object({
+    member_id: Joi.number().integer().required(),
+    group_id: Joi.string().uuid().required(),
+    document_type: Joi.string().valid('aadhar', 'bank_id', 'upi_details', 'certificates').required(),
+    status: Joi.number().integer().valid(0, 1, 2).required()
+  }),
   storeOrUpdateFixedSchemeSchema: Joi.object({
     id: Joi.string().uuid().optional(),
     title: Joi.string().required(),
@@ -1021,5 +1031,15 @@ module.exports = {
     payment_date: Joi.date().iso().optional(),
     payment_mode: Joi.number().integer().optional(),
     transaction_reference: Joi.string().allow('', null).optional()
+  }),
+  getMemberDocumentsAdminSchema: Joi.object({
+    group_id: Joi.string().uuid().required(),
+    member_id: Joi.number().integer().required()
+  }),
+  verifyMemberDocumentSchema: Joi.object({
+    member_id: Joi.number().integer().required(),
+    group_id: Joi.string().uuid().required(),
+    document_type: Joi.string().valid('aadhar', 'bank_id', 'upi_details', 'certificates').required(),
+    status: Joi.number().integer().valid(0, 1, 2).required()
   })
 };

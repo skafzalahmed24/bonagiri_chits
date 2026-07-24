@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
@@ -3880,7 +3880,9 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         date: formatDate(sub.createdAt),
         collection_id: collection_id_value,
         status: statusStr,
-        status_note
+        status_note,
+        denominations: sub.cash?.denominations || null,
+        transaction_ref: sub.transaction_id || sub.cheque_number || null
       };
     });
 
@@ -4482,6 +4484,60 @@ const sendManualNotificationService = async (res, userPayload, data) => {
   }
 };
 
+const getMemberDocumentsAdminService = async (res, group_id, member_id) => {
+  try {
+    const docRecord = await MemberDocument.findOne({
+      where: { group_id, member_id }
+    });
+
+    let documents = docRecord && docRecord.documents ? docRecord.documents : {};
+
+    const types = ['aadhar', 'bank_id', 'upi_details', 'certificates'];
+    const result = types.map(type => {
+      const doc = documents[type] || { url: null, status: null };
+      return {
+        document_type: type,
+        document_url: doc.url,
+        status: doc.status
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Member documents retrieved', { documents: result });
+  } catch (error) {
+    console.error('Error in getMemberDocumentsAdminService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const verifyMemberDocumentService = async (res, payload) => {
+  try {
+    const { group_id, member_id, document_type, status } = payload;
+
+    const docRecord = await MemberDocument.findOne({
+      where: { group_id, member_id }
+    });
+
+    if (!docRecord || !docRecord.documents) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Documents not found for this member and group');
+    }
+
+    let documents = { ...docRecord.documents };
+
+    if (!documents[document_type]) {
+      return errorResponse(res, statusCodes.NOT_FOUND, `Document of type ${document_type} not found`);
+    }
+
+    documents[document_type].status = status;
+
+    await docRecord.update({ documents });
+
+    return successResponse(res, statusCodes.OK, 'Document status updated successfully', { documents: docRecord.documents });
+  } catch (error) {
+    console.error('Error in verifyMemberDocumentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getAllAuditLogsService = async (res, user_id, action_type, min, max, search, company_id) => {
   try {
     const whereCondition = {};
@@ -4650,6 +4706,8 @@ module.exports = {
   getDashboardSummaryService,
   registerAdminTokenService,
   sendManualNotificationService,
-  getAllAuditLogsService
+  getAllAuditLogsService,
+  getMemberDocumentsAdminService,
+  verifyMemberDocumentService
 };
 
