@@ -1249,7 +1249,7 @@ const getHistoryByGroupId = async (req, res) => {
 const updateCollectionSubmissionStatus = async (req, res) => {
   try {
     const { id, status } = req.body;
-    return await adminService.updateCollectionSubmissionStatusService(res, id, status);
+    return await adminService.updateCollectionSubmissionStatusService(res, id, status, req.user);
   } catch (error) {
     console.error('Error in updateCollectionSubmissionStatus:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1259,7 +1259,7 @@ const updateCollectionSubmissionStatus = async (req, res) => {
 const getAllCollectionSubmissions = async (req, res) => {
   try {
     const { collection_agent_id, type, min, max } = req.body;
-    const companyId = req.user.role === 'staff' ? req.user.company_id : req.user.id;
+    const companyId = (req.user.role === 'staff' || req.user.role === 'member') ? req.user.company_id : req.user.id;
     return await adminService.getAllCollectionSubmissionsService(res, collection_agent_id, type, min, max, companyId);
   } catch (error) {
     console.error('Error in getAllCollectionSubmissions:', error);
@@ -1357,7 +1357,7 @@ const sendManualNotification = async (req, res) => {
 
 const storeDirectPayment = async (req, res) => {
   try {
-    return await adminService.storeDirectPaymentService(res, req.body, req.user);
+    return await adminService.storeDirectPaymentService(res, req.user, req.body);
   } catch (error) {
     console.error('Error in storeDirectPayment:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1398,6 +1398,16 @@ const getAllAuditLogs = async (req, res) => {
     return await adminService.getAllAuditLogsService(res, user_id, action_type, min, max, search, companyId);
   } catch (error) {
     console.error('Error in getAllAuditLogs:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllReceipts = async (req, res) => {
+  try {
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getAllReceiptsService(res, companyId, req.body);
+  } catch (error) {
+    console.error('Error in getAllReceipts:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1533,7 +1543,6 @@ module.exports = {
   storeDirectPayment,
   getAllAuditLogs,
   getMemberDocumentsAdmin,
-  verifyMemberDocument
+  verifyMemberDocument,
+  getAllReceipts
 };
-
-

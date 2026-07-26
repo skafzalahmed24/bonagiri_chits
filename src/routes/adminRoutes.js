@@ -190,7 +190,7 @@ router.post('/history-business-agent/history-by-group-id', authMiddleware.authen
 
 // collection-agent submissions update
 router.post('/collection-agent/submissions/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.updateCollectionSubmissionStatusSchema), adminController.updateCollectionSubmissionStatus);
-router.post('/collection-agent/submissions/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.getAllCollectionSubmissionsSchema), adminController.getAllCollectionSubmissions);
+router.post('/collection-agent/submissions/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllCollectionSubmissionsSchema), adminController.getAllCollectionSubmissions);
 
 // member documents
 router.post('/member/documents/list', authMiddleware.authenticateToken, validate(adminValidation.getMemberDocumentsAdminSchema), adminController.getMemberDocumentsAdmin);
@@ -198,6 +198,7 @@ router.post('/member/documents/verify', authMiddleware.authenticateToken, valida
 
 // admin direct payment route
 router.post('/customer-payment/store-direct', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.storeDirectPaymentSchema), adminController.storeDirectPayment);
+router.post('/customer-payment/get-all-receipts', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.getAllReceiptsSchema), adminController.getAllReceipts);
 
 // gallery routes
 router.post('/gallery/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.galleryValidator), adminController.storeOrUpdateGallery);

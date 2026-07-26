@@ -175,6 +175,11 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 where: { group_id: enrollment.group_id }
             });
 
+            let completed_percentage = 0;
+            if (group && group.no_of_installments) {
+                completed_percentage = Math.round((totalAuctionsCount / group.no_of_installments) * 100);
+            }
+
             return {
                 id: enrollment.id,
                 group_id: enrollment.group_id,
@@ -184,6 +189,7 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 no_of_installments: group ? group.no_of_installments : null,
                 scheme_type: schemeType,
                 completed_installments_count: totalAuctionsCount,
+                completed_percentage,
                 positions_occupied_count: occupiedCount,
                 total_positions: 20,
                 upcoming_instalment_id: upcomingInstallment ? upcomingInstallment.id : null,
@@ -1094,7 +1100,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
     }
 };
 
-const getCollectionAgentDashboardService = async (res, collection_agent_id) => {
+const getCollectionAgentDashboardService = async (res, collection_agent_id, from_date, to_date) => {
     try {
         const enrollments = await Enrollment.findAll({
             where: {
@@ -1161,14 +1167,23 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id) => {
             }
         });
 
-        const startOfToday = new Date();
-        startOfToday.setHours(0, 0, 0, 0);
-        const endOfToday = new Date();
-        endOfToday.setHours(23, 59, 59, 999);
+        let startOfPeriod, endOfPeriod;
+        
+        if (from_date && to_date) {
+            startOfPeriod = new Date(from_date);
+            startOfPeriod.setHours(0, 0, 0, 0);
+            endOfPeriod = new Date(to_date);
+            endOfPeriod.setHours(23, 59, 59, 999);
+        } else {
+            startOfPeriod = new Date();
+            startOfPeriod.setHours(0, 0, 0, 0);
+            endOfPeriod = new Date();
+            endOfPeriod.setHours(23, 59, 59, 999);
+        }
 
         const todayCollectionsList = collectedInstallments.filter(payment => {
             const d = new Date(payment.createdAt);
-            return d >= startOfToday && d <= endOfToday;
+            return d >= startOfPeriod && d <= endOfPeriod;
         });
         const today_collection = todayCollectionsList.reduce((sum, payment) => sum + (parseFloat(payment.received_amount) || 0), 0);
 
@@ -1549,22 +1564,12 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             if (userPayload.role === 'member') {
                 if (String(userPayload.id) !== String(member_id)) {
                     // If accessing someone else's dues, verify they are a collection agent assigned to this member
-                    const isAssigned = await GroupUnderStaticList.findOne({
+                    const isAssigned = await Enrollment.findOne({
                         where: {
+                            subscriber_id: member_id,
                             collection_agent_id: userPayload.id,
-                            is_deleted_status: 0
-                        },
-                        include: [{
-                            model: ChitsGroup,
-                            as: 'group',
-                            required: true,
-                            include: [{
-                                model: Enrollment,
-                                as: 'enrollments',
-                                where: { subscriber_id: member_id, delete_status: 0 },
-                                required: true
-                            }]
-                        }]
+                            delete_status: 0
+                        }
                     });
                     if (!isAssigned) {
                         return errorResponse(res, 403, 'You are not authorized to view this member\'s dues');
@@ -1585,7 +1590,14 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
         let balance = 0;
         let penalty_amount = 0;
         let oldest_due = null;
+        let penalty_text = 'No penalty';
         let group_names = enrollments.map(e => e.group ? e.group.group_name : '').join(', ');
+
+        const wonAuctions = await Auction.findAll({
+            where: { bidder_id: member_id },
+            attributes: ['group_id']
+        });
+        const wonGroupIds = new Set(wonAuctions.map(a => a.group_id));
 
         const enrollmentIds = enrollments.map(e => e.id);
         const installments = await ChitsInstallment.findAll({
@@ -1601,6 +1613,9 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             }]
         });
 
+        let oldest_installment = null;
+        let oldest_due_date_obj = null;
+
         installments.forEach(inst => {
             const payable = parseFloat(inst.payable_amount) || 0;
             total_due += payable;
@@ -1610,14 +1625,58 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
 
             const pending = payable - paid;
             if (pending > 0) {
-                // Penalty logic
-                penalty_amount += (parseFloat(inst.penalty_amount) || 0);
-
-                if (!oldest_due || new Date(inst.due_date) < new Date(oldest_due)) {
+                const instDate = new Date(inst.due_date);
+                if (!oldest_due_date_obj || instDate < oldest_due_date_obj) {
+                    oldest_due_date_obj = instDate;
                     oldest_due = inst.due_date;
+                    oldest_installment = { inst, pending };
                 }
             }
         });
+
+        if (oldest_installment) {
+            const { inst, pending } = oldest_installment;
+            const e = enrollments.find(en => en.id === inst.enrollment_id);
+            const group = e ? e.group : null;
+
+            const simulatedNow = getSimulatedNow(group);
+            simulatedNow.setHours(0, 0, 0, 0);
+            const dueDate = new Date(inst.due_date);
+            dueDate.setHours(0, 0, 0, 0);
+
+            let overDueDaysCount = 0;
+            if (dueDate < simulatedNow) {
+                const diffTime = simulatedNow.getTime() - dueDate.getTime();
+                overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+            }
+
+            if (overDueDaysCount > 0) {
+                const isWinner = group ? wonGroupIds.has(group.id) : false;
+                const penaltyRate = isWinner
+                    ? (group ? parseFloat(group.penality_for_ps) || 0.00 : 0.00)
+                    : (group ? parseFloat(group.penality_for_nps) || 0.00 : 0.00);
+
+                let penaltyAmountPerDay = 0.00;
+                let displayPercentage = 2.0;
+
+                const dueAmount = pending; // calculate penalty on pending amount
+                if (penaltyRate > 0) {
+                    if (penaltyRate <= 20) {
+                        displayPercentage = penaltyRate;
+                        penaltyAmountPerDay = (penaltyRate / 100) * dueAmount;
+                    } else {
+                        penaltyAmountPerDay = penaltyRate;
+                        displayPercentage = dueAmount > 0 ? parseFloat(((penaltyAmountPerDay / dueAmount) * 100).toFixed(1)) : 2.0;
+                    }
+                } else {
+                    displayPercentage = 2.0;
+                    penaltyAmountPerDay = 0.02 * dueAmount;
+                }
+
+                penalty_amount = parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2));
+                penalty_text = `Penalty ${displayPercentage}% per day × ${overDueDaysCount} days ₹ ${penalty_amount}`;
+            }
+        }
 
         balance = total_due - total_paid;
 
@@ -1625,12 +1684,13 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             id: member.id,
             name: member.name,
             member_id: member.member_id,
+            gender: member.gender,
             group_name: group_names,
             total_due,
             total_paid,
             balance,
             penalty_amount,
-            penalty_text: `Penalty - ₹ ${penalty_amount}`,
+            penalty_text,
             older_due_months: oldest_due
         });
     } catch (error) {

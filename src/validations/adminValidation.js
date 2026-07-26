@@ -693,7 +693,15 @@ module.exports = {
     pb_bo_proxy: Joi.string().allow('', null).optional(),
     minutes_filing_date: Joi.date().iso().allow('', null).optional(),
     installments: Joi.number().integer().allow(null).optional(),
-    chit_amount: Joi.number().precision(2).allow(null).optional()
+    chit_amount: Joi.number().precision(2).allow(null).optional(),
+    bid_loss: Joi.number().precision(2).allow(null).optional(),
+    bid_payable: Joi.number().precision(2).allow(null).optional(),
+    company_commission: Joi.number().precision(2).allow(null).optional(),
+    gst_amount: Joi.number().precision(2).allow(null).optional(),
+    dividend_payable: Joi.number().precision(2).allow(null).optional(),
+    subscription_amount: Joi.number().precision(2).allow(null).optional(),
+    dividend: Joi.number().precision(2).allow(null).optional(),
+    net_payable: Joi.number().precision(2).allow(null).optional()
   }),
   getAllAuctionsSchema: Joi.object({
     company_id: Joi.string().uuid().required(),
@@ -919,7 +927,11 @@ module.exports = {
     member_id: Joi.number().integer().required(),
     group_id: Joi.string().uuid().required(),
     document_type: Joi.string().valid('aadhar', 'bank_id', 'upi_details', 'certificates').required(),
-    status: Joi.number().integer().valid(0, 1, 2).required()
+    status: Joi.number().integer().valid(1, 2).required(),
+    rejection_reason: Joi.string().allow('', null).when('status', {
+      is: 2,
+      then: Joi.required()
+    })
   }),
   storeOrUpdateFixedSchemeSchema: Joi.object({
     id: Joi.string().uuid().optional(),
@@ -1041,5 +1053,15 @@ module.exports = {
     group_id: Joi.string().uuid().required(),
     document_type: Joi.string().valid('aadhar', 'bank_id', 'upi_details', 'certificates').required(),
     status: Joi.number().integer().valid(0, 1, 2).required()
+  }),
+  getAllReceiptsSchema: Joi.object({
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    source: Joi.string().valid('direct', 'collection_agent').optional(),
+    group_id: Joi.string().uuid().optional(),
+    member_id: Joi.number().integer().optional(),
+    payment_mode: Joi.number().integer().optional(),
+    date_from: Joi.date().iso().optional(),
+    date_to: Joi.date().iso().optional(),
   })
 };

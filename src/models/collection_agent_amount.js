@@ -65,6 +65,18 @@ module.exports = (sequelize, DataTypes) => {
     confirm_date: {
       type: DataTypes.DATE,
       allowNull: true
+    },
+    verified_by_id: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    verified_by_role: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    verified_by_name: {
+      type: DataTypes.STRING,
+      allowNull: true
     }
   }, {
     sequelize,

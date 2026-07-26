@@ -159,8 +159,8 @@ const getHistoryByGroupId = async (req, res) => {
 
 const getCollectionAgentDashboard = async (req, res) => {
   try {
-    const { collection_agent_id } = req.body;
-    return await userService.getCollectionAgentDashboardService(res, req.user.id);
+    const { collection_agent_id, from_date, to_date } = req.body;
+    return await userService.getCollectionAgentDashboardService(res, req.user.id, from_date, to_date);
   } catch (error) {
     console.error('Error in getCollectionAgentDashboard:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

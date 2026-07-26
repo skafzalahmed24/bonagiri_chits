@@ -76,7 +76,9 @@ const getBusinessListUnderMembersSchema = Joi.object({
 });
 
 const getCollectionAgentDashboardSchema = Joi.object({
-  collection_agent_id: Joi.number().integer().required()
+  collection_agent_id: Joi.number().integer().required(),
+  from_date: Joi.date().iso().optional(),
+  to_date: Joi.date().iso().optional()
 });
 
 const getCollectionAgentGroupDashboardSchema = Joi.object({

@@ -3181,8 +3181,9 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
   }
 };
 
-const updateCollectionSubmissionStatusService = async (res, id, status) => {
+const updateCollectionSubmissionStatusService = async (res, id, status, userToken) => {
   try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
     const submission = await CollectionAgentAmount.findOne({ where: { id, company_id: companyId },
       include: [{ model: Member, as: 'member' }]
     });
@@ -3190,10 +3191,32 @@ const updateCollectionSubmissionStatusService = async (res, id, status) => {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Submission not found');
     }
 
+    let verified_by_id = null;
+    let verified_by_role = null;
+    let verified_by_name = null;
+
+    if (status === 2 && userToken) {
+      verified_by_id = userToken.role === 'company' ? userToken.id : String(userToken.id);
+      verified_by_role = userToken.role;
+      verified_by_name = 'Unknown';
+      if (userToken.role === 'company') {
+        const company = await Company.findByPk(userToken.id);
+        if (company) verified_by_name = company.company_name;
+      } else {
+        const staff = await StaffUser.findByPk(userToken.id);
+        if (staff) verified_by_name = staff.name;
+      }
+    }
+
     // update status (0 - pending, 1 - pending, 2 - verified, 3 - rejected)
     await submission.update({
       status,
-      confirm_date: status === 2 ? new Date() : null
+      confirm_date: status === 2 ? new Date() : null,
+      ...(status === 2 && {
+        verified_by_id,
+        verified_by_role,
+        verified_by_name
+      })
     });
 
     if (status === 2) {
@@ -3268,6 +3291,15 @@ const storeDirectPaymentService = async (res, user, data) => {
     // Generate gapless receipt number
     const newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId);
 
+    let recorded_by_name = 'Unknown';
+    if (user.role === 'company') {
+      const company = await Company.findByPk(user.id);
+      if (company) recorded_by_name = company.company_name;
+    } else {
+      const staff = await StaffUser.findByPk(user.id);
+      if (staff) recorded_by_name = staff.name;
+    }
+
     const newPayment = await CustomerPayment.create({
       chits_installment_id,
       received_amount: parseFloat(received_amount) || 0.00,
@@ -3276,7 +3308,10 @@ const storeDirectPaymentService = async (res, user, data) => {
       payment_date: payment_date || new Date().toISOString().split('T')[0],
       payment_mode: parseInt(payment_mode) || 1,
       transaction_reference: transaction_reference || null,
-      receipt_number: newReceiptNumber
+      receipt_number: newReceiptNumber,
+      recorded_by_id: user.role === 'company' ? user.id : String(user.id),
+      recorded_by_role: user.role,
+      recorded_by_name
     });
 
     return successResponse(res, statusCodes.CREATED, 'Direct payment recorded successfully', newPayment);
@@ -3873,6 +3908,7 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
       return {
         id: sub.id,
         member_name: sub.member ? sub.member.name : 'Unknown',
+        gender: sub.member ? sub.member.gender : null,
         profile_image: sub.member ? sub.member.upload_image : '',
         group_name: groupNames || 'No Group',
         amount,
@@ -4573,6 +4609,79 @@ const getAllAuditLogsService = async (res, user_id, action_type, min, max, searc
   }
 };
 
+const getAllReceiptsService = async (res, companyId, filters = {}) => {
+  try {
+    const { min = 0, max = 20, source, group_id, member_id, payment_mode, date_from, date_to, search } = filters;
+
+    const where = { payment_status: 1 };
+    if (payment_mode) where.payment_mode = payment_mode;
+    if (date_from || date_to) {
+      where.payment_date = {};
+      if (date_from) where.payment_date[Op.gte] = date_from;
+      if (date_to) where.payment_date[Op.lte] = date_to;
+    }
+    if (source === 'direct') where.collection_agent_amount_id = null;
+    if (source === 'collection_agent') where.collection_agent_amount_id = { [Op.ne]: null };
+
+    const { count, rows } = await CustomerPayment.findAndCountAll({
+      where,
+      include: [
+        {
+          model: ChitsInstallment,
+          as: 'installment',
+          required: true,
+          include: [{
+            model: Enrollment,
+            as: 'enrollment',
+            required: true,
+            where: { company_id: companyId, ...(member_id && { subscriber_id: member_id }) },
+            include: [
+              { model: Member, as: 'subscriber', attributes: ['id', 'name'] },
+              { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name'], where: group_id ? { id: group_id } : undefined }
+            ]
+          }]
+        },
+        {
+          model: CollectionAgentAmount,
+          as: 'collection_submission',
+          required: false,
+          include: [{ model: Member, as: 'collection_agent', attributes: ['id', 'name'] }]
+        }
+      ],
+      limit: parseInt(max, 10) || 20,
+      offset: parseInt(min, 10) || 0,
+      order: [['payment_date', 'DESC'], ['createdAt', 'DESC']]
+    });
+
+    const formatted = rows.map(p => {
+      const isDirect = !p.collection_agent_amount_id;
+      return {
+        id: p.id,
+        receipt_number: p.receipt_number,
+        payment_date: p.payment_date,
+        payment_mode: p.payment_mode,
+        transaction_reference: p.transaction_reference,
+        received_amount: p.received_amount,
+        penalty_paid: p.penalty_paid,
+        total_paid: (parseFloat(p.received_amount) + parseFloat(p.penalty_paid)).toFixed(2),
+        member_name: p.installment?.enrollment?.subscriber?.name || null,
+        group_name: p.installment?.enrollment?.group?.group_name || null,
+        installment_no: p.installment?.installment_no || null,
+        source: isDirect ? 'direct' : 'collection_agent',
+        recorded_by: isDirect
+          ? { name: p.recorded_by_name, role: p.recorded_by_role }
+          : { name: p.collection_submission?.verified_by_name, role: p.collection_submission?.verified_by_role },
+        collected_by: isDirect ? null : { name: p.collection_submission?.collection_agent?.name || null },
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Receipts retrieved successfully', { count, rows: formatted });
+  } catch (error) {
+    console.error('Error in getAllReceiptsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -4708,6 +4817,6 @@ module.exports = {
   sendManualNotificationService,
   getAllAuditLogsService,
   getMemberDocumentsAdminService,
-  verifyMemberDocumentService
+  verifyMemberDocumentService,
+  getAllReceiptsService
 };
-
