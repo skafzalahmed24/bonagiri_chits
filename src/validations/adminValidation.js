@@ -646,7 +646,8 @@ module.exports = {
       'string.uuid': 'Invalid Group ID format'
     }),
     min: Joi.number().integer().min(0).optional(),
-    max: Joi.number().integer().min(1).optional()
+    max: Joi.number().integer().min(1).optional(),
+    filter_unwon: Joi.boolean().optional()
   }),
   suitFileInformationValidator: Joi.object({
     id: Joi.string().uuid().optional(),

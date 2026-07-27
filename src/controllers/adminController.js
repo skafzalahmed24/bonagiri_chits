@@ -462,8 +462,8 @@ const updateFavorites = async (req, res) => {
 const getGroupMembers = async (req, res) => {
   try {
     const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
-    const { group_id, min, max } = req.body || {};
-    return await adminService.getGroupMembersService(res, comp_id, group_id, min, max);
+    const { group_id, min, max, filter_unwon } = req.body || {};
+    return await adminService.getGroupMembersService(res, comp_id, group_id, min, max, filter_unwon);
   } catch (error) {
     console.error('Error in getGroupMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

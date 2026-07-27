@@ -1330,7 +1330,7 @@ const updateFavoritesService = async (res, user_id, type, is_favorites_input) =>
   }
 };
 
-const getGroupMembersService = async (res, company_id, group_id, min, max) => {
+const getGroupMembersService = async (res, company_id, group_id, min, max, filter_unwon = false) => {
   try {
     const limit = parseInt(max, 10) || 200;
     const offset = parseInt(min, 10) || 0;
@@ -1359,7 +1359,7 @@ const getGroupMembersService = async (res, company_id, group_id, min, max) => {
       attributes: ['bidder_id', 'auction_number']
     });
 
-    const members = enrollments.map(e => {
+    let members = enrollments.map(e => {
       const memberId = e.subscriber ? e.subscriber.id : null;
       const winData = auctions.find(a => a.bidder_id === memberId);
       return {
@@ -1372,7 +1372,11 @@ const getGroupMembersService = async (res, company_id, group_id, min, max) => {
       };
     });
 
-    return successResponse(res, statusCodes.OK, 'Group members retrieved successfully', { count, rows: members });
+    if (filter_unwon) {
+      members = members.filter(m => !m.has_won);
+    }
+
+    return successResponse(res, statusCodes.OK, 'Group members retrieved successfully', { count: filter_unwon ? members.length : count, rows: members });
   } catch (error) {
     console.error('Error in getGroupMembersService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to fetch group members');
@@ -3184,8 +3188,9 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
 const updateCollectionSubmissionStatusService = async (res, id, status, userToken) => {
   try {
     const companyId = await resolveCompanyIdForAuth(userToken);
-    const submission = await CollectionAgentAmount.findOne({ where: { id, company_id: companyId },
-      include: [{ model: Member, as: 'member' }]
+    const submission = await CollectionAgentAmount.findOne({ 
+      where: { id },
+      include: [{ model: Member, as: 'member', where: { company_id: companyId } }]
     });
     if (!submission) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Submission not found');

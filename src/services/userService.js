@@ -191,7 +191,6 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 completed_installments_count: totalAuctionsCount,
                 completed_percentage,
                 positions_occupied_count: occupiedCount,
-                total_positions: 20,
                 upcoming_instalment_id: upcomingInstallment ? upcomingInstallment.id : null,
                 enrollment_id: enrollment.id,
                 next_due_date: upcomingInstallment ? upcomingInstallment.due_date : null,
