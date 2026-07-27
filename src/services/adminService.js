@@ -1894,9 +1894,17 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       );
     }
 
-    // 7. Update ChitsGroup auction_date
+    // 7. Update ChitsGroup auction_date and status if complete
+    const updates = {};
     if (next_auction_date) {
-      await group.update({ auction_date: next_auction_date }, { transaction });
+      updates.auction_date = next_auction_date;
+    }
+    if (parseInt(auctionData.auction_number, 10) >= parseInt(group.no_of_installments, 10)) {
+      updates.chits_group_status = 2;
+    }
+    
+    if (Object.keys(updates).length > 0) {
+      await group.update(updates, { transaction });
     }
 
     await transaction.commit();
