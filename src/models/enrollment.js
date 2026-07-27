@@ -38,6 +38,10 @@ module.exports = (sequelize, DataTypes) => {
     nominee_mobile_number: DataTypes.STRING,
     nominee_pincode: DataTypes.STRING,
     fill_subscriber_address_status: DataTypes.INTEGER,
+    dividend_credit_balance: {
+      type: DataTypes.DECIMAL(15, 2),
+      defaultValue: 0.00
+    },
     delete_status: {
       type: DataTypes.INTEGER,
       defaultValue: 0

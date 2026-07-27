@@ -1434,7 +1434,8 @@ const getInstallmentsByGroupService = async (res, group_id, enrollment_id, min, 
     });
 
     const rows = installments.map(inst => {
-      const payment = inst.payments && inst.payments.length > 0 ? inst.payments[0] : null;
+      const paidSoFar = inst.payments ? inst.payments.reduce((sum, p) => sum + parseFloat(p.received_amount || 0), 0) : 0;
+      const dueAmount = Math.max(0, parseFloat(inst.payable_amount || 0) - paidSoFar);
       return {
         id: inst.id,
         enrollment_id: inst.enrollment_id,
@@ -1444,9 +1445,10 @@ const getInstallmentsByGroupService = async (res, group_id, enrollment_id, min, 
         due_date: inst.due_date,
         payable_amount: inst.payable_amount,
         penalty_amount: inst.penalty_amount,
-        is_paid: !!payment,
-        paid_amount: payment ? payment.received_amount : "0.00",
-        payment_date: payment ? payment.payment_date : null
+        is_paid: dueAmount <= 0,
+        paid_amount: paidSoFar.toFixed(2),
+        due_amount: dueAmount.toFixed(2),
+        payment_date: inst.payments && inst.payments.length > 0 ? inst.payments[inst.payments.length - 1].payment_date : null
       };
     });
 
@@ -1847,25 +1849,45 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       await applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnrollment.id, transaction);
     } else {
       // Finding 2: Open Auction apply adjustments
-      const currentMonthInstallments = await ChitsInstallment.findAll({
-        where: { group_id: auctionData.group_id, auction_number: auctionData.auction_number },
+      const allEnrollments = await Enrollment.findAll({
+        where: { group_id: auctionData.group_id, delete_status: 0 },
         transaction
       });
-      for (const inst of currentMonthInstallments) {
-        if (inst.enrollment_id === winnerEnrollment.id) {
-          await inst.update({ payable_amount: auctionData.subscription_amount }, { transaction });
-        } else {
-          await inst.update({ payable_amount: auctionData.net_payable }, { transaction });
-        }
+      
+      const winnerId = winnerEnrollment.id;
+      const nonWinningEnrollments = allEnrollments.filter(e => e.id !== winnerId);
+          
+      const installmentsCount = parseInt(group.no_of_installments, 10) || 1;
+      const membersCount = allEnrollments.length > 0 ? allEnrollments.length : installmentsCount;
+      const dividendPerMember = auctionData.dividend / membersCount;
+      const subscription = auctionData.subscription_amount;
+
+      for (const enrollment of nonWinningEnrollments) {
+        const currentCredit = parseFloat(enrollment.dividend_credit_balance || 0);
+        const newCredit = currentCredit + dividendPerMember;
+        await enrollment.update({ dividend_credit_balance: newCredit }, { transaction });
+        const newPayable = subscription - newCredit;
+        
+        await ChitsInstallment.update(
+          { payable_amount: Math.max(0, newPayable) },
+          { 
+            where: { 
+              enrollment_id: enrollment.id, 
+              auction_number: { [Op.gte]: auctionData.auction_number } 
+            }, 
+            transaction 
+          }
+        );
       }
-      // Set winner future installments to base subscription
+
+      // Set winner current and future installments to base subscription
       await ChitsInstallment.update(
-        { payable_amount: auctionData.subscription_amount },
+        { payable_amount: subscription },
         {
           where: {
             group_id: auctionData.group_id,
-            enrollment_id: winnerEnrollment.id,
-            auction_number: { [Op.gt]: auctionData.auction_number }
+            enrollment_id: winnerId,
+            auction_number: { [Op.gte]: auctionData.auction_number }
           },
           transaction
         }
@@ -3291,6 +3313,17 @@ const storeDirectPaymentService = async (res, user, data) => {
 
     if (installmentInfo.enrollment.group.company_id !== companyId) {
       return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized access to this installment');
+    }
+
+    const { getInstallmentBalance } = require('./installmentBalanceHelper');
+    const paidSoFar = await getInstallmentBalance(chits_installment_id);
+    const dueAmount = Math.max(0, parseFloat(installmentInfo.payable_amount || 0) - paidSoFar);
+    
+    const receivedAmountFloat = parseFloat(received_amount) || 0;
+    const penaltyPaidFloat = parseFloat(penalty_paid) || 0;
+    
+    if (receivedAmountFloat > dueAmount + penaltyPaidFloat) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, `Payment exceeds the due amount. Maximum allowed is ${dueAmount + penaltyPaidFloat}`);
     }
 
     // Generate gapless receipt number

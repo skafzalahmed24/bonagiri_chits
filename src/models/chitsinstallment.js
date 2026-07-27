@@ -6,6 +6,7 @@ module.exports = (sequelize, DataTypes) => {
   class ChitsInstallment extends Model {
     static associate(models) {
       ChitsInstallment.belongsTo(models.Enrollment, { foreignKey: 'enrollment_id', as: 'enrollment' });
+      ChitsInstallment.belongsTo(models.ChitsGroup, { foreignKey: 'group_id', as: 'group' });
       ChitsInstallment.hasMany(models.CustomerPayment, { foreignKey: 'chits_installment_id', as: 'payments' });
     }
   }
@@ -18,6 +19,14 @@ module.exports = (sequelize, DataTypes) => {
     enrollment_id: {
       type: DataTypes.INTEGER,
       allowNull: false
+    },
+    group_id: {
+      type: DataTypes.UUID,
+      allowNull: true
+    },
+    auction_number: {
+      type: DataTypes.INTEGER,
+      allowNull: true
     },
     type: {
       type: DataTypes.INTEGER,
