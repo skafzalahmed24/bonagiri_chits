@@ -51,10 +51,19 @@ async function applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnr
   const options = transaction ? { transaction } : {};
 
   if (schemeConfig.scheme_type === 62 /* WITHDRAWN */) {
-    const futureInstallments = await ChitsInstallment.findAll({ where: remainingWhere, ...options });
     const pricesArray = schemeConfig.prices
       ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
       : [];
+
+    const winMonthRow = pricesArray[winMonth - 1];
+    if (winMonthRow?.withdrawn != null) {
+      await ChitsInstallment.update(
+        { payable_amount: parseFloat(winMonthRow.withdrawn) },
+        { where: { enrollment_id: winnerEnrollmentId, installment_no: winMonth }, ...options }
+      );
+    }
+
+    const futureInstallments = await ChitsInstallment.findAll({ where: remainingWhere, ...options });
 
     for (const inst of futureInstallments) {
       const row = pricesArray[inst.installment_no - 1];
@@ -65,10 +74,21 @@ async function applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnr
   }
 
   if (schemeConfig.scheme_type === 63 /* FIXED_ADDING */) {
+    await ChitsInstallment.update(
+      { payable_amount: 0 },
+      { where: { enrollment_id: winnerEnrollmentId, installment_no: winMonth }, ...options }
+    );
     const addingAmount = parseFloat(schemeConfig.chit_value) * (parseFloat(schemeConfig.adding_percentage) / 100);
     await ChitsInstallment.increment(
       { payable_amount: addingAmount },
       { where: remainingWhere, ...options }
+    );
+  }
+
+  if (schemeConfig.scheme_type === 64 || schemeConfig.scheme_type === 65) {
+    await ChitsInstallment.update(
+      { payable_amount: 0 },
+      { where: { enrollment_id: winnerEnrollmentId, installment_no: winMonth }, ...options }
     );
   }
 }

@@ -1401,6 +1401,19 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
 
         const simulatedNow = getSimulatedNow(group);
         allInstallments.forEach(inst => {
+            let thresholdDate = new Date(simulatedNow);
+            if (inst.type === 2) {
+                thresholdDate.setDate(thresholdDate.getDate() + 7);
+            } else if (inst.type === 3) {
+                thresholdDate.setDate(thresholdDate.getDate() + 1);
+            } else {
+                thresholdDate.setMonth(thresholdDate.getMonth() + 1);
+            }
+            // Add a small 1 day buffer for timezone edge cases
+            thresholdDate.setDate(thresholdDate.getDate() + 1);
+
+            if (new Date(inst.due_date) > thresholdDate) return;
+
             const payable = parseFloat(inst.payable_amount) || 0;
             total_payable += payable;
             const relatedPayments = payments.filter(p => p.chits_installment_id === inst.id);
@@ -1491,6 +1504,7 @@ const getPendingMembersService = async (res, collection_agent_id, min, max) => {
         const unpaidInstallments = await ChitsInstallment.findAll({
             where: {
                 enrollment_id: { [Op.in]: enrollmentIds },
+                payable_amount: { [Op.gt]: 0 },
                 id: {
                     [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
                 }

@@ -1064,5 +1064,6 @@ module.exports = {
     payment_mode: Joi.number().integer().optional(),
     date_from: Joi.date().iso().optional(),
     date_to: Joi.date().iso().optional(),
+    search: Joi.string().allow('', null).optional()
   })
 };

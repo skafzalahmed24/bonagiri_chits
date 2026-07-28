@@ -1863,10 +1863,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       const subscription = auctionData.subscription_amount;
 
       for (const enrollment of nonWinningEnrollments) {
-        const currentCredit = parseFloat(enrollment.dividend_credit_balance || 0);
-        const newCredit = currentCredit + dividendPerMember;
-        await enrollment.update({ dividend_credit_balance: newCredit }, { transaction });
-        const newPayable = subscription - newCredit;
+        const newPayable = subscription - dividendPerMember;
         
         await ChitsInstallment.update(
           { payable_amount: Math.max(0, newPayable) },
@@ -1880,14 +1877,27 @@ const recordWinnerService = async (res, reqBody, userToken) => {
         );
       }
 
-      // Set winner current and future installments to base subscription
+      // Set winner current installment to 0
+      await ChitsInstallment.update(
+        { payable_amount: 0 },
+        {
+          where: {
+            group_id: auctionData.group_id,
+            enrollment_id: winnerId,
+            auction_number: auctionData.auction_number
+          },
+          transaction
+        }
+      );
+
+      // Set winner future installments to base subscription
       await ChitsInstallment.update(
         { payable_amount: subscription },
         {
           where: {
             group_id: auctionData.group_id,
             enrollment_id: winnerId,
-            auction_number: { [Op.gte]: auctionData.auction_number }
+            auction_number: { [Op.gt]: auctionData.auction_number }
           },
           transaction
         }
@@ -4669,6 +4679,16 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
     if (source === 'direct') where.collection_agent_amount_id = null;
     if (source === 'collection_agent') where.collection_agent_amount_id = { [Op.ne]: null };
 
+    if (search) {
+      where[Op.or] = [
+        { receipt_number: { [Op.like]: `%${search}%` } },
+        { transaction_reference: { [Op.like]: `%${search}%` } },
+        // To support searching by member/group name gracefully without breaking counts:
+        sequelize.where(sequelize.col('installment.enrollment.subscriber.name'), { [Op.like]: `%${search}%` }),
+        sequelize.where(sequelize.col('installment.enrollment.group.group_name'), { [Op.like]: `%${search}%` }),
+      ];
+    }
+
     const { count, rows } = await CustomerPayment.findAndCountAll({
       where,
       include: [
@@ -4683,7 +4703,12 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
             where: { company_id: companyId, ...(member_id && { subscriber_id: member_id }) },
             include: [
               { model: Member, as: 'subscriber', attributes: ['id', 'name'] },
-              { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name'], where: group_id ? { id: group_id } : undefined }
+              { 
+                model: ChitsGroup, 
+                as: 'group', 
+                attributes: ['id', 'group_name'], 
+                ...(group_id && { where: { id: group_id } }) 
+              }
             ]
           }]
         },
@@ -4696,7 +4721,8 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
       ],
       limit: parseInt(max, 10) || 20,
       offset: parseInt(min, 10) || 0,
-      order: [['payment_date', 'DESC'], ['createdAt', 'DESC']]
+      order: [['payment_date', 'DESC'], ['createdAt', 'DESC']],
+      subQuery: false
     });
 
     const formatted = rows.map(p => {
@@ -4709,7 +4735,7 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
         transaction_reference: p.transaction_reference,
         received_amount: p.received_amount,
         penalty_paid: p.penalty_paid,
-        total_paid: (parseFloat(p.received_amount) + parseFloat(p.penalty_paid)).toFixed(2),
+        total_paid: (parseFloat(p.received_amount || 0) + parseFloat(p.penalty_paid || 0)).toFixed(2),
         member_name: p.installment?.enrollment?.subscriber?.name || null,
         group_name: p.installment?.enrollment?.group?.group_name || null,
         installment_no: p.installment?.installment_no || null,
