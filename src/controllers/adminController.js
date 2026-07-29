@@ -232,8 +232,8 @@ const storeOrUpdateChitsGroup = async (req, res) => {
 const getAllChitsGroupDetails = async (req, res) => {
   try {
     const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
-    const { min, max, search } = req.body || {};
-    return await adminService.getAllChitsGroupDetailsService(res, comp_id, min, max, search);
+    const { min, max, search, enrollment_status } = req.body || {};
+    return await adminService.getAllChitsGroupDetailsService(res, comp_id, min, max, search, enrollment_status);
   } catch (error) {
     console.error('Error in getAllChitsGroupDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1285,8 +1285,8 @@ const deleteGallery = async (req, res) => {
 
 const getInstallmentsByGroup = async (req, res) => {
   try {
-    const { group_id, enrollment_id, min, max } = req.body || {};
-    return await adminService.getInstallmentsByGroupService(res, group_id, enrollment_id, min, max);
+    const { group_id, enrollment_id, member_id, min, max } = req.body || {};
+    return await adminService.getInstallmentsByGroupService(res, group_id, enrollment_id, member_id, min, max);
   } catch (error) {
     console.error('Error in getInstallmentsByGroup:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
