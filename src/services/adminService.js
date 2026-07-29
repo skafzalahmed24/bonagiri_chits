@@ -403,7 +403,7 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
 
     const where = {
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' ? { company_id } : {}),
       ...(introduced_as && introduced_as !== '' ? { introduced_as: { [Op.contains]: [introduced_as] } } : {}),
       [Op.or]: [
@@ -513,7 +513,7 @@ const getAllRouteDetailsService = async (res, company_id, min, max, search) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && { route_name: { [Op.like]: `%${search}%` } })
     };
@@ -562,7 +562,7 @@ const getAllAreaDetailsService = async (res, company_id, min, max, search) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && { area_name: { [Op.like]: `%${search}%` } })
     };
@@ -670,6 +670,7 @@ const createInstallaments = async (chits_group_id, chits_group_status) => {
 
           installmentsJsonArray.push({
             enrollment_id: data.id,
+            group_id: chits_group_id,
             type: mappedType || 1, // Fallback to 1
             installment_no: i,
             due_date: new Date(dateIterator.getTime() - (dateIterator.getTimezoneOffset() * 60000)).toISOString().split('T')[0],
@@ -814,6 +815,7 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search,
     const chitsGroups = await ChitsGroup.findAndCountAll({
       limit, offset, where: {
         is_deleted_status: 0,
+        
         ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
         ...(company_id && company_id !== '' ? { company_id } : {}),
         ...(search && {
@@ -998,7 +1000,7 @@ const getAllDistrictDetailsService = async (res, company_id, min, max, search) =
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && { district_name: { [Op.like]: `%${search}%` } })
     };
@@ -1035,7 +1037,7 @@ const getAllCityDetailsService = async (res, company_id, min, max, search) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && { city_name: { [Op.like]: `%${search}%` } })
     };
@@ -1052,7 +1054,7 @@ const getDistrictsListService = async (res, company_id, state_id, search) => {
     const where = {
       state_id,
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && { district_name: { [Op.like]: `%${search}%` } })
     };
@@ -1397,6 +1399,7 @@ const getInstallmentsByGroupService = async (res, group_id, enrollment_id, membe
 
     let enrollmentWhere = { group_id, delete_status: 0 };
     if (enrollment_id) { enrollmentWhere.id = enrollment_id; }
+    if (member_id) { enrollmentWhere.subscriber_id = member_id; }
     if (member_id) { enrollmentWhere.subscriber_id = member_id; }
 
     const enrollments = await Enrollment.findAll({
@@ -2065,7 +2068,7 @@ const getAgentByAgentTypeService = async (res, company_id, agent_type_id, min, m
 
     const where = {
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && {
         [Op.or]: [
@@ -2752,7 +2755,7 @@ const getAllSelfChitDetailsService = async (res, company_id, min, max) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' && { company_id })
     };
     const selfChits = await SelfChit.findAndCountAll({
@@ -3676,7 +3679,7 @@ const getAllContactUsService = async (res, company_id, min, max, search) => {
 
     const where = {
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && {
         [Op.or]: [
@@ -3754,7 +3757,7 @@ const getAllFAQService = async (res, company_id, min, max, search) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && {
         [Op.or]: [
