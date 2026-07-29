@@ -1625,15 +1625,6 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       auctionResult = auction;
     } else {
       if (auctionData.group_id) {
-        // B9 Option (b): Block new rows for fixed-scheme groups
-        const group = await ChitsGroup.findOne({
-          where: { id: auctionData.group_id, company_id: safeCompanyId },
-          transaction
-        });
-        if (group && group.scheme_configuration_id) {
-          await transaction.rollback();
-          return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot manually create auctions for fixed-scheme groups. Please use the Spinner (Record Winner) flow.');
-        }
 
         // B7: Auto-assign auction_number
         const lastAuction = await Auction.findOne({

@@ -93,8 +93,72 @@ async function applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnr
   }
 }
 
+async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, groupId, transaction = null) {
+  const { Enrollment } = require('../models');
+  const options = transaction ? { transaction } : {};
+  
+  const allEnrollments = await Enrollment.findAll({ 
+    where: { group_id: groupId, delete_status: 0 }, 
+    ...options 
+  });
+  
+  const nonWinningEnrollments = allEnrollments.filter(e => e.id !== winnerEnrollmentId);
+  
+  // Use N - 1 members for dividend division instead of total members
+  const divisor = nonWinningEnrollments.length > 0 ? nonWinningEnrollments.length : 1;
+  const dividendPerMember = auctionData.dividend / divisor;
+  const subscription = auctionData.subscription_amount;
+
+  for (const enrollment of nonWinningEnrollments) {
+    const newPayable = subscription - dividendPerMember;
+    await ChitsInstallment.update(
+      { payable_amount: Math.max(0, newPayable) },
+      { 
+        where: { 
+          enrollment_id: enrollment.id, 
+          installment_no: { [Op.gte]: auctionData.auction_number } 
+        }, 
+        ...options 
+      }
+    );
+    
+    // Accumulate the dividend credit balance for non-winners
+    await Enrollment.increment(
+      { dividend_credit_balance: dividendPerMember },
+      { where: { id: enrollment.id }, ...options }
+    );
+  }
+
+  // Set winner's current installment to 0
+  await ChitsInstallment.update(
+    { payable_amount: 0 },
+    { 
+      where: { 
+        group_id: groupId, 
+        enrollment_id: winnerEnrollmentId, 
+        installment_no: auctionData.auction_number 
+      }, 
+      ...options 
+    }
+  );
+  
+  // Set winner's future installments to base subscription
+  await ChitsInstallment.update(
+    { payable_amount: subscription },
+    { 
+      where: { 
+        group_id: groupId, 
+        enrollment_id: winnerEnrollmentId, 
+        installment_no: { [Op.gt]: auctionData.auction_number } 
+      }, 
+      ...options 
+    }
+  );
+}
+
 module.exports = {
   getSchemeWinningAmount,
   getSchemeOriginalAmount,
-  applyWinnerSchemeAdjustments
+  applyWinnerSchemeAdjustments,
+  applyOpenAuctionAdjustments
 };
