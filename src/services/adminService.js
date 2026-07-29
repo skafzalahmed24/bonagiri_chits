@@ -1130,8 +1130,12 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
       const newEnrollment = await Enrollment.create(enrollmentData);
       await checkAndUpdateChitFullStatus(newEnrollment.group_id);
 
-      // Send push notification
       const chitGroup = await ChitsGroup.findByPk(newEnrollment.group_id);
+      if (chitGroup && Number(chitGroup.chits_group_status) === 1) {
+        await createInstallaments(newEnrollment.group_id, chitGroup.chits_group_status);
+      }
+
+      // Send push notification
       if (subscriber && chitGroup) {
         fcmService.sendPushToMember(subscriber, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${chitGroup.chit_group_name}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
       }
