@@ -159,9 +159,25 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
   );
 }
 
+function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, commissionPct, memberCount }) {
+  const subscription = chitAmount / installments;
+  const commission = chitAmount * (commissionPct / 100);
+  const gstPct = 18; // Fixed GST rate
+  const gst = commission * (gstPct / 100);
+  const bidDiscount = chitAmount - bidAmount;
+  const totalDividend = Math.max(0, bidDiscount - commission - gst);
+  const divisor = memberCount > 1 ? memberCount - 1 : 1; // exclude the winner
+  const dividendPerMember = totalDividend / divisor;
+  const netPayable = subscription - dividendPerMember;
+  const winnerReceives = bidAmount - commission - gst;
+  
+  return { subscription, commission, gst, bidDiscount, totalDividend, dividendPerMember, netPayable, winnerReceives };
+}
+
 module.exports = {
   getSchemeWinningAmount,
   getSchemeOriginalAmount,
   applyWinnerSchemeAdjustments,
-  applyOpenAuctionAdjustments
+  applyOpenAuctionAdjustments,
+  calculateOpenAuctionFinancials
 };

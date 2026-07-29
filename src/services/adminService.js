@@ -5,7 +5,7 @@ const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
 const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
-const { applyWinnerSchemeAdjustments, getSchemeWinningAmount } = require('../utils/schemeHelpers');
+const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 
 const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
@@ -1589,30 +1589,25 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       const installments = parseInt(groupForMath.no_of_installments, 10) || 1;
       const companyCommissionPct = parseFloat(groupForMath.company_commission) || 0;
       
-      const subscription = chitAmount / installments;
-      const commission = chitAmount * (companyCommissionPct / 100);
-      const gstPct = 18; // Fixed GST rate
-      const gst = commission * (gstPct / 100);
-      
-      const bidDiscount = chitAmount - bid_amount;
-      const totalDividend = bidDiscount - commission - gst;
-      
       const totalEnrollments = await Enrollment.count({ where: { group_id: targetGroupId, delete_status: 0 }, transaction });
-      const membersCount = totalEnrollments > 0 ? totalEnrollments : installments;
-      
-      const dividendPerMember = totalDividend / membersCount;
-      const netPayable = subscription - dividendPerMember;
-      const winnerReceives = bid_amount - commission - gst;
-      
-      auctionData.subscription_amount = subscription;
-      auctionData.company_commission = commission;
-      auctionData.gst_amount = gst;
-      
-      auctionData.bid_loss = bidDiscount;
-      auctionData.dividend_payable = totalDividend;
-      auctionData.dividend = totalDividend;
-      auctionData.bid_payable = winnerReceives;
-      auctionData.net_payable = netPayable;
+      const memberCount = totalEnrollments > 0 ? totalEnrollments : installments;
+
+      const financials = calculateOpenAuctionFinancials({
+        chitAmount,
+        installments,
+        bidAmount: bid_amount,
+        commissionPct: companyCommissionPct,
+        memberCount
+      });
+
+      auctionData.subscription_amount = financials.subscription;
+      auctionData.company_commission = financials.commission;
+      auctionData.gst_amount = financials.gst;
+      auctionData.bid_loss = financials.bidDiscount;
+      auctionData.dividend_payable = financials.totalDividend;
+      auctionData.dividend = financials.totalDividend;
+      auctionData.bid_payable = financials.winnerReceives;
+      auctionData.net_payable = financials.netPayable;
     }
 
     if (id) {
@@ -1829,30 +1824,25 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       const installments = parseInt(group.no_of_installments, 10) || 1;
       const companyCommissionPct = parseFloat(group.company_commission) || 0;
 
-      const subscription = chitAmount / installments;
-      const commission = chitAmount * (companyCommissionPct / 100);
-      const gstPct = 18; // Fixed GST rate
-      const gst = commission * (gstPct / 100);
-      
-      const bidDiscount = chitAmount - bid_amount;
-      const totalDividend = bidDiscount - commission - gst;
-
-      // Calculate total enrollments for dividend distribution
       const totalEnrollments = await Enrollment.count({ where: { group_id, delete_status: 0 }, transaction });
-      const membersCount = totalEnrollments > 0 ? totalEnrollments : installments;
-      const dividendPerMember = totalDividend / membersCount;
-      const netPayable = subscription - dividendPerMember;
-      const winnerReceives = bid_amount - commission - gst;
+      const memberCount = totalEnrollments > 0 ? totalEnrollments : installments;
 
-      auctionData.subscription_amount = subscription;
-      auctionData.company_commission = commission;
-      auctionData.gst_amount = gst;
-      
-      auctionData.bid_loss = bidDiscount;
-      auctionData.dividend_payable = totalDividend;
-      auctionData.dividend = totalDividend;
-      auctionData.bid_payable = winnerReceives;
-      auctionData.net_payable = netPayable;
+      const financials = calculateOpenAuctionFinancials({
+        chitAmount,
+        installments,
+        bidAmount: bid_amount,
+        commissionPct: companyCommissionPct,
+        memberCount
+      });
+
+      auctionData.subscription_amount = financials.subscription;
+      auctionData.company_commission = financials.commission;
+      auctionData.gst_amount = financials.gst;
+      auctionData.bid_loss = financials.bidDiscount;
+      auctionData.dividend_payable = financials.totalDividend;
+      auctionData.dividend = financials.totalDividend;
+      auctionData.bid_payable = financials.winnerReceives;
+      auctionData.net_payable = financials.netPayable;
     }
 
     // 6. Create auction row and apply adjustments
