@@ -110,7 +110,16 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
   const subscription = auctionData.subscription_amount;
 
   for (const enrollment of nonWinningEnrollments) {
-    const newPayable = subscription - dividendPerMember;
+    // 1. Compute cumulative balance by adding new dividend to existing balance
+    const currentBalance = parseFloat(enrollment.dividend_credit_balance) || 0;
+    const newBalance = currentBalance + dividendPerMember;
+    
+    // 2. Update the enrollment row with the new cumulative balance
+    await enrollment.update({ dividend_credit_balance: newBalance }, options);
+    
+    // 3. Calculate new payable using the full compounded balance
+    const newPayable = subscription - newBalance;
+    
     await ChitsInstallment.update(
       { payable_amount: Math.max(0, newPayable) },
       { 
@@ -120,12 +129,6 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
         }, 
         ...options 
       }
-    );
-    
-    // Accumulate the dividend credit balance for non-winners
-    await Enrollment.increment(
-      { dividend_credit_balance: dividendPerMember },
-      { where: { id: enrollment.id }, ...options }
     );
   }
 

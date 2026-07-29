@@ -1669,14 +1669,16 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
         : null;
 
-      if (schemeConfig) {
-        const winnerEnrollment = await Enrollment.findOne({
-          where: { group_id: auctionData.group_id, subscriber_id: auctionData.bidder_id, delete_status: 0 },
-          transaction
-        });
+      const winnerEnrollment = await Enrollment.findOne({
+        where: { group_id: auctionData.group_id, subscriber_id: auctionData.bidder_id, delete_status: 0 },
+        transaction
+      });
 
-        if (winnerEnrollment) {
+      if (winnerEnrollment) {
+        if (schemeConfig) {
           await applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnrollment.id, transaction);
+        } else {
+          await applyOpenAuctionAdjustments(auctionData, winnerEnrollment.id, auctionData.group_id, transaction);
         }
       }
     }
@@ -1859,60 +1861,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     if (schemeConfig) {
       await applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnrollment.id, transaction);
     } else {
-      // Finding 2: Open Auction apply adjustments
-      const allEnrollments = await Enrollment.findAll({
-        where: { group_id: auctionData.group_id, delete_status: 0 },
-        transaction
-      });
-      
-      const winnerId = winnerEnrollment.id;
-      const nonWinningEnrollments = allEnrollments.filter(e => e.id !== winnerId);
-          
-      const installmentsCount = parseInt(group.no_of_installments, 10) || 1;
-      const membersCount = allEnrollments.length > 0 ? allEnrollments.length : installmentsCount;
-      const dividendPerMember = auctionData.dividend / membersCount;
-      const subscription = auctionData.subscription_amount;
-
-      for (const enrollment of nonWinningEnrollments) {
-        const newPayable = subscription - dividendPerMember;
-        
-        await ChitsInstallment.update(
-          { payable_amount: Math.max(0, newPayable) },
-          { 
-            where: { 
-              enrollment_id: enrollment.id, 
-              installment_no: { [Op.gte]: auctionData.auction_number } 
-            }, 
-            transaction 
-          }
-        );
-      }
-
-      // Set winner current installment to 0
-      await ChitsInstallment.update(
-        { payable_amount: 0 },
-        {
-          where: {
-            group_id: auctionData.group_id,
-            enrollment_id: winnerId,
-            installment_no: auctionData.auction_number
-          },
-          transaction
-        }
-      );
-
-      // Set winner future installments to base subscription
-      await ChitsInstallment.update(
-        { payable_amount: subscription },
-        {
-          where: {
-            group_id: auctionData.group_id,
-            enrollment_id: winnerId,
-            installment_no: { [Op.gt]: auctionData.auction_number }
-          },
-          transaction
-        }
-      );
+      await applyOpenAuctionAdjustments(auctionData, winnerEnrollment.id, auctionData.group_id, transaction);
     }
 
     // 7. Update ChitsGroup auction_date and status if complete
