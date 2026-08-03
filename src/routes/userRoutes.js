@@ -29,6 +29,7 @@ router.post('/payment-receipt', authMiddleware.authenticateToken, validate(userV
 
 // business-agent routes (authenticated)
 router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(userValidation.getBusinessListUnderMembersSchema), userController.getBusinessListUnderMembers);
+router.post('/member/ledger', authMiddleware.authenticateToken, validate(userValidation.getMemberLedgerSchema), userController.getMemberLedger);
 
 // collection-agent routes (authenticated)
 router.post('/collection-agent/dashboard', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentDashboardSchema), userController.getCollectionAgentDashboard);
@@ -40,6 +41,8 @@ router.post('/collection-agent/submissions', authMiddleware.authenticateToken, v
 router.post('/collection-agent/submit-payment', authMiddleware.authenticateToken, validate(userValidation.submitCollectionPaymentSchema), userController.submitCollectionPayment);
 router.post('/collection-agent/documents/list', authMiddleware.authenticateToken, validate(userValidation.getMemberDocumentsSchema), userController.getMemberDocuments);
 router.post('/collection-agent/documents/upload', authMiddleware.authenticateToken, validate(userValidation.uploadMemberDocumentSchema), userController.uploadMemberDocument);
+router.post('/collection-agent/groups-by-agent', authMiddleware.authenticateToken, validate(userValidation.getGroupsByCollectionAgentIdSchema), userController.getGroupsByCollectionAgentId);
+router.post('/collection-agent/members-by-group', authMiddleware.authenticateToken, validate(userValidation.getMembersByGroupIdSchema), userController.getMembersByGroupId);
 
 // gallery routes
 router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(userValidation.getAllGallerySchema), userController.getAllGallery);

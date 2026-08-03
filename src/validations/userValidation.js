@@ -97,6 +97,20 @@ const getCollectionAgentActiveGroupsSchema = Joi.object({
   max: Joi.number().integer().min(1).optional()
 });
 
+const getGroupsByCollectionAgentIdSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().required()
+});
+
+const getMemberLedgerSchema = Joi.object({
+  member_id: Joi.number().integer().required(),
+  from_date: Joi.date().iso().optional(),
+  to_date: Joi.date().iso().optional()
+});
+
+const getMembersByGroupIdSchema = Joi.object({
+  group_id: Joi.string().uuid().required()
+});
+
 const getMemberDuesSchema = Joi.object({
   member_id: Joi.number().integer().required()
 });
@@ -167,6 +181,9 @@ module.exports = {
   getCollectionAgentDashboardSchema,
   getCollectionAgentGroupDashboardSchema,
   getCollectionAgentActiveGroupsSchema,
+  getGroupsByCollectionAgentIdSchema,
+  getMemberLedgerSchema,
+  getMembersByGroupIdSchema,
   getPendingMembersSchema,
   getMemberDuesSchema,
   getSubmissionsSchema,

@@ -67,7 +67,7 @@ const getBids = async (req, res) => {
 const getBidDetails = async (req, res) => {
   try {
     const { group_id } = req.body;
-    return await userService.getBidDetailsService(res, group_id);
+    return await userService.getBidDetailsService(res, group_id, req.user);
   } catch (error) {
     console.error('Error in getBidDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -279,6 +279,35 @@ const uploadMemberDocument = async (req, res) => {
   }
 };
 
+const getGroupsByCollectionAgentId = async (req, res) => {
+  try {
+    const { collection_agent_id } = req.body;
+    return await userService.getGroupsByCollectionAgentIdService(res, collection_agent_id);
+  } catch (error) {
+    console.error('Error in getGroupsByCollectionAgentId:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMembersByGroupId = async (req, res) => {
+  try {
+    const { group_id } = req.body;
+    return await userService.getMembersByGroupIdService(res, group_id);
+  } catch (error) {
+    console.error('Error in getMembersByGroupId:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMemberLedger = async (req, res) => {
+  try {
+    return await userService.getMemberLedgerService(res, req.body);
+  } catch (error) {
+    console.error('Error in getMemberLedger:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecord,
   getAllHomeRecords,
@@ -306,5 +335,8 @@ module.exports = {
   getNotificationHistory,
   markNotificationRead,
   getMemberDocuments,
-  uploadMemberDocument
+  uploadMemberDocument,
+  getGroupsByCollectionAgentId,
+  getMembersByGroupId,
+  getMemberLedger
 };

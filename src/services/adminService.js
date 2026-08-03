@@ -3930,6 +3930,7 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         date: formatDate(sub.createdAt),
         collection_id: collection_id_value,
         status: statusStr,
+        status_int: sub.status,
         status_note,
         denominations: sub.cash?.denominations || null,
         transaction_ref: sub.transaction_id || sub.cheque_number || null

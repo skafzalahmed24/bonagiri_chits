@@ -645,7 +645,7 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
 
 const { getSchemeWinningAmount, getSchemeOriginalAmount } = require('../utils/schemeHelpers');
 
-const getBidDetailsService = async (res, group_id) => {
+const getBidDetailsService = async (res, group_id, userPayload) => {
     try {
         const group = await ChitsGroup.findByPk(group_id);
         if (!group) {
@@ -688,7 +688,12 @@ const getBidDetailsService = async (res, group_id) => {
         // Status label mapping: 0 = Upcoming, 1 = Live Now, 2 = Completed
         const groupStatus = Number(group.chits_group_status);
 
+        const isWinnerStatus = latestAuction && userPayload 
+            ? latestAuction.bidder_id === userPayload.id 
+            : false;
+
         const responseData = {
+            is_winner_status: isWinnerStatus,
             bid_winning_amount: bidWinningAmount,
             chit_group_details: {
                 group_id: group.id,
@@ -974,6 +979,8 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
             // Math card stats
             const originalAmountVal = getSchemeOriginalAmount(schemeConfig, auction);
             let profitAmountVal = 0.00;
+            
+            const matchingInstallment = allUserInstallments.find(inst => inst.installment_no === auction.auction_number);
 
             // Calculate profit primarily from auction dividend if available
             if (auction.dividend && parseFloat(auction.dividend) > 0) {
@@ -984,7 +991,6 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                     profitAmountVal = divVal / (totalMembersCount || 20);
                 }
             } else {
-                const matchingInstallment = allUserInstallments.find(inst => inst.installment_no === auction.auction_number);
                 if (matchingInstallment) {
                     const payableVal = parseFloat(matchingInstallment.payable_amount) || 0.00;
                     profitAmountVal = originalAmountVal - payableVal;
@@ -1046,6 +1052,51 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
             const bidWinningAmount = getSchemeWinningAmount(schemeConfig, auction.auction_number) ?? rawBidAmount;
             const isWinnerStatus = auction.bidder_id === subscriber_id;
 
+            let instPenaltyAmount = 0.00;
+            let instPenaltyText = null;
+
+            if (matchingInstallment) {
+                const pendingForInst = payableAmountVal - totalPaidAmountForAuction;
+                const dueDate = matchingInstallment.due_date ? new Date(matchingInstallment.due_date) : null;
+                
+                if (dueDate && pendingForInst > 0) {
+                    const simulatedNow = getSimulatedNow(group);
+                    simulatedNow.setHours(0, 0, 0, 0);
+                    dueDate.setHours(0, 0, 0, 0);
+
+                    if (dueDate < simulatedNow) {
+                        const diffTime = simulatedNow.getTime() - dueDate.getTime();
+                        const overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                        
+                        if (overDueDaysCount > 0) {
+                            const isSubscriberWinner = auctions.some(a => a.bidder_id === subscriber_id);
+                            const penaltyRate = isSubscriberWinner
+                                ? (parseFloat(group.penality_for_ps) || 0.00)
+                                : (parseFloat(group.penality_for_nps) || 0.00);
+
+                            let penaltyAmountPerDay = 0.00;
+                            let displayPercentage = 2.0;
+
+                            if (penaltyRate > 0) {
+                                if (penaltyRate <= 20) {
+                                    displayPercentage = penaltyRate;
+                                    penaltyAmountPerDay = (penaltyRate / 100) * pendingForInst;
+                                } else {
+                                    penaltyAmountPerDay = penaltyRate;
+                                    displayPercentage = pendingForInst > 0 ? parseFloat(((penaltyAmountPerDay / pendingForInst) * 100).toFixed(1)) : 2.0;
+                                }
+                            } else {
+                                displayPercentage = 2.0;
+                                penaltyAmountPerDay = 0.02 * pendingForInst;
+                            }
+
+                            instPenaltyAmount = parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2));
+                            instPenaltyText = `${displayPercentage}% per day x ${overDueDaysCount} days`;
+                        }
+                    }
+                }
+            }
+
             monthlyActivity.push({
                 id: auction.id,
                 auction_number: auction.auction_number,
@@ -1059,6 +1110,8 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                 profit_amount: parseFloat(profitAmountVal.toFixed(2)),
                 original_amount: parseFloat(originalAmountVal.toFixed(2)),
                 paid_amount: parseFloat(totalPaidAmountForAuction.toFixed(2)),
+                penalty_amount: instPenaltyAmount,
+                penalty_text: instPenaltyText,
                 member_breakdown: memberBreakdown,
                 breakdown_summary: {
                     total_payable: parseFloat(totalPayable.toFixed(2)),
@@ -1687,7 +1740,7 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
                 }
 
                 penalty_amount = parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2));
-                penalty_text = `Penalty ${displayPercentage}% per day × ${overDueDaysCount} days ₹ ${penalty_amount}`;
+                penalty_text = `Penalty ${displayPercentage}% per day × ${overDueDaysCount} days`;
             }
         }
 
@@ -1807,6 +1860,7 @@ const getSubmissionsService = async (res, collection_agent_id, type, min, max) =
                 date: formatDate(sub.createdAt),
                 collection_id: collection_id_value,
                 status: statusStr,
+                status_int: sub.status,
                 status_note,
                 denominations: sub.cash?.denominations || null,
                 transaction_ref: sub.transaction_id || sub.cheque_number || null
@@ -2047,8 +2101,18 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
         const subscriber_id = userPayload.id;
 
         const payment = await CustomerPayment.findOne({
-            where: { id: payment_id, payment_status: 1 },
+            where: {
+                [Op.or]: [
+                    { id: payment_id },
+                    { collection_agent_amount_id: payment_id }
+                ]
+            },
             include: [
+                {
+                    model: CollectionAgentAmount,
+                    as: 'collection_submission',
+                    required: false
+                },
                 {
                     model: ChitsInstallment,
                     as: 'installment',
@@ -2083,14 +2147,18 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
         });
 
         if (!payment) {
-            return errorResponse(res, statusCodes.NOT_FOUND, 'Receipt not found or not fully verified yet');
+            return errorResponse(res, statusCodes.NOT_FOUND, 'Receipt not found');
         }
 
         const inst = payment.installment;
         const enrollment = inst.enrollment;
+        const submission = payment.collection_submission;
 
-        // Verify it belongs to this subscriber
-        if (enrollment.subscriber_id !== subscriber_id) {
+        const isSubscriber = enrollment.subscriber_id === subscriber_id;
+        const isCollectionAgent = submission && submission.collection_agent_id === subscriber_id;
+
+        // Verify it belongs to this subscriber or was collected by this agent
+        if (!isSubscriber && !isCollectionAgent) {
             return errorResponse(res, statusCodes.FORBIDDEN, 'You are not authorized to view this receipt');
         }
 
@@ -2116,6 +2184,7 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
             total_paid: (received + penalty).toFixed(2),
             payment_mode: payment.payment_mode,
             transaction_reference: payment.transaction_reference,
+            payment_status: payment.payment_status,
             member_name: subscriber ? subscriber.name : 'Unknown',
             member_code: subscriber ? (subscriber.member_id || `#${subscriber.id}`) : null,
             company_name: company ? company.company_name : 'Bonagiri Chits',
@@ -2248,6 +2317,156 @@ const markNotificationReadService = async (res, userPayload, notification_id) =>
     }
 };
 
+const getGroupsByCollectionAgentIdService = async (res, collection_agent_id) => {
+    try {
+        const enrollments = await Enrollment.findAll({
+            where: { collection_agent_id, delete_status: 0 },
+            attributes: ['group_id']
+        });
+        const groupIds = Array.from(new Set(enrollments.map(e => e.group_id)));
+        
+        const groups = await ChitsGroup.findAll({
+            where: { id: { [Op.in]: groupIds }, is_deleted_status: 0 },
+            attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments']
+        });
+
+        return successResponse(res, statusCodes.OK, 'Groups retrieved successfully', groups);
+    } catch (error) {
+        console.error('Error in getGroupsByCollectionAgentIdService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getMembersByGroupIdService = async (res, group_id) => {
+    try {
+        const enrollments = await Enrollment.findAll({
+            where: { group_id, delete_status: 0 },
+            include: [
+                {
+                    model: Member,
+                    as: 'subscriber',
+                    attributes: ['id', 'name', 'member_id', 'phone_number', 'profile_image']
+                }
+            ]
+        });
+
+        const members = enrollments.map(e => e.subscriber).filter(Boolean);
+
+        return successResponse(res, statusCodes.OK, 'Members retrieved successfully', members);
+    } catch (error) {
+        console.error('Error in getMembersByGroupIdService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getMemberLedgerService = async (res, payload) => {
+    try {
+        const { member_id, from_date, to_date } = payload;
+
+        let whereClause = { payment_status: 1 }; // Only confirmed payments usually appear in ledger, or remove if they want pending too. Let's fetch all (0 or 1). Actually, we'll fetch all and show status.
+        whereClause = {};
+
+        if (from_date && to_date) {
+            whereClause.createdAt = {
+                [Op.between]: [new Date(`${from_date}T00:00:00.000Z`), new Date(`${to_date}T23:59:59.999Z`)]
+            };
+        } else if (from_date) {
+            whereClause.createdAt = { [Op.gte]: new Date(`${from_date}T00:00:00.000Z`) };
+        } else if (to_date) {
+            whereClause.createdAt = { [Op.lte]: new Date(`${to_date}T23:59:59.999Z`) };
+        }
+
+        const payments = await CustomerPayment.findAll({
+            where: whereClause,
+            include: [
+                {
+                    model: ChitsInstallment,
+                    as: 'installment',
+                    required: true,
+                    include: [
+                        {
+                            model: Enrollment,
+                            as: 'enrollment',
+                            required: true,
+                            where: { subscriber_id: member_id, delete_status: 0 },
+                            include: [
+                                {
+                                    model: ChitsGroup,
+                                    as: 'group',
+                                    required: true
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        const groupedData = {};
+
+        payments.forEach(payment => {
+            const dateObj = new Date(payment.createdAt || payment.payment_date);
+            const dateKey = dateObj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); // e.g. "23 Jun 2026"
+            const timeKey = dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }); // e.g. "10:42 AM"
+
+            if (!groupedData[dateKey]) {
+                groupedData[dateKey] = {
+                    date: dateKey,
+                    is_today: new Date().toDateString() === dateObj.toDateString(),
+                    total_paid: 0,
+                    transactions: []
+                };
+            }
+
+            const received = parseFloat(payment.received_amount) || 0;
+            const penalty = parseFloat(payment.penalty_paid) || 0;
+            const amount = received + penalty;
+            groupedData[dateKey].total_paid += amount;
+
+            const group = payment.installment?.enrollment?.group;
+
+            let paymentModeStr = 'Unknown';
+            if (payment.payment_mode === 1) paymentModeStr = 'Cash';
+            else if (payment.payment_mode === 2) paymentModeStr = 'UPI';
+            else if (payment.payment_mode === 3) paymentModeStr = 'Cheque';
+            else if (payment.payment_mode === 4) paymentModeStr = 'Bank Transfer';
+            else if (payment.payment_mode === 5) paymentModeStr = 'Others';
+
+            groupedData[dateKey].transactions.push({
+                payment_id: payment.id,
+                receipt_id: payment.receipt_number || null,
+                group_name: group ? group.group_name : 'No Group',
+                chit_id: group ? group.chit_id : null,
+                group_number: group && group.group_name ? group.group_name.split('-').pop() : '00', // Mocking group number if not exact field
+                time: timeKey,
+                amount: amount,
+                payment_mode: paymentModeStr,
+                status: payment.payment_status
+            });
+        });
+
+        // Convert object to array
+        const resultData = Object.values(groupedData).map(item => {
+            item.total_paid = parseFloat(item.total_paid.toFixed(2));
+            return item;
+        });
+
+        // Ensure "Today" label for is_today
+        resultData.forEach(item => {
+            if (item.is_today) {
+                item.date = `${item.date} (Today)`;
+            }
+        });
+
+        return successResponse(res, statusCodes.OK, 'Ledger retrieved successfully', resultData);
+
+    } catch (error) {
+        console.error('Error in getMemberLedgerService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
 module.exports = {
     getPaymentHistoryService,
     getPaymentReceiptService,
@@ -2271,5 +2490,8 @@ module.exports = {
     getNotificationHistoryService,
     markNotificationReadService,
     getMemberDocumentsService,
-    uploadMemberDocumentService
+    uploadMemberDocumentService,
+    getGroupsByCollectionAgentIdService,
+    getMembersByGroupIdService,
+    getMemberLedgerService
 };
