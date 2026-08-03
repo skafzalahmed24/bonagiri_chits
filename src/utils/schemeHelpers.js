@@ -125,7 +125,7 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
       { 
         where: { 
           enrollment_id: enrollment.id, 
-          installment_no: { [Op.gte]: auctionData.auction_number } 
+          installment_no: auctionData.auction_number 
         }, 
         ...options 
       }
