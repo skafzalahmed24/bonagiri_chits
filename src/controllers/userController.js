@@ -263,7 +263,7 @@ const markNotificationRead = async (req, res) => {
 const getMemberDocuments = async (req, res) => {
   try {
     const { group_id, member_id } = req.body;
-    return await userService.getMemberDocumentsService(res, group_id, member_id);
+    return await userService.getMemberDocumentsService(res, req.user, group_id, member_id);
   } catch (error) {
     console.error('Error in getMemberDocuments:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -291,10 +291,56 @@ const getGroupsByCollectionAgentId = async (req, res) => {
 
 const getMembersByGroupId = async (req, res) => {
   try {
-    const { group_id } = req.body;
-    return await userService.getMembersByGroupIdService(res, group_id);
+    const { group_id, search, min, max } = req.body;
+    return await userService.getMembersByGroupIdService(res, group_id, search, min, max);
   } catch (error) {
     console.error('Error in getMembersByGroupId:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMembersByCollectionAgentId = async (req, res) => {
+  try {
+    const { collection_agent_id, search, min, max } = req.body;
+    return await userService.getMembersByCollectionAgentIdService(res, collection_agent_id, search, min, max);
+  } catch (error) {
+    console.error('Error in getMembersByCollectionAgentId:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCustomerDetailsById = async (req, res) => {
+  try {
+    return await userService.getCustomerDetailsByIdService(res, req.body);
+  } catch (error) {
+    console.error('Error in getCustomerDetailsById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getVisitHistory = async (req, res) => {
+  try {
+    return await userService.getVisitHistoryService(res, req.body);
+  } catch (error) {
+    console.error('Error in getVisitHistory:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getVisitDetailsById = async (req, res) => {
+  try {
+    return await userService.getVisitDetailsByIdService(res, req.body);
+  } catch (error) {
+    console.error('Error in getVisitDetailsById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeCustomerVisit = async (req, res) => {
+  try {
+    return await userService.storeCustomerVisitService(res, req.body);
+  } catch (error) {
+    console.error('Error in storeCustomerVisit:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -338,5 +384,10 @@ module.exports = {
   uploadMemberDocument,
   getGroupsByCollectionAgentId,
   getMembersByGroupId,
+  getMembersByCollectionAgentId,
+  getCustomerDetailsById,
+  getVisitHistory,
+  getVisitDetailsById,
+  storeCustomerVisit,
   getMemberLedger
 };

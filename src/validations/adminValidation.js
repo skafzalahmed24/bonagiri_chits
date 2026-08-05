@@ -1066,5 +1066,18 @@ module.exports = {
     date_from: Joi.date().iso().optional(),
     date_to: Joi.date().iso().optional(),
     search: Joi.string().allow('', null).optional()
+  }),
+  getAllCustomerVisitsSchema: Joi.object({
+    min: Joi.number().integer().min(0).optional().default(0),
+    max: Joi.number().integer().min(1).optional().default(10),
+    search: Joi.string().allow('', null).optional(),
+    status: Joi.number().integer().valid(0, 1, 3).optional()
+  }),
+  getCustomerVisitByIdSchema: Joi.object({
+    id: Joi.number().integer().required()
+  }),
+  updateCustomerVisitStatusSchema: Joi.object({
+    id: Joi.number().integer().required(),
+    customer_vistor_status: Joi.number().integer().valid(0, 1, 3).required()
   })
 };

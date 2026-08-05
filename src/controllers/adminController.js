@@ -1412,6 +1412,33 @@ const getAllReceipts = async (req, res) => {
   }
 };
 
+const getAllCustomerVisits = async (req, res) => {
+  try {
+    return await adminService.getAllCustomerVisitsService(res, req.body);
+  } catch (error) {
+    console.error('Error in getAllCustomerVisits:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCustomerVisitById = async (req, res) => {
+  try {
+    return await adminService.getCustomerVisitByIdService(res, req.body);
+  } catch (error) {
+    console.error('Error in getCustomerVisitById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateCustomerVisitStatus = async (req, res) => {
+  try {
+    return await adminService.updateCustomerVisitStatusService(res, req.body);
+  } catch (error) {
+    console.error('Error in updateCustomerVisitStatus:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1544,5 +1571,8 @@ module.exports = {
   getAllAuditLogs,
   getMemberDocumentsAdmin,
   verifyMemberDocument,
-  getAllReceipts
+  getAllReceipts,
+  getAllCustomerVisits,
+  getCustomerVisitById,
+  updateCustomerVisitStatus
 };

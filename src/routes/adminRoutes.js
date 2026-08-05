@@ -232,4 +232,9 @@ router.post('/dashboard/summary', authMiddleware.authenticateToken, adminControl
 router.post('/notifications/register-token', authMiddleware.authenticateToken, validate(adminValidation.registerTokenSchema), adminController.registerAdminToken);
 router.post('/notifications/send-manual', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.sendManualNotificationSchema), adminController.sendManualNotification);
 
+// customer visit routes
+router.post('/customer-visit/list', authMiddleware.authenticateToken, validate(adminValidation.getAllCustomerVisitsSchema), adminController.getAllCustomerVisits);
+router.post('/customer-visit/details', authMiddleware.authenticateToken, validate(adminValidation.getCustomerVisitByIdSchema), adminController.getCustomerVisitById);
+router.post('/customer-visit/status', authMiddleware.authenticateToken, validate(adminValidation.updateCustomerVisitStatusSchema), adminController.updateCustomerVisitStatus);
+
 module.exports = router;

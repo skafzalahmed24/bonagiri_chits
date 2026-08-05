@@ -108,7 +108,40 @@ const getMemberLedgerSchema = Joi.object({
 });
 
 const getMembersByGroupIdSchema = Joi.object({
-  group_id: Joi.string().uuid().required()
+  group_id: Joi.string().uuid().required(),
+  search: Joi.string().allow('', null).optional(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10)
+});
+
+const getMembersByCollectionAgentIdSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().required(),
+  search: Joi.string().allow('', null).optional(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10)
+});
+
+const getCustomerDetailsByIdSchema = Joi.object({
+  member_id: Joi.number().integer().required()
+});
+
+const getVisitHistorySchema = Joi.object({
+  member_id: Joi.number().integer().required(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10)
+});
+
+const getVisitDetailsByIdSchema = Joi.object({
+  visit_id: Joi.number().integer().required()
+});
+
+const storeCustomerVisitSchema = Joi.object({
+  member_id: Joi.number().integer().required(),
+  collection_agent_id: Joi.number().integer().required(),
+  visitor_type: Joi.number().integer().valid(1, 2).required(),
+  upload_proof: Joi.string().uri().allow('', null).optional(),
+  remarks: Joi.string().allow('', null).optional(),
+  customer_vistor_status: Joi.number().integer().valid(0, 1, 3).optional().default(0)
 });
 
 const getMemberDuesSchema = Joi.object({
@@ -184,6 +217,11 @@ module.exports = {
   getGroupsByCollectionAgentIdSchema,
   getMemberLedgerSchema,
   getMembersByGroupIdSchema,
+  getMembersByCollectionAgentIdSchema,
+  getCustomerDetailsByIdSchema,
+  getVisitHistorySchema,
+  getVisitDetailsByIdSchema,
+  storeCustomerVisitSchema,
   getPendingMembersSchema,
   getMemberDuesSchema,
   getSubmissionsSchema,
