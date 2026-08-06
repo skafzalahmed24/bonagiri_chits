@@ -836,14 +836,14 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
   }
 };
 
-const getAllChitsGroupDetailsService = async (res, company_id, min, max, search, enrollment_status) => {
+const getAllChitsGroupDetailsService = async (res, company_id, min, max, search, enrollment_status, not_status) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
     const chitsGroups = await ChitsGroup.findAndCountAll({
       limit, offset, where: {
         is_deleted_status: 0,
-        
+        ...(not_status === 1 ? { chits_group_status: { [Op.ne]: 0 } } : {}),
         ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
         ...(company_id && company_id !== '' ? { company_id } : {}),
         ...(search && {
@@ -4283,6 +4283,10 @@ const storeOrUpdateRoleService = async (res, data = {}, userToken) => {
     const { id, ...roleData } = data;
     const companyId = userToken.id;
 
+    if (roleData.status !== undefined) {
+      roleData.status = (roleData.status === true || roleData.status === 'true' || roleData.status == 1) ? 1 : 0;
+    }
+
     if (id) {
       const role = await Role.findOne({ where: { id, company_id: companyId } });
       if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
@@ -4889,11 +4893,13 @@ const getSystemAuditLogsService = async (res, userPayload, { min = 0, max = 20 }
   }
 };
 
-const getAllCustomerVisitsService = async (res, payload) => {
+const getAllCustomerVisitsService = async (res, userPayload, payload) => {
     try {
         const { search, status, min, max } = payload;
         const limit = parseInt(max, 10) || 10;
         const offset = parseInt(min, 10) || 0;
+        
+        const companyId = await resolveCompanyIdForAuth(userPayload);
 
         let where = {};
         if (status !== undefined && status !== null) {
@@ -4901,8 +4907,13 @@ const getAllCustomerVisitsService = async (res, payload) => {
         }
 
         let includeWhere = {};
+        if (companyId) {
+            includeWhere.company_id = companyId;
+        }
+
         if (search) {
             includeWhere = {
+                ...includeWhere,
                 [Op.or]: [
                     { name: { [Op.iLike]: `%${search}%` } },
                     { member_id: { [Op.iLike]: `%${search}%` } }
@@ -4937,15 +4948,19 @@ const getAllCustomerVisitsService = async (res, payload) => {
     }
 };
 
-const getCustomerVisitByIdService = async (res, payload) => {
+const getCustomerVisitByIdService = async (res, userPayload, payload) => {
     try {
         const { id } = payload;
+        
+        const companyId = await resolveCompanyIdForAuth(userPayload);
+        const memberWhere = companyId ? { company_id: companyId } : undefined;
 
         const visit = await CustomerVisit.findByPk(id, {
             include: [
                 {
                     model: Member,
                     as: 'member',
+                    where: memberWhere,
                     attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
                 },
                 {
@@ -4967,11 +4982,17 @@ const getCustomerVisitByIdService = async (res, payload) => {
     }
 };
 
-const updateCustomerVisitStatusService = async (res, payload) => {
+const updateCustomerVisitStatusService = async (res, userPayload, payload) => {
     try {
         const { id, customer_vistor_status } = payload;
+        
+        const companyId = await resolveCompanyIdForAuth(userPayload);
+        const memberWhere = companyId ? { company_id: companyId } : undefined;
 
-        const visit = await CustomerVisit.findByPk(id);
+        const visit = await CustomerVisit.findByPk(id, {
+            include: [{ model: Member, as: 'member', where: memberWhere }]
+        });
+        
         if (!visit) {
             return errorResponse(res, statusCodes.NOT_FOUND, 'Customer visit not found');
         }

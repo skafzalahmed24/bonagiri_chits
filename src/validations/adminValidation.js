@@ -359,7 +359,8 @@ const getAllChitsGroupSchema = Joi.object({
     'number.min': 'Max must be greater than or equal to 1'
   }),
   search: Joi.string().allow('', null).optional(),
-  enrollment_status: Joi.number().integer().valid(0, 1).optional()
+  enrollment_status: Joi.number().integer().valid(0, 1).optional(),
+  not_status: Joi.number().integer().valid(0, 1).optional()
 });
 
 const deleteChitsGroupSchema = Joi.object({
