@@ -1416,7 +1416,7 @@ const getAllReceipts = async (req, res) => {
 // System Administration Endpoints
 
 const getSystemAuditLogs = async (req, res) => {
-  return await adminService.getSystemAuditLogsService(res, req.user, req.query);
+  return await adminService.getSystemAuditLogsService(res, req.user, req.body);
 };
 
 const getSystemSettings = async (req, res) => {

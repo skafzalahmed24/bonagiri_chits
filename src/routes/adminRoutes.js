@@ -238,7 +238,7 @@ router.put('/admin/system/settings/business-date', authMiddleware.authenticateTo
 router.put('/admin/system/settings/scheduler-mode', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), validate(adminValidation.updateSchedulerModeSchema), adminController.updateSchedulerMode);
 router.get('/admin/system/settings/impact-preview', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemImpactPreview);
 router.post('/admin/system/jobs/run', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.runSystemJobs);
-router.get('/admin/system/audit-logs', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemAuditLogs);
+router.post('/admin/system/audit-logs', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemAuditLogs);
 
 // customer visit routes
 router.post('/customer-visit/list', authMiddleware.authenticateToken, validate(adminValidation.getAllCustomerVisitsSchema), adminController.getAllCustomerVisits);
