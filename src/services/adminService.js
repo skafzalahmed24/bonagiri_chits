@@ -4889,6 +4889,103 @@ const getSystemAuditLogsService = async (res, userPayload, { min = 0, max = 20 }
   }
 };
 
+const getAllCustomerVisitsService = async (res, payload) => {
+    try {
+        const { search, status, min, max } = payload;
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        let where = {};
+        if (status !== undefined && status !== null) {
+            where.customer_vistor_status = status;
+        }
+
+        let includeWhere = {};
+        if (search) {
+            includeWhere = {
+                [Op.or]: [
+                    { name: { [Op.iLike]: `%${search}%` } },
+                    { member_id: { [Op.iLike]: `%${search}%` } }
+                ]
+            };
+        }
+
+        const visits = await CustomerVisit.findAndCountAll({
+            where,
+            limit,
+            offset,
+            include: [
+                {
+                    model: Member,
+                    as: 'member',
+                    where: Object.keys(includeWhere).length ? includeWhere : undefined,
+                    attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+                },
+                {
+                    model: Member,
+                    as: 'collection_agent',
+                    attributes: ['id', 'name', 'member_id']
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        return successResponse(res, statusCodes.OK, 'Customer visits retrieved successfully', visits);
+    } catch (error) {
+        console.error('Error in getAllCustomerVisitsService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getCustomerVisitByIdService = async (res, payload) => {
+    try {
+        const { id } = payload;
+
+        const visit = await CustomerVisit.findByPk(id, {
+            include: [
+                {
+                    model: Member,
+                    as: 'member',
+                    attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+                },
+                {
+                    model: Member,
+                    as: 'collection_agent',
+                    attributes: ['id', 'name', 'member_id']
+                }
+            ]
+        });
+
+        if (!visit) {
+            return errorResponse(res, statusCodes.NOT_FOUND, 'Customer visit not found');
+        }
+
+        return successResponse(res, statusCodes.OK, 'Customer visit retrieved successfully', visit);
+    } catch (error) {
+        console.error('Error in getCustomerVisitByIdService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const updateCustomerVisitStatusService = async (res, payload) => {
+    try {
+        const { id, customer_vistor_status } = payload;
+
+        const visit = await CustomerVisit.findByPk(id);
+        if (!visit) {
+            return errorResponse(res, statusCodes.NOT_FOUND, 'Customer visit not found');
+        }
+
+        visit.customer_vistor_status = customer_vistor_status;
+        await visit.save();
+
+        return successResponse(res, statusCodes.OK, 'Customer visit status updated successfully', visit);
+    } catch (error) {
+        console.error('Error in updateCustomerVisitStatusService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -5031,5 +5128,8 @@ module.exports = {
   updateSchedulerModeService,
   getSystemImpactPreviewService,
   runSystemJobsService,
-  getSystemAuditLogsService
+  getSystemAuditLogsService,
+  getAllCustomerVisitsService,
+  getCustomerVisitByIdService,
+  updateCustomerVisitStatusService
 };

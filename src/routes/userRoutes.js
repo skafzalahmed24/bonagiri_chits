@@ -43,6 +43,11 @@ router.post('/collection-agent/documents/list', authMiddleware.authenticateToken
 router.post('/collection-agent/documents/upload', authMiddleware.authenticateToken, validate(userValidation.uploadMemberDocumentSchema), userController.uploadMemberDocument);
 router.post('/collection-agent/groups-by-agent', authMiddleware.authenticateToken, validate(userValidation.getGroupsByCollectionAgentIdSchema), userController.getGroupsByCollectionAgentId);
 router.post('/collection-agent/members-by-group', authMiddleware.authenticateToken, validate(userValidation.getMembersByGroupIdSchema), userController.getMembersByGroupId);
+router.post('/collection-agent/members', authMiddleware.authenticateToken, validate(userValidation.getMembersByCollectionAgentIdSchema), userController.getMembersByCollectionAgentId);
+router.post('/collection-agent/customer-details', authMiddleware.authenticateToken, validate(userValidation.getCustomerDetailsByIdSchema), userController.getCustomerDetailsById);
+router.post('/collection-agent/visit-history', authMiddleware.authenticateToken, validate(userValidation.getVisitHistorySchema), userController.getVisitHistory);
+router.post('/collection-agent/visit-details', authMiddleware.authenticateToken, validate(userValidation.getVisitDetailsByIdSchema), userController.getVisitDetailsById);
+router.post('/collection-agent/customer-visit', authMiddleware.authenticateToken, validate(userValidation.storeCustomerVisitSchema), userController.storeCustomerVisit);
 
 // gallery routes
 router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(userValidation.getAllGallerySchema), userController.getAllGallery);

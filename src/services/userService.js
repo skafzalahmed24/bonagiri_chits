@@ -2387,11 +2387,11 @@ const getGroupsByCollectionAgentIdService = async (res, reqUser, requested_agent
     }
 };
 
-const getMembersByGroupIdService = async (res, reqUser, group_id) => {
+const getMembersByGroupIdService = async (res, reqUser, group_id, search, min, max) => {
     try {
         const group = await ChitsGroup.findByPk(group_id);
         if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'Group not found');
-        
+
         if (reqUser.role === 'company' && group.company_id !== reqUser.id) {
             return errorResponse(res, statusCodes.FORBIDDEN, 'Access denied to this group');
         }
@@ -2403,22 +2403,327 @@ const getMembersByGroupIdService = async (res, reqUser, group_id) => {
             if (count === 0) return errorResponse(res, statusCodes.FORBIDDEN, 'Not assigned to this group');
         }
 
-        const enrollments = await Enrollment.findAll({
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        let memberWhere = {};
+        if (search) {
+            memberWhere = {
+                [Op.or]: [
+                    { name: { [Op.iLike]: `%${search}%` } },
+                    { member_id: { [Op.iLike]: `%${search}%` } }
+                ]
+            };
+        }
+
+        const enrollments = await Enrollment.findAndCountAll({
             where: { group_id, delete_status: 0 },
+            limit,
+            offset,
             include: [
                 {
                     model: Member,
                     as: 'subscriber',
-                    attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+                    where: Object.keys(memberWhere).length ? memberWhere : undefined,
+                    attributes: ['id', 'name', 'member_id', ['mobile_number', 'phone_number'], ['upload_image', 'profile_image']]
                 }
             ]
         });
 
-        const members = enrollments.map(e => e.subscriber).filter(Boolean);
+        const memberIds = enrollments.rows.map(e => e.subscriber ? e.subscriber.id : null).filter(Boolean);
 
-        return successResponse(res, statusCodes.OK, 'Members retrieved successfully', members);
+        const activeChitsCount = await Enrollment.findAll({
+            where: {
+                subscriber_id: { [Op.in]: memberIds },
+                delete_status: 0
+            },
+            attributes: ['subscriber_id', [sequelize.fn('COUNT', sequelize.col('Enrollment.id')), 'active_chits']],
+            include: [
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    attributes: [],
+                    where: { chits_group_status: 1, is_deleted_status: 0 }
+                }
+            ],
+            group: ['subscriber_id', 'group.id']
+        });
+
+        // Sum up the counts per subscriber because group by might return multiple rows per subscriber depending on postgres strictness, actually let's group by subscriber_id only. 
+        // Wait, postgres might complain if group.id is in group but not in select, let's remove group from group by if possible, but sequelize might automatically add it.
+        // It's safer to just aggregate in JS if needed, but since we are doing a simple count, let's just use raw query or loop.
+        
+        // Let's refine the activeChitsCount logic to avoid postgres GROUP BY errors:
+        const activeChitsMap = {};
+        for (const item of activeChitsCount) {
+            const sid = item.subscriber_id;
+            const count = parseInt(item.dataValues.active_chits, 10);
+            activeChitsMap[sid] = (activeChitsMap[sid] || 0) + count;
+        }
+
+        const members = enrollments.rows.map(e => {
+            if (!e.subscriber) return null;
+            const memberData = e.subscriber.toJSON();
+            memberData.active_chits = activeChitsMap[memberData.id] || 0;
+            return memberData;
+        }).filter(Boolean);
+
+        return successResponse(res, statusCodes.OK, 'Members retrieved successfully', { count: enrollments.count, rows: members });
     } catch (error) {
         console.error('Error in getMembersByGroupIdService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getMembersByCollectionAgentIdService = async (res, collection_agent_id, search, min, max) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        let memberWhere = {};
+        if (search) {
+            memberWhere = {
+                [Op.or]: [
+                    { name: { [Op.iLike]: `%${search}%` } },
+                    { member_id: { [Op.iLike]: `%${search}%` } }
+                ]
+            };
+        }
+
+        // To get distinct members for this collection agent
+        const enrollments = await Enrollment.findAll({
+            where: { collection_agent_id, delete_status: 0 },
+            attributes: [[sequelize.fn('DISTINCT', sequelize.col('subscriber_id')), 'subscriber_id']],
+            raw: true
+        });
+        
+        const distinctSubscriberIds = enrollments.map(e => e.subscriber_id).filter(Boolean);
+
+        const { count, rows: members } = await Member.findAndCountAll({
+            where: {
+                id: { [Op.in]: distinctSubscriberIds },
+                ...memberWhere
+            },
+            limit,
+            offset,
+            attributes: ['id', 'name', 'member_id', ['mobile_number', 'phone_number'], ['upload_image', 'profile_image']]
+        });
+
+        const memberIds = members.map(m => m.id);
+
+        const activeChitsCount = await Enrollment.findAll({
+            where: {
+                subscriber_id: { [Op.in]: memberIds },
+                delete_status: 0
+            },
+            attributes: ['subscriber_id', [sequelize.fn('COUNT', sequelize.col('Enrollment.id')), 'active_chits']],
+            include: [
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    attributes: [],
+                    where: { chits_group_status: 1, is_deleted_status: 0 }
+                }
+            ],
+            group: ['subscriber_id', 'group.id']
+        });
+
+        const activeChitsMap = {};
+        for (const item of activeChitsCount) {
+            const sid = item.subscriber_id;
+            const cnt = parseInt(item.dataValues.active_chits, 10);
+            activeChitsMap[sid] = (activeChitsMap[sid] || 0) + cnt;
+        }
+
+        const formattedMembers = members.map(m => {
+            const memberData = m.toJSON();
+            memberData.active_chits = activeChitsMap[m.id] || 0;
+            return memberData;
+        });
+
+        return successResponse(res, statusCodes.OK, 'Members retrieved successfully', { count, rows: formattedMembers });
+    } catch (error) {
+        console.error('Error in getMembersByCollectionAgentIdService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getCustomerDetailsByIdService = async (res, payload) => {
+    try {
+        const { member_id } = payload;
+        
+        const member = await Member.findByPk(member_id, {
+            attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        });
+
+        if (!member) {
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Member not found');
+        }
+
+        // Get active chits
+        const activeChits = await Enrollment.findAll({
+            where: {
+                subscriber_id: member.id
+            },
+            include: [{
+                model: ChitsGroup,
+                as: 'group',
+                where: { chits_group_status: 1 },
+                attributes: ['id', 'group_name']
+            }],
+            attributes: ['group_position_number']
+        });
+
+        const active_chit_groups = activeChits.map(chit => ({
+            chit_name: chit.group.group_name,
+            slot_id: chit.group_position_number
+        }));
+
+        // Get last visit
+        const lastVisit = await CustomerVisit.findOne({
+            where: { member_id: member.id },
+            order: [['createdAt', 'DESC']],
+            include: [{
+                model: Member,
+                as: 'collection_agent',
+                attributes: ['name']
+            }]
+        });
+
+        const visitDetails = lastVisit ? {
+            date_time: lastVisit.createdAt,
+            visited_by: lastVisit.collection_agent ? lastVisit.collection_agent.name : null,
+            customer_vistor_status: lastVisit.customer_vistor_status,
+            customer_visitor_type: lastVisit.visitor_type
+        } : null;
+
+        const responseData = {
+            member_name: member.name,
+            member_id: member.member_id,
+            member_phone_number: member.mobile_number,
+            active_chit_groups_count: active_chit_groups.length,
+            active_chit_groups: active_chit_groups,
+            last_visit: visitDetails
+        };
+
+        return successResponse(res, statusCodes.OK, 'Customer details retrieved successfully', responseData);
+    } catch (error) {
+        console.error('Error in getCustomerDetailsByIdService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getVisitHistoryService = async (res, payload) => {
+    try {
+        const { member_id, min, max } = payload;
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const member = await Member.findByPk(member_id, {
+            attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        });
+
+        if (!member) {
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Member not found');
+        }
+
+        const visits = await CustomerVisit.findAndCountAll({
+            where: { member_id: member.id },
+            limit,
+            offset,
+            order: [['createdAt', 'DESC']],
+            include: [{
+                model: Member,
+                as: 'collection_agent',
+                attributes: ['name']
+            }]
+        });
+
+        const formattedVisits = visits.rows.map(visit => ({
+            id: visit.id,
+            date_time: visit.createdAt,
+            visited_by: visit.collection_agent ? visit.collection_agent.name : null,
+            customer_vistor_status: visit.customer_vistor_status,
+            customer_visitor_type: visit.visitor_type
+        }));
+
+        const responseData = {
+            member_name: member.name,
+            member_id: member.member_id,
+            member_phone_number: member.mobile_number,
+            upload_image: member.upload_image,
+            visits_count: visits.count,
+            visits: formattedVisits
+        };
+
+        return successResponse(res, statusCodes.OK, 'Visit history retrieved successfully', responseData);
+    } catch (error) {
+        console.error('Error in getVisitHistoryService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getVisitDetailsByIdService = async (res, payload) => {
+    try {
+        const { visit_id } = payload;
+        
+        const visit = await CustomerVisit.findByPk(visit_id, {
+            include: [{
+                model: Member,
+                as: 'collection_agent',
+                attributes: ['name', 'member_id']
+            }]
+        });
+
+        if (!visit) {
+            return errorResponse(res, statusCodes.NOT_FOUND, 'Visit not found');
+        }
+
+        const responseData = {
+            id: visit.id,
+            date_time: visit.createdAt,
+            visited_by: visit.collection_agent ? `${visit.collection_agent.name} (Agent)` : null,
+            agent_id: visit.collection_agent ? visit.collection_agent.member_id : null,
+            visit_type: visit.visitor_type,
+            proof_photo: visit.upload_proof,
+            remarks: visit.remarks,
+            customer_vistor_status: visit.customer_vistor_status
+        };
+
+        return successResponse(res, statusCodes.OK, 'Visit details retrieved successfully', responseData);
+    } catch (error) {
+        console.error('Error in getVisitDetailsByIdService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const storeCustomerVisitService = async (res, payload) => {
+    try {
+        const { member_id, collection_agent_id, visitor_type, upload_proof, remarks, customer_vistor_status } = payload;
+        
+        // Verify member and collection agent exist
+        const member = await Member.findByPk(member_id);
+        if (!member) {
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Member not found');
+        }
+
+        const agent = await Member.findByPk(collection_agent_id);
+        if (!agent) {
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Collection Agent not found');
+        }
+
+        const newVisit = await CustomerVisit.create({
+            member_id,
+            collection_agent_id,
+            visitor_type,
+            upload_proof,
+            remarks,
+            customer_vistor_status: customer_vistor_status || 0
+        });
+
+        return successResponse(res, statusCodes.OK, 'Customer visit stored successfully', newVisit);
+    } catch (error) {
+        console.error('Error in storeCustomerVisitService:', error);
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
     }
 };
@@ -2578,5 +2883,10 @@ module.exports = {
     uploadMemberDocumentService,
     getGroupsByCollectionAgentIdService,
     getMembersByGroupIdService,
+    getMembersByCollectionAgentIdService,
+    getCustomerDetailsByIdService,
+    getVisitHistoryService,
+    getVisitDetailsByIdService,
+    storeCustomerVisitService,
     getMemberLedgerService
 };

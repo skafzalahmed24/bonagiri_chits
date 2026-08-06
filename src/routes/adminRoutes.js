@@ -240,4 +240,9 @@ router.get('/admin/system/settings/impact-preview', authMiddleware.authenticateT
 router.post('/admin/system/jobs/run', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.runSystemJobs);
 router.get('/admin/system/audit-logs', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemAuditLogs);
 
+// customer visit routes
+router.post('/customer-visit/list', authMiddleware.authenticateToken, validate(adminValidation.getAllCustomerVisitsSchema), adminController.getAllCustomerVisits);
+router.post('/customer-visit/details', authMiddleware.authenticateToken, validate(adminValidation.getCustomerVisitByIdSchema), adminController.getCustomerVisitById);
+router.post('/customer-visit/status', authMiddleware.authenticateToken, validate(adminValidation.updateCustomerVisitStatusSchema), adminController.updateCustomerVisitStatus);
+
 module.exports = router;

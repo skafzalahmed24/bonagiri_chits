@@ -1439,6 +1439,35 @@ const runSystemJobs = async (req, res) => {
   return await adminService.runSystemJobsService(res, req.user, req.body);
 };
 
+// Customer Visit Endpoints
+
+const getAllCustomerVisits = async (req, res) => {
+  try {
+    return await adminService.getAllCustomerVisitsService(res, req.body);
+  } catch (error) {
+    console.error('Error in getAllCustomerVisits:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCustomerVisitById = async (req, res) => {
+  try {
+    return await adminService.getCustomerVisitByIdService(res, req.body);
+  } catch (error) {
+    console.error('Error in getCustomerVisitById:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateCustomerVisitStatus = async (req, res) => {
+  try {
+    return await adminService.updateCustomerVisitStatusService(res, req.body);
+  } catch (error) {
+    console.error('Error in updateCustomerVisitStatus:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1577,5 +1606,8 @@ module.exports = {
   updateBusinessDate,
   updateSchedulerMode,
   getSystemImpactPreview,
-  runSystemJobs
+  runSystemJobs,
+  getAllCustomerVisits,
+  getCustomerVisitById,
+  updateCustomerVisitStatus
 };
