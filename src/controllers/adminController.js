@@ -233,8 +233,8 @@ const storeOrUpdateChitsGroup = async (req, res) => {
 const getAllChitsGroupDetails = async (req, res) => {
   try {
     const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
-    const { min, max, search, enrollment_status } = req.body || {};
-    return await adminService.getAllChitsGroupDetailsService(res, comp_id, min, max, search, enrollment_status);
+    const { min, max, search, enrollment_status, not_status } = req.body || {};
+    return await adminService.getAllChitsGroupDetailsService(res, comp_id, min, max, search, enrollment_status, not_status);
   } catch (error) {
     console.error('Error in getAllChitsGroupDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1443,7 +1443,7 @@ const runSystemJobs = async (req, res) => {
 
 const getAllCustomerVisits = async (req, res) => {
   try {
-    return await adminService.getAllCustomerVisitsService(res, req.body);
+    return await adminService.getAllCustomerVisitsService(res, req.user, req.body);
   } catch (error) {
     console.error('Error in getAllCustomerVisits:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1452,7 +1452,7 @@ const getAllCustomerVisits = async (req, res) => {
 
 const getCustomerVisitById = async (req, res) => {
   try {
-    return await adminService.getCustomerVisitByIdService(res, req.body);
+    return await adminService.getCustomerVisitByIdService(res, req.user, req.body);
   } catch (error) {
     console.error('Error in getCustomerVisitById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1461,7 +1461,7 @@ const getCustomerVisitById = async (req, res) => {
 
 const updateCustomerVisitStatus = async (req, res) => {
   try {
-    return await adminService.updateCustomerVisitStatusService(res, req.body);
+    return await adminService.updateCustomerVisitStatusService(res, req.user, req.body);
   } catch (error) {
     console.error('Error in updateCustomerVisitStatus:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
