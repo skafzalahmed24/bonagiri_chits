@@ -232,4 +232,12 @@ router.post('/dashboard/summary', authMiddleware.authenticateToken, adminControl
 router.post('/notifications/register-token', authMiddleware.authenticateToken, validate(adminValidation.registerTokenSchema), adminController.registerAdminToken);
 router.post('/notifications/send-manual', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.sendManualNotificationSchema), adminController.sendManualNotification);
 
+// System Utilities Routes
+router.get('/admin/system/settings', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemSettings);
+router.put('/admin/system/settings/business-date', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), validate(adminValidation.updateBusinessDateSchema), adminController.updateBusinessDate);
+router.put('/admin/system/settings/scheduler-mode', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), validate(adminValidation.updateSchedulerModeSchema), adminController.updateSchedulerMode);
+router.get('/admin/system/settings/impact-preview', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemImpactPreview);
+router.post('/admin/system/jobs/run', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.runSystemJobs);
+router.get('/admin/system/audit-logs', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemAuditLogs);
+
 module.exports = router;

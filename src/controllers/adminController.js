@@ -62,6 +62,7 @@ const forgotPassword = async (req, res) => {
   }
 };
 
+
 const verifyOtp = async (req, res) => {
   try {
     const { user_code, type, otp } = req.body;
@@ -377,9 +378,7 @@ const getDistrictsList = async (req, res) => {
 const storeOrUpdateEnrollment = async (req, res) => {
   try {
     const data = { ...req.body };
-    if (req.user && req.user.role === 'company' && req.user.id) {
-      data.company_id = req.user.id;
-    }
+    data.company_id = await adminService.resolveCompanyIdForAuth(req.user);
     return await adminService.storeOrUpdateEnrollmentService(res, data);
   } catch (error) {
     console.error('Error in storeOrUpdateEnrollment:', error);
@@ -1376,7 +1375,9 @@ const getMemberDocumentsAdmin = async (req, res) => {
 
 const verifyMemberDocument = async (req, res) => {
   try {
-    return await adminService.verifyMemberDocumentService(res, req.body);
+    const { document_id, status, notes } = req.body;
+    const verifiedBy = req.user.id;
+    return await adminService.verifyMemberDocumentService(res, document_id, status, notes, verifiedBy);
   } catch (error) {
     console.error('Error in verifyMemberDocument:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1410,6 +1411,32 @@ const getAllReceipts = async (req, res) => {
     console.error('Error in getAllReceipts:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
+};
+
+// System Administration Endpoints
+
+const getSystemAuditLogs = async (req, res) => {
+  return await adminService.getSystemAuditLogsService(res, req.user, req.query);
+};
+
+const getSystemSettings = async (req, res) => {
+  return await adminService.getSystemSettingsService(res);
+};
+
+const updateBusinessDate = async (req, res) => {
+  return await adminService.updateBusinessDateService(res, req.user, req.body);
+};
+
+const updateSchedulerMode = async (req, res) => {
+  return await adminService.updateSchedulerModeService(res, req.user, req.body);
+};
+
+const getSystemImpactPreview = async (req, res) => {
+  return await adminService.getSystemImpactPreviewService(res, req.user, req.query.date);
+};
+
+const runSystemJobs = async (req, res) => {
+  return await adminService.runSystemJobsService(res, req.user, req.body);
 };
 
 module.exports = {
@@ -1544,5 +1571,11 @@ module.exports = {
   getAllAuditLogs,
   getMemberDocumentsAdmin,
   verifyMemberDocument,
-  getAllReceipts
+  getAllReceipts,
+  getSystemSettings,
+  getSystemAuditLogs,
+  updateBusinessDate,
+  updateSchedulerMode,
+  getSystemImpactPreview,
+  runSystemJobs
 };

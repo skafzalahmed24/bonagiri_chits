@@ -60,8 +60,17 @@ const requirePermission = (moduleId) => (req, res, next) => {
   return errorResponse(res, statusCodes.FORBIDDEN, `You don't have permission to access this module`);
 };
 
+const requireRole = (allowedRoles) => (req, res, next) => {
+  const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
+  if (!req.user?.role || !roles.includes(req.user.role)) {
+    return errorResponse(res, statusCodes.FORBIDDEN, `This action requires one of: ${roles.join(', ')}`);
+  }
+  next();
+};
+
 module.exports = {
   authenticateDefaultToken,
   authenticateToken,
-  requirePermission
+  requirePermission,
+  requireRole
 };

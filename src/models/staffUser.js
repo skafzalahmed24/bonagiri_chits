@@ -66,6 +66,14 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     tableName: 'staff_user',
     timestamps: true,
+    defaultScope: {
+      attributes: { exclude: ['password'] }
+    },
+    scopes: {
+      withPassword: {
+        attributes: { include: ['password'] }
+      }
+    }
   });
 
   StaffUser.associate = function(models) {

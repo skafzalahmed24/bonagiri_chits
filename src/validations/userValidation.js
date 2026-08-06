@@ -76,7 +76,7 @@ const getBusinessListUnderMembersSchema = Joi.object({
 });
 
 const getCollectionAgentDashboardSchema = Joi.object({
-  collection_agent_id: Joi.number().integer().required(),
+  collection_agent_id: Joi.number().integer().optional(),
   from_date: Joi.date().iso().optional(),
   to_date: Joi.date().iso().optional()
 });
@@ -86,19 +86,19 @@ const getCollectionAgentGroupDashboardSchema = Joi.object({
 });
 
 const getPendingMembersSchema = Joi.object({
-  collection_agent_id: Joi.number().integer().required(),
+  collection_agent_id: Joi.number().integer().optional(),
   min: Joi.number().integer().min(0).optional(),
   max: Joi.number().integer().min(1).optional()
 });
 
 const getCollectionAgentActiveGroupsSchema = Joi.object({
-  collection_agent_id: Joi.number().integer().required(),
+  collection_agent_id: Joi.number().integer().optional(),
   min: Joi.number().integer().min(0).optional(),
   max: Joi.number().integer().min(1).optional()
 });
 
 const getGroupsByCollectionAgentIdSchema = Joi.object({
-  collection_agent_id: Joi.number().integer().required()
+  collection_agent_id: Joi.number().integer().optional()
 });
 
 const getMemberLedgerSchema = Joi.object({
@@ -116,14 +116,14 @@ const getMemberDuesSchema = Joi.object({
 });
 
 const getSubmissionsSchema = Joi.object({
-  collection_agent_id: Joi.number().integer().required(),
+  collection_agent_id: Joi.number().integer().optional(),
   type: Joi.number().integer().valid(1, 2, 3, 4).required(),
   min: Joi.number().integer().min(0).optional(),
   max: Joi.number().integer().min(1).optional()
 });
 
 const submitCollectionPaymentSchema = Joi.object({
-  collection_agent_id: Joi.number().integer().required(),
+  collection_agent_id: Joi.number().integer().optional(),
   member_id: Joi.number().integer().required(),
   payment_type: Joi.number().integer().valid(1, 2, 3, 4, 5).required(),
   amount: Joi.number().precision(2).required(),

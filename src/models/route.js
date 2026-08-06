@@ -14,9 +14,14 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'route_id',
         as: 'areas'
       });
+      Route.belongsTo(models.City, {
+        foreignKey: 'city_id',
+        as: 'city'
+      });
     }
   }
   Route.init({
+    city_id: DataTypes.UUID,
     route_name: DataTypes.STRING,
     company_id: DataTypes.UUID,
     is_deleted_status: {

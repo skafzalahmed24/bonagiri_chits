@@ -3,12 +3,16 @@ const { ChitsInstallment, Enrollment, ChitsGroup, sequelize } = require('../mode
 const { Op } = require('sequelize');
 const { getSimulatedNow } = require('./timeSimulator');
 const fcmService = require('../services/fcmService');
+const SystemSettingsService = require('../services/systemSettingsService');
 
 const startDailyPenaltyCron = () => {
   // Run every 1 minute for testing
   cron.schedule('* * * * *', async () => {
-    console.log('\n[CRON] Starting Accelerated Penalty Calculation Job...');
     try {
+      const settings = await SystemSettingsService.getSettings();
+      if (settings.scheduler_mode === 'MANUAL') return; // Skip automatic execution
+
+      console.log('\n[CRON] Starting Accelerated Penalty Calculation Job...');
       // Fetch all purely unpaid installment records organically across the DB
       const unpaidInstallments = await ChitsInstallment.findAll({
         where: {
@@ -57,8 +61,8 @@ const startDailyPenaltyCron = () => {
           }
         }
         
-        // Calculate simulated time for this specific group
-        const simulatedNow = getSimulatedNow(group);
+        // Calculate simulated time globally
+        const simulatedNow = await getSimulatedNow();
         simulatedNow.setHours(0, 0, 0, 0);
         
         const dueDate = new Date(installment.due_date);

@@ -229,6 +229,10 @@ const routeValidator = Joi.object({
   id: Joi.number().integer().optional().messages({
     'number.base': 'Invalid Route ID format'
   }),
+  city_id: Joi.string().uuid().required().messages({
+    'any.required': 'City ID is required',
+    'string.uuid': 'Invalid City ID format'
+  }),
   route_name: Joi.string().required().messages({
     'any.required': 'Route name is required',
     'string.empty': 'Route name cannot be empty'
@@ -568,7 +572,7 @@ module.exports = {
   }),
   enrollmentValidator: Joi.object({
     id: Joi.number().integer().optional(),
-    company_id: Joi.string().uuid().required(),
+    company_id: Joi.string().uuid().allow('', null).optional(),
     group_id: Joi.string().uuid().required(),
     group_position_number: Joi.number().integer().required(),
     enrollment_date: Joi.date().iso().required(),
@@ -986,7 +990,8 @@ module.exports = {
       'string.empty': 'Role name cannot be empty'
     }),
     description: Joi.string().allow('', null).optional(),
-    permissions: Joi.object().optional()
+    permissions: Joi.object().optional(),
+    status: Joi.valid(0, 1, true, false, '0', '1', 'true', 'false').optional()
   }),
   getAllRoleSchema: Joi.object({
     min: Joi.number().integer().min(0).optional(),
@@ -1066,5 +1071,15 @@ module.exports = {
     date_from: Joi.date().iso().optional(),
     date_to: Joi.date().iso().optional(),
     search: Joi.string().allow('', null).optional()
+  }),
+  updateBusinessDateSchema: Joi.object({
+    business_date: Joi.date().iso().required(),
+    reason: Joi.string().required(),
+    remarks: Joi.string().allow('', null).optional()
+  }),
+  updateSchedulerModeSchema: Joi.object({
+    scheduler_mode: Joi.string().valid('AUTOMATIC', 'MANUAL').required(),
+    reason: Joi.string().required(),
+    remarks: Joi.string().allow('', null).optional()
   })
 };

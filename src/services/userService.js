@@ -11,6 +11,7 @@ const {
 const { Op } = require('sequelize');
 
 const { getSimulatedNow } = require('../utils/timeSimulator');
+const { isCollectionAgent, isBusinessAgent } = require('../utils/authHelpers');
 
 const getHomeRecordService = async (res, userPayload) => {
     const subscriber_id = userPayload ? userPayload.id : null;
@@ -327,6 +328,7 @@ const submitChitInterestService = async (res, userPayload, upcoming_chit_id, sho
 
 const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min = 0, max = 10) => {
     try {
+        const globalSimulatedNow = await getSimulatedNow();
         let subscriber_id = bodySubscriberId;
 
         if (!subscriber_id) {
@@ -402,7 +404,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
         // Filter in-memory based on simulated time relative to each group
         const unpaidInstallments = allUnpaidInstallments.filter(inst => {
             const group = inst.enrollment?.group;
-            const simulatedNow = getSimulatedNow(group);
+            const simulatedNow = new Date(globalSimulatedNow);
 
             // Calculate the end of the simulated current month
             const endOfSimulatedMonthStr = new Date(simulatedNow.getFullYear(), simulatedNow.getMonth() + 1, 0, 23, 59, 59, 999).toISOString().split('T')[0];
@@ -439,7 +441,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
             const grossAmount = group ? (parseFloat(group.installment_amount) || 0.00) : dueAmount;
 
             // Calculate dynamic over_due_days_count based on simulated date
-            const simulatedNow = getSimulatedNow(group);
+            const simulatedNow = new Date(globalSimulatedNow);
             simulatedNow.setHours(0, 0, 0, 0);
             const dueDate = new Date(installment.due_date);
             dueDate.setHours(0, 0, 0, 0);
@@ -529,6 +531,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
 
 const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
     try {
+        const globalSimulatedNow = await getSimulatedNow();
         if (!userPayload) {
             return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
         }
@@ -586,7 +589,7 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
             const typeInt = Number(type);
 
             // Define simulated today outside the inner block so it can be used for is_today property
-            const simulatedNow = getSimulatedNow(group);
+            const simulatedNow = new Date(globalSimulatedNow);
             const simulatedTodayStr = simulatedNow.toISOString().split('T')[0];
 
             if (typeInt === 1) {
@@ -603,10 +606,11 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
                     timingLabel = group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Soon';
                 }
             } else if (typeInt === 3) {
-                if (groupStatus === 2) {
+                const pastAuctionsCount = await Auction.count({ where: { group_id: group.id } });
+                if (groupStatus === 2 || pastAuctionsCount > 0) {
                     isMatch = true;
                     badgeLabel = 3;
-                    timingLabel = group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Closed';
+                    timingLabel = groupStatus === 2 ? 'Closed' : 'Active (Has History)';
                 }
             }
 
@@ -656,8 +660,8 @@ const getBidDetailsService = async (res, group_id, userPayload) => {
             ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id)
             : null;
 
-        // 1. Fetch the latest completed auction for this group
-        const latestAuction = await Auction.findOne({
+        // 1. Fetch all completed auctions for this group
+        const pastAuctions = await Auction.findAll({
             where: { group_id },
             order: [['auction_number', 'DESC']],
             include: [
@@ -668,6 +672,7 @@ const getBidDetailsService = async (res, group_id, userPayload) => {
                 }
             ]
         });
+        const latestAuction = pastAuctions.length > 0 ? pastAuctions[0] : null;
 
         // 2. Count active members/enrollments in this group
         const membersCount = await Enrollment.count({
@@ -707,7 +712,13 @@ const getBidDetailsService = async (res, group_id, userPayload) => {
             winner_details: latestAuction && latestAuction.bidder ? {
                 winner_name: latestAuction.bidder.name || 'N/A',
                 winner_member_id: latestAuction.bidder.member_id || `#${latestAuction.bidder.id}`
-            } : null
+            } : null,
+            past_auctions: pastAuctions.map(a => ({
+                auction_number: a.auction_number,
+                auction_date: a.auction_date,
+                bid_amount: parseFloat(a.bid_amount) || 0,
+                winner_name: a.bidder ? a.bidder.name : 'Unknown'
+            }))
         };
 
         return successResponse(res, statusCodes.OK, 'Bid details retrieved successfully', responseData);
@@ -846,7 +857,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                 ? (parseFloat(group.penality_for_ps) || 0.00)
                 : (parseFloat(group.penality_for_nps) || 0.00);
 
-            const simulatedNow = getSimulatedNow(group);
+            const simulatedNow = await getSimulatedNow();
             simulatedNow.setHours(0, 0, 0, 0);
             const dueDate = new Date(upcomingInstallment.due_date);
             dueDate.setHours(0, 0, 0, 0);
@@ -1060,7 +1071,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                 const dueDate = matchingInstallment.due_date ? new Date(matchingInstallment.due_date) : null;
                 
                 if (dueDate && pendingForInst > 0) {
-                    const simulatedNow = getSimulatedNow(group);
+                    const simulatedNow = await getSimulatedNow();
                     simulatedNow.setHours(0, 0, 0, 0);
                     dueDate.setHours(0, 0, 0, 0);
 
@@ -1452,7 +1463,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
         let overdue_members_set = new Set();
         const memberMap = {};
 
-        const simulatedNow = getSimulatedNow(group);
+        const simulatedNow = await getSimulatedNow();
         allInstallments.forEach(inst => {
             let thresholdDate = new Date(simulatedNow);
             if (inst.type === 2) {
@@ -1554,22 +1565,45 @@ const getPendingMembersService = async (res, collection_agent_id, min, max) => {
         });
 
         const enrollmentIds = enrollments.map(e => e.id);
-        const unpaidInstallments = await ChitsInstallment.findAll({
+        const installments = await ChitsInstallment.findAll({
             where: {
                 enrollment_id: { [Op.in]: enrollmentIds },
-                payable_amount: { [Op.gt]: 0 },
-                id: {
-                    [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
-                }
-            }
+                payable_amount: { [Op.gt]: 0 }
+            },
+            include: [{
+                model: CustomerPayment,
+                as: 'payments',
+                where: { payment_status: 1 },
+                required: false
+            }]
+        });
+
+        const pendingSubmissions = await CollectionAgentAmount.findAll({
+            where: {
+                collection_agent_id,
+                status: 0
+            },
+            attributes: ['member_id', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+            group: ['member_id']
+        });
+        
+        const pendingSubMap = {};
+        pendingSubmissions.forEach(sub => {
+            pendingSubMap[sub.member_id] = parseInt(sub.getDataValue('count'), 10) || 0;
         });
 
         const memberMap = {};
-        unpaidInstallments.forEach(inst => {
+        installments.forEach(inst => {
             const e = enrollments.find(e => e.id === inst.enrollment_id);
             if (!e) return;
             const sub = e.subscriber;
             if (!sub) return;
+
+            const payable = parseFloat(inst.payable_amount) || 0;
+            const paidSoFar = inst.payments ? inst.payments.reduce((sum, p) => sum + parseFloat(p.received_amount || 0), 0) : 0;
+            const dueAmount = Math.max(0, payable - paidSoFar);
+
+            if (dueAmount <= 0) return;
 
             if (!memberMap[sub.id]) {
                 memberMap[sub.id] = {
@@ -1580,15 +1614,15 @@ const getPendingMembersService = async (res, collection_agent_id, min, max) => {
                     gender: sub.gender,
                     pending_months: 0,
                     oldest_due_date: inst.due_date,
-                    oldest_due_date: inst.due_date,
                     balance: 0,
                     penalty_amount: 0,
-                    penalty_text: ""
+                    penalty_text: "",
+                    pending_submissions: pendingSubMap[sub.id] || 0
                 };
             }
 
             memberMap[sub.id].pending_months += 1;
-            memberMap[sub.id].balance += (parseFloat(inst.payable_amount) || 0);
+            memberMap[sub.id].balance += dueAmount;
 
             // Use installment's penalty amount
             memberMap[sub.id].penalty_amount += (parseFloat(inst.penalty_amount) || 0);
@@ -1705,7 +1739,7 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             const e = enrollments.find(en => en.id === inst.enrollment_id);
             const group = e ? e.group : null;
 
-            const simulatedNow = getSimulatedNow(group);
+            const simulatedNow = await getSimulatedNow();
             simulatedNow.setHours(0, 0, 0, 0);
             const dueDate = new Date(inst.due_date);
             dueDate.setHours(0, 0, 0, 0);
@@ -1886,6 +1920,7 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
             collection_agent_id,
             member_id,
             payment_type,
+            received_amount: amount,
             cash,
             transaction_id,
             cheque_number,
@@ -1933,7 +1968,7 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
 
             let pending_penalty = 0;
             const group = enrollments.find(e => e.id === inst.enrollment_id)?.group;
-            const simulatedNow = getSimulatedNow(group);
+            const simulatedNow = await getSimulatedNow();
             if (pending_installment > 0 && new Date(inst.due_date) < simulatedNow) {
                 const expected_penalty = parseFloat(inst.penalty_amount) || 0;
                 pending_penalty = Math.max(0, expected_penalty - penaltyAlreadyPaid);
@@ -2155,10 +2190,10 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
         const submission = payment.collection_submission;
 
         const isSubscriber = enrollment.subscriber_id === subscriber_id;
-        const isCollectionAgent = submission && submission.collection_agent_id === subscriber_id;
+        const isAgentForPayment = submission && submission.collection_agent_id === subscriber_id;
 
         // Verify it belongs to this subscriber or was collected by this agent
-        if (!isSubscriber && !isCollectionAgent) {
+        if (!isSubscriber && !isAgentForPayment) {
             return errorResponse(res, statusCodes.FORBIDDEN, 'You are not authorized to view this receipt');
         }
 
@@ -2188,7 +2223,8 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
             member_name: subscriber ? subscriber.name : 'Unknown',
             member_code: subscriber ? (subscriber.member_id || `#${subscriber.id}`) : null,
             company_name: company ? company.company_name : 'Bonagiri Chits',
-            company_address: company ? company.company_address : ''
+            company_address: company ? company.company_address : '',
+            subscription_amount: inst.payable_amount || (group ? (group.chit_amount / group.total_months) : 0)
         };
 
         return successResponse(res, statusCodes.OK, 'Receipt retrieved successfully', responseData);
@@ -2317,8 +2353,22 @@ const markNotificationReadService = async (res, userPayload, notification_id) =>
     }
 };
 
-const getGroupsByCollectionAgentIdService = async (res, collection_agent_id) => {
+const getGroupsByCollectionAgentIdService = async (res, reqUser, requested_agent_id) => {
     try {
+        let collection_agent_id = requested_agent_id;
+        
+        if (isCollectionAgent(reqUser)) {
+            collection_agent_id = reqUser.id; // Force their own ID
+        } else if (reqUser.role === 'staff') {
+            const agent = await Member.findOne({ where: { id: requested_agent_id, company_id: reqUser.company_id } });
+            if (!agent) return errorResponse(res, statusCodes.FORBIDDEN, 'Access denied');
+        } else if (reqUser.role === 'company') {
+            const agent = await Member.findOne({ where: { id: requested_agent_id, company_id: reqUser.id } });
+            if (!agent) return errorResponse(res, statusCodes.FORBIDDEN, 'Access denied');
+        } else {
+             return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized role');
+        }
+
         const enrollments = await Enrollment.findAll({
             where: { collection_agent_id, delete_status: 0 },
             attributes: ['group_id']
@@ -2337,15 +2387,29 @@ const getGroupsByCollectionAgentIdService = async (res, collection_agent_id) => 
     }
 };
 
-const getMembersByGroupIdService = async (res, group_id) => {
+const getMembersByGroupIdService = async (res, reqUser, group_id) => {
     try {
+        const group = await ChitsGroup.findByPk(group_id);
+        if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'Group not found');
+        
+        if (reqUser.role === 'company' && group.company_id !== reqUser.id) {
+            return errorResponse(res, statusCodes.FORBIDDEN, 'Access denied to this group');
+        }
+        if (reqUser.role === 'staff' && group.company_id !== reqUser.company_id) {
+            return errorResponse(res, statusCodes.FORBIDDEN, 'Access denied to this group');
+        }
+        if (isCollectionAgent(reqUser)) {
+            const count = await Enrollment.count({ where: { group_id, collection_agent_id: reqUser.id, delete_status: 0 } });
+            if (count === 0) return errorResponse(res, statusCodes.FORBIDDEN, 'Not assigned to this group');
+        }
+
         const enrollments = await Enrollment.findAll({
             where: { group_id, delete_status: 0 },
             include: [
                 {
                     model: Member,
                     as: 'subscriber',
-                    attributes: ['id', 'name', 'member_id', 'phone_number', 'profile_image']
+                    attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
                 }
             ]
         });
@@ -2359,9 +2423,30 @@ const getMembersByGroupIdService = async (res, group_id) => {
     }
 };
 
-const getMemberLedgerService = async (res, payload) => {
+const getMemberLedgerService = async (res, reqUser, payload) => {
     try {
         const { member_id, from_date, to_date } = payload;
+
+        let isAllowed = false;
+        if (reqUser.id === member_id) {
+            isAllowed = true;
+        } else if (reqUser.role === 'staff' || reqUser.role === 'company') {
+            const member = await Member.findByPk(member_id);
+            if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+            const compId = reqUser.role === 'staff' ? reqUser.company_id : reqUser.id;
+            if (member.company_id === compId) {
+                isAllowed = true;
+            }
+        } else if (isCollectionAgent(reqUser)) {
+            const count = await Enrollment.count({ 
+                where: { subscriber_id: member_id, collection_agent_id: reqUser.id, delete_status: 0 } 
+            });
+            if (count > 0) isAllowed = true;
+        }
+
+        if (!isAllowed) {
+            return errorResponse(res, statusCodes.FORBIDDEN, 'Access denied to this ledger');
+        }
 
         let whereClause = { payment_status: 1 }; // Only confirmed payments usually appear in ledger, or remove if they want pending too. Let's fetch all (0 or 1). Actually, we'll fetch all and show status.
         whereClause = {};

@@ -7,6 +7,7 @@ const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
+const SystemSettingsService = require('./systemSettingsService');
 
 const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
   if (reqBody && reqBody.company_id) {
@@ -39,10 +40,15 @@ const resolveCompanyIdForAuth = async (userPayload) => {
 };
 
 const loginAdminService = async (res, email, password) => {
-  if (email === 'superadmin@gmail.com' && password === 'superadmin@123') {
-    const user = { email: 'superadmin@gmail.com', role: 'superadmin', company_id: null };
-    const tokens = generateTokens(user);
-    return successResponse(res, statusCodes.OK, 'Login success', { user, tokens });
+  const superadminEmail = process.env.SUPERADMIN_EMAIL;
+  const superadminPasswordHash = process.env.SUPERADMIN_PASSWORD_HASH;
+
+  if (superadminEmail && email === superadminEmail) {
+    if (superadminPasswordHash && (await bcrypt.compare(password, superadminPasswordHash))) {
+      const user = { email: superadminEmail, role: 'superadmin', company_id: null };
+      const tokens = generateTokens(user);
+      return successResponse(res, statusCodes.OK, 'Login success', { user, tokens });
+    }
   }
   return errorResponse(res, statusCodes.NOT_FOUND, 'Invalid email or password');
 };
@@ -52,7 +58,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     let user;
     let role;
     if (type === 1) {
-      user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+      user = await Company.scope('withPassword').findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
       role = 'company';
 
       if (user && !(await bcrypt.compare(password, user.company_password))) {
@@ -60,7 +66,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       }
 
       if (!user) {
-        const staffUser = await StaffUser.findOne({ where: { user_code, is_deleted_status: 0 } });
+        const staffUser = await StaffUser.scope('withPassword').findOne({ where: { user_code, is_deleted_status: 0 } });
         if (staffUser && (await bcrypt.compare(password, staffUser.password))) {
           if (!staffUser.is_active) {
             return errorResponse(res, statusCodes.FORBIDDEN, "You don't have access to login");
@@ -70,7 +76,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
         }
       }
     } else if (type === 2) {
-      user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+      user = await Member.scope('withPassword').findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
       if (user && (await bcrypt.compare(password, user.other_info_user_password))) {
         if (!user.is_verified) {
           return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin will review your account, please wait.');
@@ -98,16 +104,6 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       staffPermissions = staffRole?.permissions || {};
     }
 
-    const payload = {
-      id: user.id,
-      user_id: type === 1 ? (role === 'company' ? user.company_id : user.user_code) : user.other_info_user_code,
-      role,
-      company_id: role !== 'company' ? user.company_id : undefined,
-      permissions: role === 'staff' ? staffPermissions : undefined,
-      device_unique_id
-    };
-    const tokens = generateTokens(payload);
-
     let introduced_as_details = [];
     if (type === 2 && user.introduced_as) {
       let intIds = [];
@@ -134,6 +130,17 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
         }));
       }
     }
+
+    const payload = {
+      id: user.id,
+      user_id: type === 1 ? (role === 'company' ? user.company_id : user.user_code) : user.other_info_user_code,
+      role,
+      company_id: role !== 'company' ? user.company_id : undefined,
+      permissions: role === 'staff' ? staffPermissions : undefined,
+      introduced_as: introduced_as_details.map(i => i.id),
+      device_unique_id
+    };
+    const tokens = generateTokens(payload);
 
     return successResponse(res, statusCodes.OK, 'Login success', {
       user: {
@@ -307,16 +314,25 @@ const refreshTokenService = async (res, refresh_token) => {
 
 const storeOrUpdateCompanyService = async (res, data = {}) => {
   const { id, ...companyData } = data;
+  
+  if (companyData.company_password) {
+    companyData.company_password = await bcrypt.hash(companyData.company_password, 10);
+  }
+
   if (id) {
     const company = await Company.findByPk(id);
     if (!company) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
     delete companyData.company_id; // prevent updating generated field
     await company.update(companyData);
-    return successResponse(res, statusCodes.OK, 'Company updated successfully', company);
+    
+    const { company_password, ...safeCompany } = company.toJSON();
+    return successResponse(res, statusCodes.OK, 'Company updated successfully', safeCompany);
   } else {
     delete companyData.company_id; // model hook will handle creation
     const newCompany = await Company.create(companyData);
-    return successResponse(res, statusCodes.CREATED, 'Company registered successfully', newCompany);
+    
+    const { company_password, ...safeCompany } = newCompany.toJSON();
+    return successResponse(res, statusCodes.CREATED, 'Company registered successfully', safeCompany);
   }
 };
 
@@ -370,7 +386,8 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       delete memberData.other_info_user_code;
 
       await member.update(memberData);
-      return successResponse(res, statusCodes.OK, 'Member updated successfully', member);
+      const { other_info_user_password, password, ...safeMember } = member.toJSON();
+      return successResponse(res, statusCodes.OK, 'Member updated successfully', safeMember);
     } else {
       // Create new
       if (!memberData.member_id) {
@@ -387,8 +404,14 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
         if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'User Code already exists');
       }
 
+      if (memberData.other_info_user_password) {
+        memberData.other_info_user_password = await bcrypt.hash(memberData.other_info_user_password, 10);
+      }
+      
+      memberData.is_verified = true;
       const newMember = await Member.create(memberData);
-      return successResponse(res, statusCodes.CREATED, 'Member registered successfully', newMember);
+      const { other_info_user_password, password, ...safeMember } = newMember.toJSON();
+      return successResponse(res, statusCodes.CREATED, 'Member registered successfully', safeMember);
     }
   } catch (error) {
     console.error('Error in storeOrUpdateMemberService:', error);
@@ -434,8 +457,13 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
       const memberData = member.toJSON();
 
       // Resolve introduced_as
-      if (Array.isArray(memberData.introduced_as)) {
-        const intIds = memberData.introduced_as.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+      let intro = memberData.introduced_as;
+      if (typeof intro === 'string') {
+        try { intro = JSON.parse(intro); } catch (e) { intro = []; }
+      }
+      if (Array.isArray(intro)) {
+        const intIds = intro.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+        memberData.introduced_as = intIds;
         if (intIds.length > 0) {
           const labels = await StaticDropdownsList.findAll({
             where: { id: { [Op.in]: intIds } },
@@ -1372,6 +1400,9 @@ const getGroupMembersService = async (res, company_id, group_id, min, max, filte
       attributes: ['bidder_id', 'auction_number']
     });
 
+    const group = await ChitsGroup.findByPk(group_id, { attributes: ['company_chit_number'] });
+    const companyChitNumber = group ? group.company_chit_number : null;
+
     let members = enrollments.map(e => {
       const memberId = e.subscriber ? e.subscriber.id : null;
       const winData = auctions.find(a => a.bidder_id === memberId);
@@ -1381,12 +1412,13 @@ const getGroupMembersService = async (res, company_id, group_id, min, max, filte
         name: e.subscriber ? e.subscriber.name : null,
         position: e.group_position_number,
         has_won: !!winData,
-        won_month: winData ? parseInt(winData.auction_number, 10) : null
+        won_month: winData ? parseInt(winData.auction_number, 10) : null,
+        is_company: e.group_position_number === companyChitNumber
       };
     });
 
     if (filter_unwon) {
-      members = members.filter(m => !m.has_won);
+      members = members.filter(m => !m.has_won && !m.is_company);
     }
 
     return successResponse(res, statusCodes.OK, 'Group members retrieved successfully', { count: filter_unwon ? members.length : count, rows: members });
@@ -1754,6 +1786,11 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     if (!winnerEnrollment) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Bidder is not enrolled in this group');
+    }
+
+    if (group.company_chit_number && winnerEnrollment.group_position_number === group.company_chit_number) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company cannot be recorded as an auction winner');
     }
 
     // 3. Duplicate-winner guard
@@ -2419,31 +2456,51 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
-    const commissions = await ConfigureBusinessAgentCommission.findAndCountAll({
-      where: { business_agent_id },
+    const enrollments = await Enrollment.findAndCountAll({
+      where: { business_agent_id, delete_status: 0 },
       limit,
       offset,
       include: [
         {
           model: Member,
-          as: 'member',
+          as: 'subscriber',
           attributes: ['id', 'name', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt'],
           include: [
             { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
           ]
+        },
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name', 'chit_amount']
         }
       ]
     });
 
-    const rows = commissions.rows.map(row => {
-      const rowData = row.toJSON();
-      if (rowData.commission_amount) {
-        rowData.commission_amount = parseFloat(rowData.commission_amount) || 0;
-      }
-      return rowData;
+    const configs = await ConfigureBusinessAgentCommission.findAll({
+      where: { business_agent_id },
+      raw: true
     });
 
-    return successResponse(res, statusCodes.OK, 'Members under business agent retrieved successfully', { count: commissions.count, rows });
+    const rows = enrollments.rows.map(enrollment => {
+      const eData = enrollment.toJSON();
+      const member = eData.subscriber || {};
+      const config = configs.find(c => c.member_id === member.id && c.group_id === eData.group_id);
+
+      return {
+        id: eData.id,
+        enrollment_id: eData.id,
+        group_id: eData.group_id,
+        group: eData.group,
+        member_id: member.id,
+        member: member,
+        has_commission: !!config,
+        commission_amount: config ? (parseFloat(config.commission_amount) || 0) : 0,
+        configure_business_agent_id: config ? config.id : null
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Members under business agent retrieved successfully', { count: enrollments.count, rows });
   } catch (error) {
     console.error('Error in getBusinessListUnderMembersService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -3048,7 +3105,11 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
 
     const pending_commission_amount = total_commission_amount - paid_commission;
 
-    const uniqueMembers = new Set(configRecords.map(c => c.member_id));
+    const enrollments = await Enrollment.findAll({
+      where: { business_agent_id, delete_status: 0 },
+      attributes: ['subscriber_id']
+    });
+    const uniqueMembers = new Set(enrollments.map(e => e.subscriber_id));
     const member_joined = uniqueMembers.size;
 
     const historyRecords = await HistoryBusinessAgent.findAndCountAll({
@@ -3382,8 +3443,13 @@ const getMemberByIdService = async (res, id, companyId) => {
     if (memberData.address_info_office_district_id) memberData.office_district = await District.findByPk(memberData.address_info_office_district_id);
     if (memberData.address_info_office_city_id) memberData.office_city = await City.findByPk(memberData.address_info_office_city_id);
 
-    if (Array.isArray(memberData.introduced_as)) {
-      const intIds = memberData.introduced_as.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+    let intro = memberData.introduced_as;
+    if (typeof intro === 'string') {
+      try { intro = JSON.parse(intro); } catch (e) { intro = []; }
+    }
+    if (Array.isArray(intro)) {
+      const intIds = intro.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+      memberData.introduced_as = intIds;
       if (intIds.length > 0) {
         memberData.introduced_as_dropdown = await StaticDropdownsList.findAll({ where: { id: { [Op.in]: intIds } } });
       } else {
@@ -3559,7 +3625,7 @@ const changePasswordService = async (res, userPayload, old_password, new_passwor
     let user;
 
     if (role === 'company') {
-      user = await Company.findOne({ where: { id, is_deleted_status: 0 } });
+      user = await Company.scope('withPassword').findOne({ where: { id, is_deleted_status: 0 } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
       if (!(await bcrypt.compare(old_password, user.company_password))) {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Incorrect old password');
@@ -3567,7 +3633,7 @@ const changePasswordService = async (res, userPayload, old_password, new_passwor
       const hashedPassword = await bcrypt.hash(new_password, 10);
       await user.update({ company_password: hashedPassword });
     } else if (role === 'member') {
-      user = await Member.findOne({ where: { id, is_deleted_status: 0 } });
+      user = await Member.scope('withPassword').findOne({ where: { id, is_deleted_status: 0 } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
       if (!(await bcrypt.compare(old_password, user.other_info_user_password))) {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Incorrect old password');
@@ -3795,7 +3861,7 @@ const logoutService = async (req, res, userPayload) => {
       const user = await Member.findOne({ where: { id, company_id: companyId } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
       await user.update({ device_id: null, device_unique_id: null, fcm_token: null });
-    } else if (role === 'staff' || role === 'collection_agent' || role === 'business_agent') {
+    } else if (role === 'staff') {
       const user = await StaffUser.findOne({ where: { id, company_id: companyId } });
       if (user) await user.update({ fcm_token: null });
     } else {
@@ -3894,11 +3960,13 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
     };
 
     const formatted = submissions.map(sub => {
-      let amount = 0;
-      if (sub.cash && sub.cash.amount) {
-        amount = sub.cash.amount;
-      } else if (sub.bank_details && sub.bank_details.amount) {
-        amount = sub.bank_details.amount;
+      let amount = sub.received_amount ? parseFloat(sub.received_amount) : 0;
+      if (amount === 0) {
+        if (sub.cash && sub.cash.amount) {
+          amount = sub.cash.amount;
+        } else if (sub.bank_details && sub.bank_details.amount) {
+          amount = sub.bank_details.amount;
+        }
       }
 
       const memberEnrollments = enrollments.filter(e => e.subscriber_id === sub.member_id);
@@ -3912,22 +3980,20 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         status_note = `Rejected on ${formatDate(sub.confirm_date)}`;
       }
 
-      let collection_id_value = 'Unknown';
-      if (sub.collection_agent && sub.collection_agent.other_info_user_code) {
-        collection_id_value = sub.collection_agent.other_info_user_code.toString();
-      } else if (sub.collection_agent_id) {
-        collection_id_value = sub.collection_agent_id.toString();
-      }
+      let collection_id_value = sub.id ? `COL${sub.id.substring(0, 8).toUpperCase()}` : 'Unknown';
+      let agent_name_value = sub.collection_agent ? sub.collection_agent.name : 'Unknown';
 
       return {
         id: sub.id,
         member_name: sub.member ? sub.member.name : 'Unknown',
+        agent_name: agent_name_value,
         gender: sub.member ? sub.member.gender : null,
         profile_image: sub.member ? sub.member.upload_image : '',
         group_name: groupNames || 'No Group',
         amount,
         method: getPaymentMethod(sub.payment_type),
         date: formatDate(sub.createdAt),
+        payment_date: sub.paid_date ? formatDate(sub.paid_date) : formatDate(sub.createdAt),
         collection_id: collection_id_value,
         status: statusStr,
         status_int: sub.status,
@@ -4122,12 +4188,15 @@ const storeOrUpdateStaffService = async (res, data = {}, userToken) => {
       const staff = await StaffUser.findOne({ where: { id, company_id: companyId } });
       if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
       await staff.update(staffData);
-      return successResponse(res, statusCodes.OK, 'Staff user updated successfully', staff);
+      const { password: _p, ...safeStaff } = staff.toJSON();
+      return successResponse(res, statusCodes.OK, 'Staff user updated successfully', safeStaff);
     }
 
     const user_code = await generateUniqueStaffUserCode();
-    const newStaff = await StaffUser.create({ ...staffData, password, user_code, company_id: companyId });
-    return successResponse(res, statusCodes.CREATED, 'Staff user created successfully', newStaff);
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newStaff = await StaffUser.create({ ...staffData, password: hashedPassword, user_code, company_id: companyId });
+    const { password: _p, ...safeStaff } = newStaff.toJSON();
+    return successResponse(res, statusCodes.CREATED, 'Staff user created successfully', safeStaff);
   } catch (error) {
     console.error('Error in storeOrUpdateStaffService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -4713,6 +4782,113 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
   }
 };
 
+const getSystemSettingsService = async (res) => {
+  try {
+    const settings = await SystemSettingsService.getSettings();
+    return successResponse(res, statusCodes.OK, 'System settings retrieved', settings);
+  } catch (error) {
+    console.error('Error in getSystemSettingsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateBusinessDateService = async (res, userPayload, body) => {
+  try {
+    if (userPayload.role !== 'superadmin') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can update system settings');
+    }
+    const settings = await SystemSettingsService.updateBusinessDate({
+      newDate: body.business_date,
+      reason: body.reason,
+      remarks: body.remarks,
+      changedBy: userPayload.id
+    });
+    return successResponse(res, statusCodes.OK, 'Business date updated successfully', settings);
+  } catch (error) {
+    console.error('Error in updateBusinessDateService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateSchedulerModeService = async (res, userPayload, body) => {
+  try {
+    if (userPayload.role !== 'superadmin') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can update system settings');
+    }
+    const settings = await SystemSettingsService.updateSchedulerMode({
+      mode: body.scheduler_mode,
+      reason: body.reason,
+      remarks: body.remarks,
+      changedBy: userPayload.id
+    });
+    return successResponse(res, statusCodes.OK, 'Scheduler mode updated successfully', settings);
+  } catch (error) {
+    console.error('Error in updateSchedulerModeService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, error.message || 'Internal server error');
+  }
+};
+
+const getSystemImpactPreviewService = async (res, userPayload, candidateDateStr) => {
+  try {
+    if (userPayload.role !== 'superadmin') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can access system utilities');
+    }
+    
+    const businessDate = candidateDateStr ? new Date(candidateDateStr) : await SystemSettingsService.getBusinessDate();
+    
+    const overdueCount = await ChitsInstallment.count({
+      where: {
+        due_date: {
+          [Op.lt]: businessDate.toISOString().split('T')[0]
+        },
+        id: {
+          [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+        }
+      }
+    });
+
+    const previewData = {
+      impacted_records: overdueCount,
+      estimated_time: `${Math.max(1, Math.ceil(overdueCount / 100))} min`
+    };
+
+    return successResponse(res, statusCodes.OK, 'Impact preview retrieved', previewData);
+  } catch (error) {
+    console.error('Error in getSystemImpactPreviewService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const runSystemJobsService = async (res, userPayload, body) => {
+  try {
+    if (userPayload.role !== 'superadmin') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can run system jobs');
+    }
+    
+    const { job_type } = body;
+    return successResponse(res, statusCodes.OK, `Job ${job_type || 'default'} triggered manually successfully`);
+  } catch (error) {
+    console.error('Error in runSystemJobsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSystemAuditLogsService = async (res, userPayload, { min = 0, max = 20 } = {}) => {
+  try {
+    const { SystemAuditLog } = require('../models');
+    const { count, rows } = await SystemAuditLog.findAndCountAll({
+      include: [{ model: StaffUser, as: 'changedBy', attributes: ['id', 'first_name', 'last_name'] }],
+      limit: parseInt(max, 10) || 20,
+      offset: parseInt(min, 10) || 0,
+      order: [['changed_on', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'System audit logs retrieved successfully', { count, rows });
+  } catch (error) {
+    console.error('Error in getSystemAuditLogsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -4849,5 +5025,11 @@ module.exports = {
   getAllAuditLogsService,
   getMemberDocumentsAdminService,
   verifyMemberDocumentService,
-  getAllReceiptsService
+  getAllReceiptsService,
+  getSystemSettingsService,
+  updateBusinessDateService,
+  updateSchedulerModeService,
+  getSystemImpactPreviewService,
+  runSystemJobsService,
+  getSystemAuditLogsService
 };

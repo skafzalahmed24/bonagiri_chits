@@ -152,6 +152,14 @@ module.exports = (sequelize, DataTypes) => {
     sequelize,
     modelName: 'Member',
     tableName: 'member',
+    defaultScope: {
+      attributes: { exclude: ['other_info_user_password'] }
+    },
+    scopes: {
+      withPassword: {
+        attributes: { include: ['other_info_user_password'] }
+      }
+    }
   });
   return Member;
 };

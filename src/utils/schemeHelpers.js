@@ -111,6 +111,8 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
 
   for (const enrollment of nonWinningEnrollments) {
     // 1. Compute cumulative balance by adding new dividend to existing balance
+    // Note: dividend_credit_balance is accumulated for future settlement/reporting purposes.
+    // In this realistic model, each month has its own auction and dividend, so we do not pre-reduce future installments.
     const currentBalance = parseFloat(enrollment.dividend_credit_balance) || 0;
     const newBalance = currentBalance + dividendPerMember;
     

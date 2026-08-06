@@ -53,6 +53,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.TEXT('long'),
       allowNull: true
     },
+    received_amount: {
+      type: DataTypes.DECIMAL(15, 2),
+      allowNull: true
+    },
     status: {
       type: DataTypes.INTEGER,
       defaultValue: 0,

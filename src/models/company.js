@@ -36,13 +36,13 @@ module.exports = (sequelize, DataTypes) => {
     cheque_return_charges: {
       type: DataTypes.DECIMAL(10, 2),
     },
-    enrollement_charges: {
+    enrollment_charges: {
       type: DataTypes.DECIMAL(10, 2),
     },
     notice_charges: {
       type: DataTypes.DECIMAL(10, 2),
     },
-    tranaction_lock_days: {
+    transaction_lock_days: {
       type: DataTypes.INTEGER,
     },
     latitude: {
@@ -127,6 +127,14 @@ module.exports = (sequelize, DataTypes) => {
     sequelize,
     modelName: 'Company',
     tableName: 'companies',
+    defaultScope: {
+      attributes: { exclude: ['company_password'] }
+    },
+    scopes: {
+      withPassword: {
+        attributes: { include: ['company_password'] }
+      }
+    },
     hooks: {
       beforeCreate: async (company, options) => {
         let isUnique = false;
