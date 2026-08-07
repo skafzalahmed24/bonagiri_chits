@@ -1468,6 +1468,33 @@ const updateCustomerVisitStatus = async (req, res) => {
   }
 };
 
+const getLedgerReport = async (req, res) => {
+  try {
+    return await adminService.getLedgerReportService(res, req.body);
+  } catch (error) {
+    console.error('Error in getLedgerReport:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStatutoryReport = async (req, res) => {
+  try {
+    return await adminService.getStatutoryReportService(res, req.body);
+  } catch (error) {
+    console.error('Error in getStatutoryReport:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const searchEnquiry = async (req, res) => {
+  try {
+    return await adminService.searchEnquiryService(res, req.body);
+  } catch (error) {
+    console.error('Error in searchEnquiry:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQ,
   getAllFAQ,
@@ -1609,5 +1636,8 @@ module.exports = {
   runSystemJobs,
   getAllCustomerVisits,
   getCustomerVisitById,
-  updateCustomerVisitStatus
+  updateCustomerVisitStatus,
+  getLedgerReport,
+  getStatutoryReport,
+  searchEnquiry
 };

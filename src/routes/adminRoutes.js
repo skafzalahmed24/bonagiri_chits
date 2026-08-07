@@ -229,8 +229,8 @@ router.post('/role/delete', authMiddleware.authenticateToken, validate(adminVali
 router.post('/dashboard/summary', authMiddleware.authenticateToken, adminController.getDashboardSummary);
 
 // fcm notifications routes
-router.post('/notifications/register-token', authMiddleware.authenticateToken, validate(adminValidation.registerTokenSchema), adminController.registerAdminToken);
-router.post('/notifications/send-manual', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.sendManualNotificationSchema), adminController.sendManualNotification);
+router.post('/admin/notifications/register-token', authMiddleware.authenticateToken, validate(adminValidation.registerTokenSchema), adminController.registerAdminToken);
+router.post('/admin/notifications/send-manual', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.sendManualNotificationSchema), adminController.sendManualNotification);
 
 // System Utilities Routes
 router.get('/admin/system/settings', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemSettings);
@@ -244,5 +244,12 @@ router.post('/admin/system/audit-logs', authMiddleware.authenticateToken, authMi
 router.post('/customer-visit/list', authMiddleware.authenticateToken, validate(adminValidation.getAllCustomerVisitsSchema), adminController.getAllCustomerVisits);
 router.post('/customer-visit/details', authMiddleware.authenticateToken, validate(adminValidation.getCustomerVisitByIdSchema), adminController.getCustomerVisitById);
 router.post('/customer-visit/status', authMiddleware.authenticateToken, validate(adminValidation.updateCustomerVisitStatusSchema), adminController.updateCustomerVisitStatus);
+
+// reports routes
+router.post('/reports/ledger', authMiddleware.authenticateToken, adminController.getLedgerReport);
+router.post('/reports/statutory', authMiddleware.authenticateToken, adminController.getStatutoryReport);
+
+// enquiry route
+router.post('/enquiry/search', authMiddleware.authenticateToken, adminController.searchEnquiry);
 
 module.exports = router;

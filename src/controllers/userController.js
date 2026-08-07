@@ -189,8 +189,8 @@ const getCollectionAgentActiveGroups = async (req, res) => {
 
 const getPendingMembers = async (req, res) => {
   try {
-    const { collection_agent_id, min, max } = req.body;
-    return await userService.getPendingMembersService(res, req.user.id, min, max);
+    const { collection_agent_id, group_id, min, max } = req.body;
+    return await userService.getPendingMembersService(res, req.user.id, group_id, min, max);
   } catch (error) {
     console.error('Error in getPendingMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

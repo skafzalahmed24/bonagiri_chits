@@ -5007,6 +5007,111 @@ const updateCustomerVisitStatusService = async (res, userPayload, payload) => {
     }
 };
 
+const getLedgerReportService = async (res, reqBody) => {
+    try {
+        const { start_date, end_date, member_id } = reqBody;
+        
+        let whereClause = {};
+        if (start_date && end_date) {
+            whereClause.payment_date = { [Op.between]: [start_date, end_date] };
+        } else if (start_date) {
+            whereClause.payment_date = { [Op.gte]: start_date };
+        } else if (end_date) {
+            whereClause.payment_date = { [Op.lte]: end_date };
+        }
+        
+        const includeOptions = [
+            {
+                model: ChitsInstallment,
+                as: 'installment',
+                include: [
+                    {
+                        model: Enrollment,
+                        as: 'enrollment',
+                        include: [
+                            { model: Member, as: 'subscriber', ...(member_id ? { where: { id: member_id } } : {}) },
+                            { model: ChitsGroup, as: 'group' }
+                        ],
+                        required: !!member_id
+                    }
+                ],
+                required: true
+            }
+        ];
+        
+        const payments = await CustomerPayment.findAll({
+            where: whereClause,
+            include: includeOptions,
+            order: [['payment_date', 'DESC'], ['createdAt', 'DESC']]
+        });
+        
+        return successResponse(res, statusCodes.OK, 'Ledger report fetched successfully', { rows: payments });
+    } catch (error) {
+        console.error('Error in getLedgerReportService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getStatutoryReportService = async (res, reqBody) => {
+    try {
+        const { start_date, end_date } = reqBody;
+        
+        let whereClause = {};
+        if (start_date && end_date) {
+            whereClause.createdAt = { [Op.between]: [new Date(start_date), new Date(end_date)] };
+        }
+        
+        const groups = await ChitsGroup.findAll({
+            where: whereClause,
+            order: [['createdAt', 'DESC']]
+        });
+        
+        return successResponse(res, statusCodes.OK, 'Statutory report fetched successfully', { rows: groups });
+    } catch (error) {
+        console.error('Error in getStatutoryReportService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const searchEnquiryService = async (res, reqBody) => {
+    try {
+        const { query, min = 0, max = 10 } = reqBody;
+        const limit = parseInt(max, 10);
+        const offset = parseInt(min, 10);
+        
+        let memberWhere = {};
+        let groupWhere = {};
+        
+        if (query) {
+            memberWhere = {
+                [Op.or]: [
+                    { name: { [Op.like]: `%${query}%` } },
+                    { mobile_number: { [Op.like]: `%${query}%` } },
+                    { member_id: { [Op.like]: `%${query}%` } }
+                ]
+            };
+            groupWhere = {
+                group_name: { [Op.like]: `%${query}%` }
+            };
+        }
+        
+        const [members, groups] = await Promise.all([
+            Member.findAndCountAll({ where: memberWhere, limit, offset }),
+            ChitsGroup.findAndCountAll({ where: groupWhere, limit, offset })
+        ]);
+        
+        return successResponse(res, statusCodes.OK, 'Search completed successfully', {
+            members: members.rows,
+            groups: groups.rows,
+            totalMembers: members.count,
+            totalGroups: groups.count
+        });
+    } catch (error) {
+        console.error('Error in searchEnquiryService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -5152,5 +5257,8 @@ module.exports = {
   getSystemAuditLogsService,
   getAllCustomerVisitsService,
   getCustomerVisitByIdService,
-  updateCustomerVisitStatusService
+  updateCustomerVisitStatusService,
+  getLedgerReportService,
+  getStatutoryReportService,
+  searchEnquiryService
 };

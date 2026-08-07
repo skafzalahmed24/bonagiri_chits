@@ -1551,13 +1551,18 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
     }
 };
 
-const getPendingMembersService = async (res, collection_agent_id, min, max) => {
+const getPendingMembersService = async (res, collection_agent_id, group_id, min, max) => {
     try {
         const limit = parseInt(max, 10) || 10;
         const offset = parseInt(min, 10) || 0;
 
+        const whereClause = { collection_agent_id, delete_status: 0 };
+        if (group_id) {
+            whereClause.group_id = group_id;
+        }
+
         const enrollments = await Enrollment.findAll({
-            where: { collection_agent_id, delete_status: 0 },
+            where: whereClause,
             include: [
                 { model: Member, as: 'subscriber' },
                 { model: ChitsGroup, as: 'group' }
