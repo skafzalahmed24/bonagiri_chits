@@ -4267,7 +4267,8 @@ const staffChangePasswordService = async (res, userToken, member_id, new_passwor
     }
     const staff = await StaffUser.findOne({ where: { id: member_id, company_id: userToken.id } });
     if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
-    await staff.update({ password: new_password });
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+    await staff.update({ password: hashedPassword });
     return successResponse(res, statusCodes.OK, 'Password updated successfully');
   } catch (error) {
     console.error('Error in staffChangePasswordService:', error);
