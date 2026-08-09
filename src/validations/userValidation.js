@@ -139,7 +139,7 @@ const storeCustomerVisitSchema = Joi.object({
   member_id: Joi.number().integer().required(),
   collection_agent_id: Joi.number().integer().required(),
   visitor_type: Joi.number().integer().valid(1, 2).required(),
-  upload_proof: Joi.string().uri().allow('', null).optional(),
+  upload_proof: Joi.string().allow('', null).optional(),
   remarks: Joi.string().allow('', null).optional(),
   customer_vistor_status: Joi.number().integer().valid(0, 1, 3).optional().default(0)
 });

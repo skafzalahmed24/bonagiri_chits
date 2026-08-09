@@ -39,9 +39,13 @@ const companyValidator = Joi.object({
     'any.required': 'Email is required',
     'string.empty': 'Email cannot be empty'
   }),
-  company_password: Joi.string().required().messages({
-    'any.required': 'Password is required',
-    'string.empty': 'Password cannot be empty'
+  company_password: Joi.alternatives().conditional('id', {
+    is: Joi.exist(),
+    then: Joi.string().allow('', null).optional(),
+    otherwise: Joi.string().required().messages({
+      'any.required': 'Password is required',
+      'string.empty': 'Password cannot be empty'
+    })
   }),
   company_id: Joi.string().allow('', null).optional(),
   gst_type: Joi.number().integer().valid(1, 2).optional().messages({

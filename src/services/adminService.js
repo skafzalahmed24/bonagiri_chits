@@ -317,6 +317,8 @@ const storeOrUpdateCompanyService = async (res, data = {}) => {
   
   if (companyData.company_password) {
     companyData.company_password = await bcrypt.hash(companyData.company_password, 10);
+  } else {
+    delete companyData.company_password;
   }
 
   if (id) {
@@ -381,6 +383,12 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       if (!member) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
       }
+      
+      if (memberData.mobile_number) {
+        const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number, id: { [Op.ne]: id } } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+      }
+
       // Prevent updating generated fields during edit
       delete memberData.member_id;
       delete memberData.other_info_user_code;
@@ -390,6 +398,11 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       return successResponse(res, statusCodes.OK, 'Member updated successfully', safeMember);
     } else {
       // Create new
+      if (memberData.mobile_number) {
+        const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+      }
+
       if (!memberData.member_id) {
         memberData.member_id = await generateUniqueMemberId();
       } else {
@@ -408,7 +421,7 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
         memberData.other_info_user_password = await bcrypt.hash(memberData.other_info_user_password, 10);
       }
       
-      memberData.is_verified = true;
+      memberData.is_verified = false;
       const newMember = await Member.create(memberData);
       const { other_info_user_password, password, ...safeMember } = newMember.toJSON();
       return successResponse(res, statusCodes.CREATED, 'Member registered successfully', safeMember);
@@ -545,8 +558,20 @@ const getAllRouteDetailsService = async (res, company_id, min, max, search) => {
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && { route_name: { [Op.like]: `%${search}%` } })
     };
-    const routes = await Route.findAndCountAll({ limit, offset, where, order: [['createdAt', 'DESC']] });
-    return successResponse(res, statusCodes.OK, 'Routes retrieved successfully', routes);
+    const routes = await Route.findAndCountAll({ 
+      limit, 
+      offset, 
+      where, 
+      include: [{ model: City, as: 'city', attributes: ['city_name'] }],
+      order: [['createdAt', 'DESC']] 
+    });
+
+    const formattedRows = routes.rows.map(route => {
+      const routeData = route.toJSON();
+      return { ...routeData, city_name: routeData.city?.city_name || null, city: undefined };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Routes retrieved successfully', { count: routes.count, rows: formattedRows });
   } catch (error) {
     console.error('Error in getAllRouteDetailsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
