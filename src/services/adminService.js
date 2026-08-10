@@ -2319,6 +2319,56 @@ const storeOrUpdateAgentTargetEntryService = async (res, data = {}) => {
   }
 };
 
+const getAllAgentTargetEntryService = async (res, company_id, agent_type_id, min = 0, max = 10, search = '') => {
+  try {
+    const limit = parseInt(max, 10);
+    const offset = parseInt(min, 10);
+
+    const whereClause = {
+      ...(company_id ? { company_id } : {}),
+      ...(agent_type_id ? { agent_type_id } : {})
+    };
+    
+    let includeAgentWhere = {};
+    if (search) {
+      includeAgentWhere = {
+        [Op.or]: [
+          { name: { [Op.like]: `%${search}%` } },
+          { mobile_number: { [Op.like]: `%${search}%` } }
+        ]
+      };
+    }
+
+    const { count, rows } = await AgentTargetEntry.findAndCountAll({
+      where: whereClause,
+      include: [
+        {
+          model: Member,
+          as: 'agent',
+          where: Object.keys(includeAgentWhere).length > 0 ? includeAgentWhere : undefined,
+          required: Object.keys(includeAgentWhere).length > 0
+        },
+        {
+          model: StaticDropdownsList,
+          as: 'agent_type',
+          required: false
+        }
+      ],
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Agent target entries fetched successfully', {
+      total: count,
+      rows: rows
+    });
+  } catch (error) {
+    console.error('Error in getAllAgentTargetEntryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getFilteredMembersByGroupAndAgentService = async (res, company_id, agent_type_id, agent_id, group_id, min, max) => {
   try {
     const type_id = parseInt(agent_type_id, 10);
@@ -5206,6 +5256,7 @@ module.exports = {
   getAgentByAgentTypeService,
   getAgentEnrollmentsService,
   storeOrUpdateAgentTargetEntryService,
+  getAllAgentTargetEntryService,
   getFilteredMembersByGroupAndAgentService,
   transferAgentUpdateService,
   getBusinessListUnderMembersService,

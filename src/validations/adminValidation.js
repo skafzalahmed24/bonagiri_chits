@@ -119,7 +119,7 @@ const verifyMemberOtpSchema = Joi.object({
 const resetPasswordSchema = Joi.object({
   user_code: Joi.string().required(),
   type: Joi.number().integer().valid(1, 2).required(),
-  password: Joi.string().required(),
+  password: Joi.string().min(8).required(),
   reset_token: Joi.string().required()
 });
 
@@ -379,9 +379,10 @@ const changePasswordSchema = Joi.object({
     'any.required': 'Old password is required',
     'string.empty': 'Old password cannot be empty'
   }),
-  new_password: Joi.string().required().messages({
+  new_password: Joi.string().min(8).required().messages({
     'any.required': 'New password is required',
-    'string.empty': 'New password cannot be empty'
+    'string.empty': 'New password cannot be empty',
+    'string.min': 'New password must be at least 8 characters long'
   })
 });
 
@@ -678,7 +679,7 @@ module.exports = {
     legal_notice_date: Joi.date().iso().allow('', null).optional()
   }),
   getAllSuitFileInformationSchema: Joi.object({
-    company_id: Joi.string().uuid().required(),
+    company_id: Joi.string().uuid().allow('', null).optional(),
     group_id: Joi.string().uuid().allow('', null).optional(),
     subscriber_id: Joi.number().integer().allow(null).optional(),
     min: Joi.number().integer().min(0).optional(),
@@ -741,6 +742,12 @@ module.exports = {
     agent_id: Joi.number().integer().required(),
     group_id: Joi.string().uuid().allow('', null).optional(),
     position: Joi.string().valid('PS', 'NPS').allow('', null).optional(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
+  }),
+  getAllAgentTargetEntrySchema: Joi.object({
+    agent_type_id: Joi.number().integer().valid(16, 18).optional(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional(),
     search: Joi.string().allow('', null).optional()
@@ -1036,7 +1043,7 @@ module.exports = {
   }),
   staffChangePasswordSchema: Joi.object({
     member_id: Joi.string().uuid().required(),
-    new_password: Joi.string().min(6).required()
+    new_password: Joi.string().min(8).required()
   }),
   registerTokenSchema: Joi.object({
     fcm_token: Joi.string().required(),
