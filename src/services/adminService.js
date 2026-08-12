@@ -77,7 +77,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       }
     } else if (type === 2) {
       user = await Member.scope('withPassword').findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
-      if (user && (await bcrypt.compare(password, user.other_info_user_password))) {
+      if (user && user.other_info_user_password && (await bcrypt.compare(password, user.other_info_user_password))) {
         if (!user.is_verified) {
           return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin will review your account, please wait.');
         }
@@ -392,6 +392,14 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       // Prevent updating generated fields during edit
       delete memberData.member_id;
       delete memberData.other_info_user_code;
+
+      // Hash password if provided during update; remove if empty so the
+      // existing hash is not overwritten with a blank string.
+      if (memberData.other_info_user_password) {
+        memberData.other_info_user_password = await bcrypt.hash(memberData.other_info_user_password, 10);
+      } else {
+        delete memberData.other_info_user_password;
+      }
 
       await member.update(memberData);
       const { other_info_user_password, password, ...safeMember } = member.toJSON();
