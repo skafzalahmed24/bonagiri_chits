@@ -5,7 +5,7 @@ const {
     Member, Route, Area, ChitsGroup, Company, ChitsInstallment, Enrollment,
     UpcomingChit, UpcomingChitInterest, CustomerPayment, GroupUnderStaticList,
     Auction, CollectionAgentAmount, FixedSchemeChitsConfiguration,
-    NotificationHistory, MemberDocument, CustomerVisit,
+    NotificationHistory, MemberDocument, CustomerVisit, Gallery,
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
