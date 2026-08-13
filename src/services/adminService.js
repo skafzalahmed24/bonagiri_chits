@@ -77,7 +77,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       }
     } else if (type === 2) {
       user = await Member.scope('withPassword').findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
-      if (user && (await bcrypt.compare(password, user.other_info_user_password))) {
+      if (user && user.other_info_user_password && (await bcrypt.compare(password, user.other_info_user_password))) {
         if (!user.is_verified) {
           return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin will review your account, please wait.');
         }
@@ -317,6 +317,8 @@ const storeOrUpdateCompanyService = async (res, data = {}) => {
   
   if (companyData.company_password) {
     companyData.company_password = await bcrypt.hash(companyData.company_password, 10);
+  } else {
+    delete companyData.company_password;
   }
 
   if (id) {
@@ -381,15 +383,34 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       if (!member) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
       }
+      
+      if (memberData.mobile_number) {
+        const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number, id: { [Op.ne]: id } } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+      }
+
       // Prevent updating generated fields during edit
       delete memberData.member_id;
       delete memberData.other_info_user_code;
+
+      // Hash password if provided during update; remove if empty so the
+      // existing hash is not overwritten with a blank string.
+      if (memberData.other_info_user_password) {
+        memberData.other_info_user_password = await bcrypt.hash(memberData.other_info_user_password, 10);
+      } else {
+        delete memberData.other_info_user_password;
+      }
 
       await member.update(memberData);
       const { other_info_user_password, password, ...safeMember } = member.toJSON();
       return successResponse(res, statusCodes.OK, 'Member updated successfully', safeMember);
     } else {
       // Create new
+      if (memberData.mobile_number) {
+        const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+      }
+
       if (!memberData.member_id) {
         memberData.member_id = await generateUniqueMemberId();
       } else {
@@ -408,7 +429,7 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
         memberData.other_info_user_password = await bcrypt.hash(memberData.other_info_user_password, 10);
       }
       
-      memberData.is_verified = true;
+      memberData.is_verified = false;
       const newMember = await Member.create(memberData);
       const { other_info_user_password, password, ...safeMember } = newMember.toJSON();
       return successResponse(res, statusCodes.CREATED, 'Member registered successfully', safeMember);
@@ -545,8 +566,20 @@ const getAllRouteDetailsService = async (res, company_id, min, max, search) => {
         ...(company_id && company_id !== '' && { company_id }),
       ...(search && { route_name: { [Op.like]: `%${search}%` } })
     };
-    const routes = await Route.findAndCountAll({ limit, offset, where, order: [['createdAt', 'DESC']] });
-    return successResponse(res, statusCodes.OK, 'Routes retrieved successfully', routes);
+    const routes = await Route.findAndCountAll({ 
+      limit, 
+      offset, 
+      where, 
+      include: [{ model: City, as: 'city', attributes: ['city_name'] }],
+      order: [['createdAt', 'DESC']] 
+    });
+
+    const formattedRows = routes.rows.map(route => {
+      const routeData = route.toJSON();
+      return { ...routeData, city_name: routeData.city?.city_name || null, city: undefined };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Routes retrieved successfully', { count: routes.count, rows: formattedRows });
   } catch (error) {
     console.error('Error in getAllRouteDetailsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -2290,6 +2323,56 @@ const storeOrUpdateAgentTargetEntryService = async (res, data = {}) => {
     }
   } catch (error) {
     console.error('Error in storeOrUpdateAgentTargetEntryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAgentTargetEntryService = async (res, company_id, agent_type_id, min = 0, max = 10, search = '') => {
+  try {
+    const limit = parseInt(max, 10);
+    const offset = parseInt(min, 10);
+
+    const whereClause = {
+      ...(company_id ? { company_id } : {}),
+      ...(agent_type_id ? { agent_type_id } : {})
+    };
+    
+    let includeAgentWhere = {};
+    if (search) {
+      includeAgentWhere = {
+        [Op.or]: [
+          { name: { [Op.like]: `%${search}%` } },
+          { mobile_number: { [Op.like]: `%${search}%` } }
+        ]
+      };
+    }
+
+    const { count, rows } = await AgentTargetEntry.findAndCountAll({
+      where: whereClause,
+      include: [
+        {
+          model: Member,
+          as: 'agent',
+          where: Object.keys(includeAgentWhere).length > 0 ? includeAgentWhere : undefined,
+          required: Object.keys(includeAgentWhere).length > 0
+        },
+        {
+          model: StaticDropdownsList,
+          as: 'agent_type',
+          required: false
+        }
+      ],
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Agent target entries fetched successfully', {
+      total: count,
+      rows: rows
+    });
+  } catch (error) {
+    console.error('Error in getAllAgentTargetEntryService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -5182,6 +5265,7 @@ module.exports = {
   getAgentByAgentTypeService,
   getAgentEnrollmentsService,
   storeOrUpdateAgentTargetEntryService,
+  getAllAgentTargetEntryService,
   getFilteredMembersByGroupAndAgentService,
   transferAgentUpdateService,
   getBusinessListUnderMembersService,

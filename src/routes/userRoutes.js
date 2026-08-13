@@ -45,6 +45,7 @@ router.post('/collection-agent/groups-by-agent', authMiddleware.authenticateToke
 router.post('/collection-agent/members-by-group', authMiddleware.authenticateToken, validate(userValidation.getMembersByGroupIdSchema), userController.getMembersByGroupId);
 router.post('/collection-agent/members', authMiddleware.authenticateToken, validate(userValidation.getMembersByCollectionAgentIdSchema), userController.getMembersByCollectionAgentId);
 router.post('/collection-agent/customer-details', authMiddleware.authenticateToken, validate(userValidation.getCustomerDetailsByIdSchema), userController.getCustomerDetailsById);
+router.post('/collection-agent/customer-detail', authMiddleware.authenticateToken, validate(userValidation.getCustomerDetailsByIdSchema), userController.getCustomerDetailsById);
 router.post('/collection-agent/visit-history', authMiddleware.authenticateToken, validate(userValidation.getVisitHistorySchema), userController.getVisitHistory);
 router.post('/collection-agent/visit-details', authMiddleware.authenticateToken, validate(userValidation.getVisitDetailsByIdSchema), userController.getVisitDetailsById);
 router.post('/collection-agent/customer-visit', authMiddleware.authenticateToken, validate(userValidation.storeCustomerVisitSchema), userController.storeCustomerVisit);

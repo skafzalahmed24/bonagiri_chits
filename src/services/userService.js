@@ -5,7 +5,7 @@ const {
     Member, Route, Area, ChitsGroup, Company, ChitsInstallment, Enrollment,
     UpcomingChit, UpcomingChitInterest, CustomerPayment, GroupUnderStaticList,
     Auction, CollectionAgentAmount, FixedSchemeChitsConfiguration,
-    NotificationHistory, MemberDocument,
+    NotificationHistory, MemberDocument, CustomerVisit, Gallery,
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
@@ -144,7 +144,14 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
             return errorResponse(res, statusCodes.NOT_FOUND, 'No enrollment records found for this subscriber');
         }
 
-        const resolvedData = await Promise.all(enrollments.map(async (enrollment) => {
+        const uniqueGroupIds = new Set();
+        const uniqueEnrollments = enrollments.filter(e => {
+            if (uniqueGroupIds.has(e.group_id)) return false;
+            uniqueGroupIds.add(e.group_id);
+            return true;
+        });
+
+        const resolvedData = await Promise.all(uniqueEnrollments.map(async (enrollment) => {
             const group = await ChitsGroup.findOne({
                 where: { id: enrollment.group_id },
                 attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'scheme_configuration_id']
@@ -596,7 +603,7 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
                 if (groupStatus === 1) {
                     isMatch = true;
                     const isAuctionToday = group.auction_date === simulatedTodayStr;
-                    badgeLabel = 1;
+                    badgeLabel = isAuctionToday ? 1 : 2;
                     timingLabel = isAuctionToday ? 'Today' : (group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Today');
                 }
             } else if (typeInt === 2) {
@@ -894,7 +901,16 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                 : null;
 
             const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
-            const days_left = !isOverdue ? Math.ceil((dueDate.getTime() - simulatedNow.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+            
+            let countdownStart = new Date(simulatedNow);
+            if (group && group.auction_date) {
+                const groupAuctionDate = new Date(group.auction_date);
+                groupAuctionDate.setHours(0, 0, 0, 0);
+                if (groupAuctionDate > countdownStart) {
+                    countdownStart = groupAuctionDate;
+                }
+            }
+            const days_left = !isOverdue ? Math.ceil((dueDate.getTime() - countdownStart.getTime()) / (1000 * 60 * 60 * 24)) : 0;
 
             nextPaymentDue = {
                 installment_no: upcomingInstallment.installment_no,
@@ -2585,22 +2601,29 @@ const getCustomerDetailsByIdService = async (res, payload) => {
         }));
 
         // Get last visit
-        const lastVisit = await CustomerVisit.findOne({
-            where: { member_id: member.id },
-            order: [['createdAt', 'DESC']],
-            include: [{
-                model: Member,
-                as: 'collection_agent',
-                attributes: ['name']
-            }]
-        });
+        let visitDetails = null;
+        try {
+            const lastVisit = await CustomerVisit.findOne({
+                where: { member_id: member.id },
+                order: [['createdAt', 'DESC']],
+                include: [{
+                    model: Member,
+                    as: 'collection_agent',
+                    attributes: ['name']
+                }]
+            });
 
-        const visitDetails = lastVisit ? {
-            date_time: lastVisit.createdAt,
-            visited_by: lastVisit.collection_agent ? lastVisit.collection_agent.name : null,
-            customer_vistor_status: lastVisit.customer_vistor_status,
-            customer_visitor_type: lastVisit.visitor_type
-        } : null;
+            if (lastVisit) {
+                visitDetails = {
+                    date_time: lastVisit.createdAt,
+                    visited_by: lastVisit.collection_agent ? lastVisit.collection_agent.name : null,
+                    customer_vistor_status: lastVisit.customer_vistor_status,
+                    customer_visitor_type: lastVisit.visitor_type
+                };
+            }
+        } catch (dbError) {
+            console.error('Error fetching CustomerVisit (table might not exist):', dbError.message);
+        }
 
         const responseData = {
             member_name: member.name,
@@ -2632,17 +2655,22 @@ const getVisitHistoryService = async (res, payload) => {
             return errorResponse(res, statusCodes.BAD_REQUEST, 'Member not found');
         }
 
-        const visits = await CustomerVisit.findAndCountAll({
-            where: { member_id: member.id },
-            limit,
-            offset,
-            order: [['createdAt', 'DESC']],
-            include: [{
-                model: Member,
-                as: 'collection_agent',
-                attributes: ['name']
-            }]
-        });
+        let visits = { count: 0, rows: [] };
+        try {
+            visits = await CustomerVisit.findAndCountAll({
+                where: { member_id: member.id },
+                limit,
+                offset,
+                order: [['createdAt', 'DESC']],
+                include: [{
+                    model: Member,
+                    as: 'collection_agent',
+                    attributes: ['name']
+                }]
+            });
+        } catch (dbError) {
+            console.error('Error fetching CustomerVisit history (table might not exist):', dbError.message);
+        }
 
         const formattedVisits = visits.rows.map(visit => ({
             id: visit.id,
