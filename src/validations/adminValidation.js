@@ -1106,5 +1106,10 @@ module.exports = {
   updateCustomerVisitStatusSchema: Joi.object({
     id: Joi.number().integer().required(),
     customer_vistor_status: Joi.number().integer().valid(0, 1, 3).required()
+  }),
+  getMemberReferralsSchema: Joi.object({
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    search: Joi.string().allow('', null).optional()
   })
 };

@@ -5,7 +5,7 @@ const {
     Member, Route, Area, ChitsGroup, Company, ChitsInstallment, Enrollment,
     UpcomingChit, UpcomingChitInterest, CustomerPayment, GroupUnderStaticList,
     Auction, CollectionAgentAmount, FixedSchemeChitsConfiguration,
-    NotificationHistory, MemberDocument, CustomerVisit, Gallery,
+    NotificationHistory, MemberDocument, CustomerVisit, Gallery, MemberReferral,
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
@@ -1805,6 +1805,7 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             id: member.id,
             name: member.name,
             member_id: member.member_id,
+            profile_image: member.upload_image,
             gender: member.gender,
             group_name: group_names,
             total_due,
@@ -2245,7 +2246,8 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
             member_code: subscriber ? (subscriber.member_id || `#${subscriber.id}`) : null,
             company_name: company ? company.company_name : 'Bonagiri Chits',
             company_address: company ? company.company_address : '',
-            subscription_amount: inst.payable_amount || (group ? (group.chit_amount / group.total_months) : 0)
+            subscription_amount: inst.payable_amount || (group ? (group.chit_amount / group.total_months) : 0),
+            collection_agent_amounts: submission || null
         };
 
         return successResponse(res, statusCodes.OK, 'Receipt retrieved successfully', responseData);
@@ -2527,7 +2529,7 @@ const getMembersByCollectionAgentIdService = async (res, collection_agent_id, se
             },
             limit,
             offset,
-            attributes: ['id', 'name', 'member_id', ['mobile_number', 'phone_number'], ['upload_image', 'profile_image']]
+            attributes: ['id', 'name', 'member_id', 'gender', ['mobile_number', 'phone_number'], ['upload_image', 'profile_image']]
         });
 
         const memberIds = members.map(m => m.id);
@@ -2574,7 +2576,7 @@ const getCustomerDetailsByIdService = async (res, payload) => {
         const { member_id } = payload;
         
         const member = await Member.findByPk(member_id, {
-            attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+            attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image', 'gender']
         });
 
         if (!member) {
@@ -2629,6 +2631,8 @@ const getCustomerDetailsByIdService = async (res, payload) => {
             member_name: member.name,
             member_id: member.member_id,
             member_phone_number: member.mobile_number,
+            gender: member.gender,
+            profile_image: member.upload_image,
             active_chit_groups_count: active_chit_groups.length,
             active_chit_groups: active_chit_groups,
             last_visit: visitDetails
@@ -2890,6 +2894,54 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
     }
 };
 
+const referMemberService = async (res, userPayload, payload) => {
+    try {
+        const { name, mobile_number } = payload;
+        
+        // userPayload.id is the ID of the logged in user/member
+        const refer_by_user_id = userPayload.id;
+
+        const newReferral = await MemberReferral.create({
+            refer_by_user_id,
+            name,
+            mobile_number,
+            status: 0
+        });
+
+        return successResponse(res, statusCodes.CREATED, 'Referral submitted successfully', newReferral);
+    } catch (error) {
+        console.error('Error in referMemberService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getMyReferralsService = async (res, userPayload, min = 0, max = 10, search = '') => {
+    try {
+        const limit = parseInt(max, 10);
+        const offset = parseInt(min, 10);
+        
+        const refer_by_user_id = userPayload.id;
+
+        const whereClause = { refer_by_user_id };
+        
+        if (search) {
+            whereClause.name = { [Op.iLike]: `%${search}%` };
+        }
+
+        const { count, rows } = await MemberReferral.findAndCountAll({
+            where: whereClause,
+            limit,
+            offset,
+            order: [['createdAt', 'DESC']]
+        });
+
+        return successResponse(res, statusCodes.OK, 'Referrals retrieved successfully', { count, rows });
+    } catch (error) {
+        console.error('Error in getMyReferralsService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
 module.exports = {
     getPaymentHistoryService,
     getPaymentReceiptService,
@@ -2921,5 +2973,7 @@ module.exports = {
     getVisitHistoryService,
     getVisitDetailsByIdService,
     storeCustomerVisitService,
-    getMemberLedgerService
+    getMemberLedgerService,
+    referMemberService,
+    getMyReferralsService
 };

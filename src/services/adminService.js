@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
@@ -45,7 +45,7 @@ const loginAdminService = async (res, email, password) => {
 
   if (superadminEmail && email === superadminEmail) {
     if (superadminPasswordHash && (await bcrypt.compare(password, superadminPasswordHash))) {
-      const user = { email: superadminEmail, role: 'superadmin', company_id: null };
+      const user = { email: superadminEmail, role: 'superadmin', company_id: null, gender: null, profile_image: null };
       const tokens = generateTokens(user);
       return successResponse(res, statusCodes.OK, 'Login success', { user, tokens });
     }
@@ -150,6 +150,8 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
         name: user.company_name || (user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user.name),
         type: user.type,
         role: role,
+        gender: user.gender || null,
+        profile_image: user.upload_image || null,
         is_favorites: user.is_favorites || [],
         introduced_as: introduced_as_details
       },
@@ -3131,7 +3133,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
         { 
           model: Member, 
           as: 'member', 
-          attributes: ['id', 'name', 'member_id', 'gender', 'other_info_user_code', 'createdAt'],
+          attributes: ['id', 'name', 'member_id', 'gender', 'other_info_user_code', 'createdAt', 'upload_image'],
           include: [
             { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
           ]
@@ -3180,8 +3182,9 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
         member_id: member.id || null,
         member_name: member.name || null,
         gender_dropdown: member.gender_dropdown || null,
+        profile_image: member.upload_image || null,
         other_info_user_code: member.other_info_user_code ? `MEM-${member.other_info_user_code}` : null,
-        registered_date: member.createdAt || null,
+        registered_date: member.createdAt ? new Date(member.createdAt).toISOString().split('T')[0] : null,
         status: config.status
       };
     });
@@ -5196,6 +5199,37 @@ const searchEnquiryService = async (res, reqBody) => {
     }
 };
 
+const getMemberReferralsService = async (res, min = 0, max = 10, search = '') => {
+  try {
+    const limit = parseInt(max, 10);
+    const offset = parseInt(min, 10);
+
+    const whereClause = {};
+    if (search) {
+      whereClause.name = { [Op.iLike]: `%${search}%` };
+    }
+
+    const { count, rows } = await MemberReferral.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']],
+      include: [
+        {
+          model: Member,
+          as: 'referrer',
+          attributes: ['id', 'name', 'member_id', 'mobile_number']
+        }
+      ]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Member referrals retrieved successfully', { count, rows });
+  } catch (error) {
+    console.error('Error in getMemberReferralsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -5345,5 +5379,6 @@ module.exports = {
   updateCustomerVisitStatusService,
   getLedgerReportService,
   getStatutoryReportService,
-  searchEnquiryService
+  searchEnquiryService,
+  getMemberReferralsService
 };

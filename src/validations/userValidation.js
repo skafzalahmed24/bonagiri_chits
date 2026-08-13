@@ -199,6 +199,17 @@ const markNotificationReadSchema = Joi.object({
   notification_id: Joi.string().uuid().required()
 });
 
+const referMemberSchema = Joi.object({
+  name: Joi.string().required(),
+  mobile_number: Joi.string().required()
+});
+
+const getMyReferralsSchema = Joi.object({
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional(),
+  search: Joi.string().allow('', null).optional()
+});
+
 module.exports = {  
   getHomeRecordSchema,
   getAllHomeRecordsSchema,
@@ -231,5 +242,7 @@ module.exports = {
   getAllGallerySchema,
   registerTokenSchema,
   getNotificationHistorySchema,
-  markNotificationReadSchema
+  markNotificationReadSchema,
+  referMemberSchema,
+  getMyReferralsSchema
 };

@@ -1497,6 +1497,16 @@ const getStatutoryReport = async (req, res) => {
   }
 };
 
+const getMemberReferrals = async (req, res) => {
+  try {
+    const { min, max, search } = req.body;
+    return await adminService.getMemberReferralsService(res, min, max, search);
+  } catch (error) {
+    console.error('Error in getMemberReferrals:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const searchEnquiry = async (req, res) => {
   try {
     return await adminService.searchEnquiryService(res, req.body);
@@ -1651,5 +1661,6 @@ module.exports = {
   updateCustomerVisitStatus,
   getLedgerReport,
   getStatutoryReport,
-  searchEnquiry
+  searchEnquiry,
+  getMemberReferrals
 };

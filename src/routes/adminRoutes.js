@@ -253,4 +253,7 @@ router.post('/reports/statutory', authMiddleware.authenticateToken, adminControl
 // enquiry route
 router.post('/enquiry/search', authMiddleware.authenticateToken, adminController.searchEnquiry);
 
+// member referrals
+router.post('/refer-members', authMiddleware.authenticateToken, validate(adminValidation.getMemberReferralsSchema), adminController.getMemberReferrals);
+
 module.exports = router;

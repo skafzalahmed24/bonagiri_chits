@@ -354,6 +354,25 @@ const getMemberLedger = async (req, res) => {
   }
 };
 
+const referMember = async (req, res) => {
+  try {
+    return await userService.referMemberService(res, req.user, req.body);
+  } catch (error) {
+    console.error('Error in referMember:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMyReferrals = async (req, res) => {
+  try {
+    const { min, max, search } = req.body;
+    return await userService.getMyReferralsService(res, req.user, min, max, search);
+  } catch (error) {
+    console.error('Error in getMyReferrals:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecord,
   getAllHomeRecords,
@@ -389,5 +408,7 @@ module.exports = {
   getVisitHistory,
   getVisitDetailsById,
   storeCustomerVisit,
-  getMemberLedger
+  getMemberLedger,
+  referMember,
+  getMyReferrals
 };
