@@ -2284,16 +2284,13 @@ const getMemberDocumentsService = async (res, userPayload, group_id, member_id) 
     }
 };
 
-const uploadMemberDocumentService = async (res, req, userPayload) => {
+const uploadMemberDocumentService = async (res, body, userPayload) => {
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
-        const { group_id, member_id, document_type, status, document_url: body_doc_url } = req.body;
+        const { group_id, member_id, document_type, status, document_url: body_doc_url } = body;
 
         let document_url = body_doc_url || null;
-        if (req.file) {
-            document_url = `/uploads/${req.file.filename}`;
-        }
 
         let docRecord = await MemberDocument.findOne({
             where: { group_id, member_id }
