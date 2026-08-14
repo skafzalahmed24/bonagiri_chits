@@ -135,7 +135,7 @@ router.post('/member/businesslist-under-members', authMiddleware.authenticateTok
 
 //get by id routes 
 router.post('/company/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCompanyById);
-router.post('/member/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getByIdSchema), adminController.getMemberById);
+router.post('/member/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermissionOrUserRole(MODULES.M_MEMBERS, 'member'), validate(adminValidation.getByIdSchema), adminController.getMemberById);
 router.post('/route/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ROUTES), validate(adminValidation.getByIdSchema), adminController.getRouteById);
 router.post('/area/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AREAS), validate(adminValidation.getByIdSchema), adminController.getAreaById);
 router.post('/chits-group/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_CHITS), validate(adminValidation.getByIdSchema), adminController.getChitsGroupById);

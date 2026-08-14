@@ -176,7 +176,8 @@ const uploadMemberDocumentSchema = Joi.object({
   group_id: Joi.string().uuid().required(),
   member_id: Joi.number().integer().required(),
   document_type: Joi.string().valid('aadhar', 'bank_id', 'upi_details', 'certificates').required(),
-  document_url: Joi.string().required()
+  document_url: Joi.string().allow('', null).optional(),
+  status: Joi.number().integer().valid(0, 1).optional()
 });
 
 

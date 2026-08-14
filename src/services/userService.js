@@ -2269,11 +2269,11 @@ const getMemberDocumentsService = async (res, userPayload, group_id, member_id) 
 
         const types = ['aadhar', 'bank_id', 'upi_details', 'certificates'];
         const result = types.map(type => {
-            const doc = documents[type] || { url: null, status: null };
+            const doc = documents[type] || { url: null, status: 0 };
             return {
                 document_type: type,
                 document_url: doc.url,
-                status: doc.status
+                status: doc.status !== undefined && doc.status !== null ? doc.status : 0
             };
         });
 
@@ -2288,13 +2288,12 @@ const uploadMemberDocumentService = async (res, req, userPayload) => {
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
-        const { group_id, member_id, document_type } = req.body;
+        const { group_id, member_id, document_type, status, document_url: body_doc_url } = req.body;
 
-        if (!req.file) {
-            return errorResponse(res, statusCodes.BAD_REQUEST, 'Document file is required');
+        let document_url = body_doc_url || null;
+        if (req.file) {
+            document_url = `/uploads/${req.file.filename}`;
         }
-
-        const document_url = `/uploads/${req.file.filename}`;
 
         let docRecord = await MemberDocument.findOne({
             where: { group_id, member_id }
@@ -2310,13 +2309,23 @@ const uploadMemberDocumentService = async (res, req, userPayload) => {
         }
 
         let documents = { ...docRecord.documents };
-        documents[document_type] = { url: document_url, status: 0 };
+        let existingDoc = documents[document_type] || { url: null, status: 0 };
+
+        if (document_url !== null) {
+            existingDoc.url = document_url;
+        }
+
+        if (status !== undefined && status !== null && status !== '') {
+            existingDoc.status = parseInt(status, 10);
+        }
+
+        documents[document_type] = existingDoc;
 
         await docRecord.update({ documents, uploaded_by: userPayload.id });
 
-        return successResponse(res, statusCodes.OK, 'Document uploaded successfully', {
-            document_url,
-            status: 0
+        return successResponse(res, statusCodes.OK, 'Document updated successfully', {
+            document_url: existingDoc.url,
+            status: existingDoc.status
         });
     } catch (error) {
         console.error('Error in uploadMemberDocumentService:', error);

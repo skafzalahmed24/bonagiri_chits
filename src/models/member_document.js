@@ -34,6 +34,11 @@ module.exports = (sequelize, DataTypes) => {
     uploaded_by: {
       type: DataTypes.INTEGER,
       allowNull: true
+    },
+    status: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0
     }
   }, {
     sequelize,

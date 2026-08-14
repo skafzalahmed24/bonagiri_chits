@@ -60,6 +60,14 @@ const requirePermission = (moduleId) => (req, res, next) => {
   return errorResponse(res, statusCodes.FORBIDDEN, `You don't have permission to access this module`);
 };
 
+const requirePermissionOrUserRole = (moduleId, extraRole) => (req, res, next) => {
+  if (!req.user) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+  if (req.user.role === extraRole) return next();
+  if (req.user.role === 'company') return next();
+  if (req.user.role === 'staff' && req.user.permissions?.[moduleId]?.view) return next();
+  return errorResponse(res, statusCodes.FORBIDDEN, `You don't have permission to access this module`);
+};
+
 const requireRole = (allowedRoles) => (req, res, next) => {
   const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
   if (!req.user?.role || !roles.includes(req.user.role)) {
@@ -72,5 +80,6 @@ module.exports = {
   authenticateDefaultToken,
   authenticateToken,
   requirePermission,
+  requirePermissionOrUserRole,
   requireRole
 };
