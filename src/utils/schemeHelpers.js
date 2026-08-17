@@ -102,62 +102,31 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
     ...options 
   });
   
-  const nonWinningEnrollments = allEnrollments.filter(e => e.id !== winnerEnrollmentId);
-  
-  // Use N - 1 members for dividend division instead of total members
-  const divisor = nonWinningEnrollments.length > 0 ? nonWinningEnrollments.length : 1;
+  // Act standard: divide dividend among ALL N members (including winner)
+  const divisor = allEnrollments.length > 0 ? allEnrollments.length : 1;
   const dividendPerMember = auctionData.dividend / divisor;
   const subscription = auctionData.subscription_amount;
 
-  for (const enrollment of nonWinningEnrollments) {
-    // 1. Compute cumulative balance by adding new dividend to existing balance
-    // Note: dividend_credit_balance is accumulated for future settlement/reporting purposes.
-    // In this realistic model, each month has its own auction and dividend, so we do not pre-reduce future installments.
+  // Apply dividend to ALL members (including winner)
+  for (const enrollment of allEnrollments) {
+    // Track cumulative dividends for accounting/reporting
     const currentBalance = parseFloat(enrollment.dividend_credit_balance) || 0;
     const newBalance = currentBalance + dividendPerMember;
-    
-    // 2. Update the enrollment row with the new cumulative balance
     await enrollment.update({ dividend_credit_balance: newBalance }, options);
-    
-    // 3. Calculate new payable using the full compounded balance
-    const newPayable = subscription - newBalance;
-    
+
+    // Use THIS MONTH's dividend only — not the cumulative balance
+    // (dividend_credit_balance is for accounting; installment uses single-month dividend)
+    const newPayable = subscription - dividendPerMember;
     await ChitsInstallment.update(
       { payable_amount: Math.max(0, newPayable) },
-      { 
-        where: { 
-          enrollment_id: enrollment.id, 
-          installment_no: auctionData.auction_number 
-        }, 
-        ...options 
-      }
+      { where: { enrollment_id: enrollment.id, installment_no: auctionData.auction_number }, ...options }
     );
   }
 
-  // Set winner's current installment to 0
-  await ChitsInstallment.update(
-    { payable_amount: 0 },
-    { 
-      where: { 
-        group_id: groupId, 
-        enrollment_id: winnerEnrollmentId, 
-        installment_no: auctionData.auction_number 
-      }, 
-      ...options 
-    }
-  );
-  
-  // Set winner's future installments to base subscription
+  // Winner's future installments stay at base subscription (unchanged)
   await ChitsInstallment.update(
     { payable_amount: subscription },
-    { 
-      where: { 
-        group_id: groupId, 
-        enrollment_id: winnerEnrollmentId, 
-        installment_no: { [Op.gt]: auctionData.auction_number } 
-      }, 
-      ...options 
-    }
+    { where: { group_id: groupId, enrollment_id: winnerEnrollmentId, installment_no: { [Op.gt]: auctionData.auction_number } }, ...options }
   );
 }
 
@@ -168,10 +137,10 @@ function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, c
   const gst = commission * (gstPct / 100);
   const bidDiscount = chitAmount - bidAmount;
   const totalDividend = Math.max(0, bidDiscount - commission - gst);
-  const divisor = memberCount > 1 ? memberCount - 1 : 1; // exclude the winner
+  const divisor = memberCount > 0 ? memberCount : 1; // all N members (Act standard)
   const dividendPerMember = totalDividend / divisor;
   const netPayable = subscription - dividendPerMember;
-  const winnerReceives = bidAmount - commission - gst;
+  const winnerReceives = bidAmount; // full bid amount — commission deducted from pool only, not from winner
   
   return { subscription, commission, gst, bidDiscount, totalDividend, dividendPerMember, netPayable, winnerReceives };
 }

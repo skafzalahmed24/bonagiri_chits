@@ -51,8 +51,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     receipt_number: {
       type: DataTypes.STRING,
-      allowNull: true,
-      unique: true
+      allowNull: true
     },
     recorded_by_id: {
       type: DataTypes.STRING,
