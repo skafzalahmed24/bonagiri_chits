@@ -2454,7 +2454,7 @@ const getMembersByGroupIdService = async (res, reqUser, group_id, search, min, m
                     model: Member,
                     as: 'subscriber',
                     where: Object.keys(memberWhere).length ? memberWhere : undefined,
-                    attributes: ['id', 'name', 'member_id', ['mobile_number', 'phone_number'], ['upload_image', 'profile_image']]
+                    attributes: ['id', 'name', 'member_id', ['mobile_number', 'phone_number'], ['upload_image', 'profile_image'], 'gender']
                 }
             ]
         });
@@ -2622,8 +2622,23 @@ const getCustomerDetailsByIdService = async (res, payload) => {
             });
 
             if (lastVisit) {
+                const formatDateTime = (dateStr) => {
+                    if (!dateStr) return null;
+                    const date = new Date(dateStr);
+                    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                    const d = date.getDate().toString().padStart(2, '0');
+                    const m = months[date.getMonth()];
+                    const y = date.getFullYear();
+                    let hours = date.getHours();
+                    const minutes = date.getMinutes().toString().padStart(2, '0');
+                    const ampm = hours >= 12 ? 'PM' : 'AM';
+                    hours = hours % 12;
+                    hours = hours ? hours : 12; 
+                    return `${d} ${m} ${y}, ${hours}:${minutes} ${ampm}`;
+                };
+
                 visitDetails = {
-                    date_time: lastVisit.createdAt,
+                    date_time: formatDateTime(lastVisit.createdAt),
                     visited_by: lastVisit.collection_agent ? lastVisit.collection_agent.name : null,
                     customer_vistor_status: lastVisit.customer_vistor_status,
                     customer_visitor_type: lastVisit.visitor_type
@@ -2658,7 +2673,7 @@ const getVisitHistoryService = async (res, payload) => {
         const offset = parseInt(min, 10) || 0;
 
         const member = await Member.findByPk(member_id, {
-            attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+            attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image', 'gender']
         });
 
         if (!member) {
@@ -2682,9 +2697,24 @@ const getVisitHistoryService = async (res, payload) => {
             console.error('Error fetching CustomerVisit history (table might not exist):', dbError.message);
         }
 
+        const formatDateTime = (dateStr) => {
+            if (!dateStr) return null;
+            const date = new Date(dateStr);
+            const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            const d = date.getDate().toString().padStart(2, '0');
+            const m = months[date.getMonth()];
+            const y = date.getFullYear();
+            let hours = date.getHours();
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            hours = hours % 12;
+            hours = hours ? hours : 12; 
+            return `${d} ${m} ${y}, ${hours}:${minutes} ${ampm}`;
+        };
+
         const formattedVisits = visits.rows.map(visit => ({
             id: visit.id,
-            date_time: visit.createdAt,
+            date_time: formatDateTime(visit.createdAt),
             visited_by: visit.collection_agent ? visit.collection_agent.name : null,
             customer_vistor_status: visit.customer_vistor_status,
             customer_visitor_type: visit.visitor_type
@@ -2694,6 +2724,7 @@ const getVisitHistoryService = async (res, payload) => {
             member_name: member.name,
             member_id: member.member_id,
             member_phone_number: member.mobile_number,
+            gender: member.gender,
             upload_image: member.upload_image,
             visits_count: visits.count,
             visits: formattedVisits
@@ -2722,9 +2753,24 @@ const getVisitDetailsByIdService = async (res, payload) => {
             return errorResponse(res, statusCodes.NOT_FOUND, 'Visit not found');
         }
 
+        const formatDateTime = (dateStr) => {
+            if (!dateStr) return null;
+            const date = new Date(dateStr);
+            const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            const d = date.getDate().toString().padStart(2, '0');
+            const m = months[date.getMonth()];
+            const y = date.getFullYear();
+            let hours = date.getHours();
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            hours = hours % 12;
+            hours = hours ? hours : 12; 
+            return `${d} ${m} ${y}, ${hours}:${minutes} ${ampm}`;
+        };
+
         const responseData = {
             id: visit.id,
-            date_time: visit.createdAt,
+            date_time: formatDateTime(visit.createdAt),
             visited_by: visit.collection_agent ? `${visit.collection_agent.name} (Agent)` : null,
             agent_id: visit.collection_agent ? visit.collection_agent.member_id : null,
             visit_type: visit.visitor_type,
@@ -2800,13 +2846,21 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
         whereClause = {};
 
         if (from_date && to_date) {
+            const start = new Date(from_date);
+            start.setUTCHours(0, 0, 0, 0);
+            const end = new Date(to_date);
+            end.setUTCHours(23, 59, 59, 999);
             whereClause.createdAt = {
-                [Op.between]: [new Date(`${from_date}T00:00:00.000Z`), new Date(`${to_date}T23:59:59.999Z`)]
+                [Op.between]: [start, end]
             };
         } else if (from_date) {
-            whereClause.createdAt = { [Op.gte]: new Date(`${from_date}T00:00:00.000Z`) };
+            const start = new Date(from_date);
+            start.setUTCHours(0, 0, 0, 0);
+            whereClause.createdAt = { [Op.gte]: start };
         } else if (to_date) {
-            whereClause.createdAt = { [Op.lte]: new Date(`${to_date}T23:59:59.999Z`) };
+            const end = new Date(to_date);
+            end.setUTCHours(23, 59, 59, 999);
+            whereClause.createdAt = { [Op.lte]: end };
         }
 
         const payments = await CustomerPayment.findAll({

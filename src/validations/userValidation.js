@@ -211,7 +211,7 @@ const getMyReferralsSchema = Joi.object({
   search: Joi.string().allow('', null).optional()
 });
 
-module.exports = {  
+module.exports = {
   getHomeRecordSchema,
   getAllHomeRecordsSchema,
   getUpcomingChitsSchema,

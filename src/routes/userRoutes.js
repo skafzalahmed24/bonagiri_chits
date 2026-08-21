@@ -62,7 +62,7 @@ router.post('/notifications/history', authMiddleware.authenticateToken, validate
 router.post('/notifications/mark-read', authMiddleware.authenticateToken, validate(userValidation.markNotificationReadSchema), userController.markNotificationRead);
 
 // Member referral route
-router.post('/refer-member', authMiddleware.authenticateToken, validate(userValidation.referMemberSchema), userController.referMember);
+router.post('/post-refer-member', authMiddleware.authenticateToken, validate(userValidation.referMemberSchema), userController.referMember);
 router.post('/my-referrals', authMiddleware.authenticateToken, validate(userValidation.getMyReferralsSchema), userController.getMyReferrals);
 
 module.exports = router;

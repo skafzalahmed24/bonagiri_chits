@@ -129,7 +129,7 @@ const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
   try {
     const data = req.body;
     const configId = data.configure_business_agent_id;
-    
+
     if (configId) {
       const config = await ConfigureBusinessAgentCommission.findByPk(configId);
       if (!config || config.business_agent_id !== req.user.id) {
@@ -138,7 +138,7 @@ const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
     } else {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'configure_business_agent_id is required');
     }
-    
+
     return await adminService.storeOrUpdateHistoryBusinessAgentService(res, data);
   } catch (error) {
     console.error('Error in storeOrUpdateHistoryBusinessAgent:', error);
