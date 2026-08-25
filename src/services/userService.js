@@ -47,21 +47,47 @@ const getHomeRecordService = async (res, userPayload) => {
             order: [['installment_no', 'ASC']]
         });
 
-        // 4. Static payload for upcoming auctions as requested
-        const upcoming_auction = [
-            {
-                date: "12",
-                month_name: "April",
-                time: "10:00 AM",
-                current_bid_price: "5000.00"
+        // 4. Dynamic payload for upcoming auctions (matching logic from getBidsService type=2)
+        const upcoming_auction = [];
+        const allEnrollments = await Enrollment.findAll({
+            where: {
+                subscriber_id,
+                delete_status: 0
             },
-            {
-                date: "25",
-                month_name: "May",
-                time: "02:30 PM",
-                current_bid_price: "7500.00"
+            include: [
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    where: { is_deleted_status: 0, chits_group_status: 0 }
+                }
+            ]
+        });
+
+        const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+        for (const e of allEnrollments) {
+            const g = e.group;
+            if (g && g.auction_date) {
+                const auctionDate = new Date(g.auction_date);
+                if (!isNaN(auctionDate.getTime())) {
+                    let timeStr = "10:00 AM";
+                    if (g.auction_from) {
+                        const [hours, minutes] = g.auction_from.split(':');
+                        const h = parseInt(hours, 10);
+                        const ampm = h >= 12 ? 'PM' : 'AM';
+                        const h12 = h % 12 || 12;
+                        timeStr = `${h12.toString().padStart(2, '0')}:${minutes} ${ampm}`;
+                    }
+                    
+                    upcoming_auction.push({
+                        date: auctionDate.getDate().toString(),
+                        month_name: months[auctionDate.getMonth()],
+                        time: timeStr,
+                        current_bid_price: parseFloat(g.chit_amount || 0).toFixed(2)
+                    });
+                }
             }
-        ];
+        }
 
         // 5. Fetch the latest upcoming chit record (same logic as getUpcomingChitsService, limit 1)
         let latest_upcoming_chit = null;
