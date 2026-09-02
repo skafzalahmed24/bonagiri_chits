@@ -90,12 +90,17 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Invalid credentials');
 
     // Update device information
+    const crypto = require('crypto');
     const { device_id, device_unique_id, platform_type, device_details } = deviceInfo;
+    const activeDeviceUniqueId = (device_unique_id && typeof device_unique_id === 'string' && device_unique_id.trim() !== '')
+      ? device_unique_id.trim()
+      : crypto.randomUUID();
+
     await user.update({
-      device_id,
-      device_unique_id,
-      platform_type,
-      device_details
+      device_id: device_id || null,
+      device_unique_id: activeDeviceUniqueId,
+      platform_type: platform_type || null,
+      device_details: device_details || null
     });
 
     let staffPermissions = null;
@@ -138,7 +143,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       company_id: role !== 'company' ? user.company_id : undefined,
       permissions: role === 'staff' ? staffPermissions : undefined,
       introduced_as: introduced_as_details.map(i => i.id),
-      device_unique_id
+      device_unique_id: activeDeviceUniqueId
     };
     const tokens = generateTokens(payload);
 
@@ -302,8 +307,46 @@ const resetPasswordService = async (res, user_code, type, password, reset_token)
 
 const refreshTokenService = async (res, refresh_token) => {
   try {
+    const { RevokedToken, Company, StaffUser, Member } = require('../models');
+    const isRevoked = await RevokedToken.findOne({ where: { token: refresh_token } });
+    if (isRevoked) {
+      return errorResponse(res, statusCodes.UNAUTHORIZED, 'Token has been revoked or logged out');
+    }
+
     const decoded = verifyRefreshToken(refresh_token);
-    // On refresh, we could also verify if device_unique_id still matches the DB
+
+    if (decoded.role === 'company') {
+      const user = await Company.findByPk(decoded.id, {
+        attributes: ['id', 'device_unique_id', 'is_deleted_status', 'status']
+      });
+      if (!user || user.is_deleted_status !== 0 || user.status === 0) {
+        return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
+      }
+      if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
+        return errorResponse(res, statusCodes.UNAUTHORIZED, 'Another device has been logged in');
+      }
+    } else if (decoded.role === 'staff') {
+      const user = await StaffUser.findByPk(decoded.id, {
+        attributes: ['id', 'device_unique_id', 'is_deleted_status', 'is_active']
+      });
+      if (!user || user.is_deleted_status !== 0 || !user.is_active) {
+        return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
+      }
+      if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
+        return errorResponse(res, statusCodes.UNAUTHORIZED, 'Another device has been logged in');
+      }
+    } else if (decoded.role === 'member') {
+      const user = await Member.findByPk(decoded.id, {
+        attributes: ['id', 'device_unique_id', 'is_deleted_status', 'is_verified']
+      });
+      if (!user || user.is_deleted_status !== 0 || !user.is_verified) {
+        return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
+      }
+      if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
+        return errorResponse(res, statusCodes.UNAUTHORIZED, 'Another device has been logged in');
+      }
+    }
+
     const payload = { ...decoded };
     delete payload.iat;
     delete payload.exp;
@@ -3949,7 +3992,7 @@ const logoutService = async (req, res, userPayload) => {
       await user.update({ device_id: null, device_unique_id: null, fcm_token: null });
     } else if (role === 'staff') {
       const user = await StaffUser.findOne({ where: { id, company_id: companyId } });
-      if (user) await user.update({ fcm_token: null });
+      if (user) await user.update({ device_id: null, device_unique_id: null, fcm_token: null });
     } else {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid user role for logout');
     }

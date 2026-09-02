@@ -586,8 +586,16 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
         });
 
         if (!enrollments || enrollments.length === 0) {
-            return successResponse(res, statusCodes.OK, 'No bids found', []);
+            return successResponse(res, statusCodes.OK, 'No bids found', { count: 0, rows: [] });
         }
+
+        // Deduplicate enrollments by group_id
+        const uniqueGroupIds = new Set();
+        const uniqueEnrollments = enrollments.filter(e => {
+            if (uniqueGroupIds.has(e.group_id)) return false;
+            uniqueGroupIds.add(e.group_id);
+            return true;
+        });
 
         // 2. Filter groups based on type
         const resolvedRows = [];
@@ -610,7 +618,10 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
             return `${day}${suffix} ${month} ${year}`;
         };
 
-        for (const e of enrollments) {
+        const simulatedNow = new Date(globalSimulatedNow);
+        const simulatedTodayStr = simulatedNow.toISOString().split('T')[0];
+
+        for (const e of uniqueEnrollments) {
             const group = e.group;
             if (!group) continue;
 
@@ -621,26 +632,25 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
             const groupStatus = Number(group.chits_group_status); // 0 - Not started, 1 - started, 2 - completed
             const typeInt = Number(type);
 
-            // Define simulated today outside the inner block so it can be used for is_today property
-            const simulatedNow = new Date(globalSimulatedNow);
-            const simulatedTodayStr = simulatedNow.toISOString().split('T')[0];
+            const isAuctionToday = group.auction_date === simulatedTodayStr;
+            const isAuctionFuture = group.auction_date && group.auction_date > simulatedTodayStr;
+            const isAuctionPast = group.auction_date && group.auction_date < simulatedTodayStr;
 
             if (typeInt === 1) {
-                if (groupStatus === 1) {
+                if (groupStatus === 1 && isAuctionToday) {
                     isMatch = true;
-                    const isAuctionToday = group.auction_date === simulatedTodayStr;
-                    badgeLabel = isAuctionToday ? 1 : 2;
-                    timingLabel = isAuctionToday ? 'Today' : (group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Today');
+                    badgeLabel = 1;
+                    timingLabel = 'Today';
                 }
             } else if (typeInt === 2) {
-                if (groupStatus === 0) {
+                if (groupStatus === 0 || (groupStatus === 1 && isAuctionFuture)) {
                     isMatch = true;
                     badgeLabel = 2;
                     timingLabel = group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Soon';
                 }
             } else if (typeInt === 3) {
                 const pastAuctionsCount = await Auction.count({ where: { group_id: group.id } });
-                if (groupStatus === 2 || pastAuctionsCount > 0) {
+                if (groupStatus === 2 || pastAuctionsCount > 0 || (groupStatus === 1 && isAuctionPast)) {
                     isMatch = true;
                     badgeLabel = 3;
                     timingLabel = groupStatus === 2 ? 'Closed' : 'Active (Has History)';
@@ -661,7 +671,7 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
                     badge_label: badgeLabel,
                     timing_label: timingLabel,
                     auction_date: group.auction_date,
-                    is_today: group.auction_date === simulatedTodayStr
+                    is_today: isAuctionToday
                 });
             }
         }
@@ -2346,7 +2356,7 @@ const uploadMemberDocumentService = async (res, body, userPayload) => {
 
         await docRecord.update({ documents, uploaded_by: userPayload.id });
 
-        return successResponse(res, statusCodes.OK, 'Document updated successfully', {
+        return successResponse(res, statusCodes.OK, 'Amount collected successfully', {
             document_url: existingDoc.url,
             status: existingDoc.status
         });
@@ -2629,9 +2639,19 @@ const getCustomerDetailsByIdService = async (res, payload) => {
             attributes: ['group_position_number']
         });
 
-        const active_chit_groups = activeChits.map(chit => ({
-            chit_name: chit.group.group_name,
-            slot_id: chit.group_position_number
+        const groupedChits = {};
+        activeChits.forEach(chit => {
+            const name = chit.group ? chit.group.group_name : 'Unknown';
+            const slot = chit.group_position_number ? `#${chit.group_position_number}` : '#NA';
+            if (!groupedChits[name]) {
+                groupedChits[name] = [];
+            }
+            groupedChits[name].push(slot);
+        });
+
+        const active_chit_groups = Object.keys(groupedChits).map(name => ({
+            chit_name: name,
+            slot_id: groupedChits[name].join(', ')
         }));
 
         // Get last visit

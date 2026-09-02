@@ -63,6 +63,22 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true,
     },
+    device_id: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    device_unique_id: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    platform_type: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    device_details: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
   }, {
     tableName: 'staff_user',
     timestamps: true,
