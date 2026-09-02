@@ -473,7 +473,16 @@ const getTermsPrivacySchema = Joi.object({
   })
 });
 
+const getMember360ReportSchema = Joi.object({
+  member_id: Joi.alternatives().try(Joi.number().integer(), Joi.string()).required().messages({
+    'any.required': 'Member ID is required',
+    'string.empty': 'Member ID cannot be empty'
+  }),
+  company_id: Joi.string().uuid().allow('', null).optional()
+});
+
 module.exports = {
+  getMember360ReportSchema,
   storeOrUpdateFAQSchema,
   getAllFAQSchema,
   deleteFAQSchema,

@@ -1,4 +1,5 @@
 const adminService = require('../services/adminService');
+const memberReportService = require('../services/memberReportService');
 const { errorResponse, successResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 
@@ -113,6 +114,17 @@ const getAllMemberDetails = async (req, res) => {
     return await adminService.getAllMemberDetailsService(res, comp_id, introduced_as, min, max, search);
   } catch (error) {
     console.error('Error in getAllMemberDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMember360Report = async (req, res) => {
+  try {
+    const { member_id } = req.body;
+    const companyId = await adminService.resolveCompanyIdForAssociation(req.user, req.body);
+    return await memberReportService.getMember360ReportService(res, companyId, member_id);
+  } catch (error) {
+    console.error('Error in getMember360Report:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1540,6 +1552,7 @@ module.exports = {
   resetPassword,
   storeOrUpdateMember,
   getAllMemberDetails,
+  getMember360Report,
   deleteMember,
   uploadDocument,
   storeOrUpdateRoute,

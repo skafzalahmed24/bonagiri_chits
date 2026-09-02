@@ -51,6 +51,8 @@ router.post('/company/delete', authMiddleware.authenticateToken, validate(adminV
 //member routes
 router.post('/member/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.memberValidator), adminController.storeOrUpdateMember);
 router.post('/member/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getAllMemberSchema), adminController.getAllMemberDetails);
+router.post('/member/report-360', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getMember360ReportSchema), adminController.getMember360Report);
+router.post('/member/overall-report', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getMember360ReportSchema), adminController.getMember360Report);
 router.post('/member/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.deleteMemberSchema), adminController.deleteMember);
 router.post('/member/verification/send-otp', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.sendMemberOtpSchema), adminController.sendMemberVerificationOtp);
 router.post('/member/verification/verify-otp', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.verifyMemberOtpSchema), adminController.verifyMemberOtp);
