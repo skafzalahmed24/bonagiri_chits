@@ -1,5 +1,6 @@
 const adminService = require('../services/adminService');
 const memberReportService = require('../services/memberReportService');
+const adminNotificationService = require('../services/adminNotificationService');
 const { errorResponse, successResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 
@@ -44,8 +45,8 @@ const deleteCompany = async (req, res) => {
 
 const loginCompany = async (req, res) => {
   try {
-    const { user_code, company_password, type, device_id, device_unique_id, platform_type, device_details } = req.body;
-    const deviceInfo = { device_id, device_unique_id, platform_type, device_details };
+    const { user_code, company_password, type, fcm_token, device_token, device_id, device_unique_id, platform_type, device_details } = req.body;
+    const deviceInfo = { fcm_token: fcm_token || device_token, device_id, device_unique_id, platform_type, device_details };
     return await adminService.loginCompanyService(res, user_code, company_password, type, deviceInfo);
   } catch (error) {
     console.error('Error in loginCompany:', error);
@@ -1360,8 +1361,7 @@ const getDashboardSummary = async (req, res) => {
 
 const registerAdminToken = async (req, res) => {
   try {
-    const { fcm_token } = req.body;
-    return await adminService.registerAdminTokenService(res, req.user, fcm_token);
+    return await adminNotificationService.registerAdminTokenService(res, req.user, req.body);
   } catch (error) {
     console.error('Error in registerAdminToken:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1370,9 +1370,19 @@ const registerAdminToken = async (req, res) => {
 
 const sendManualNotification = async (req, res) => {
   try {
-    return await adminService.sendManualNotificationService(res, req.user, req.body);
+    return await adminNotificationService.sendManualNotificationService(res, req.user, req.body);
   } catch (error) {
     console.error('Error in sendManualNotification:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAdminNotificationHistory = async (req, res) => {
+  try {
+    const { min, max, search } = req.body || {};
+    return await adminNotificationService.getAdminNotificationHistoryService(res, req.user, min, max, search);
+  } catch (error) {
+    console.error('Error in getAdminNotificationHistory:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1658,6 +1668,7 @@ module.exports = {
   getDashboardSummary,
   registerAdminToken,
   sendManualNotification,
+  getAdminNotificationHistory,
   storeDirectPayment,
   getAllAuditLogs,
   getMemberDocumentsAdmin,

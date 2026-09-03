@@ -234,6 +234,7 @@ router.post('/dashboard/summary', authMiddleware.authenticateToken, adminControl
 // fcm notifications routes
 router.post('/admin/notifications/register-token', authMiddleware.authenticateToken, validate(adminValidation.registerTokenSchema), adminController.registerAdminToken);
 router.post('/admin/notifications/send-manual', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.sendManualNotificationSchema), adminController.sendManualNotification);
+router.post('/admin/notifications/history', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.getAdminNotificationHistorySchema), adminController.getAdminNotificationHistory);
 
 // System Utilities Routes
 router.get('/admin/system/settings', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemSettings);

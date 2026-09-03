@@ -2366,34 +2366,83 @@ const uploadMemberDocumentService = async (res, body, userPayload) => {
     }
 };
 
-const registerDeviceTokenService = async (res, userPayload, fcm_token) => {
+const registerDeviceTokenService = async (res, userPayload, bodyData = {}) => {
     try {
-        if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
-        await Member.update({ fcm_token }, { where: { id: userPayload.id } });
-        return successResponse(res, statusCodes.OK, 'Device token registered successfully');
+        const fcm_token = typeof bodyData === 'string' ? bodyData : (bodyData.fcm_token || bodyData.device_token);
+        const { platform_type, device_id, device_details } = (typeof bodyData === 'object' ? bodyData : {});
+        const { normalizePlatformType } = require('../utils/platformHelper');
+
+        const updateData = {};
+        if (fcm_token) updateData.fcm_token = fcm_token;
+        if (platform_type !== undefined && platform_type !== null) {
+            updateData.platform_type = normalizePlatformType(platform_type);
+        }
+        if (device_id) updateData.device_id = device_id;
+        if (device_details) {
+            updateData.device_details = typeof device_details === 'object' ? JSON.stringify(device_details) : String(device_details);
+        }
+
+        await Member.update(updateData, { where: { id: userPayload.id } });
+        return successResponse(res, statusCodes.OK, 'Device token and platform registered successfully');
     } catch (error) {
         console.error('Error in registerDeviceTokenService:', error);
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
     }
 };
 
-const getNotificationHistoryService = async (res, userPayload, min = 0, max = 20) => {
+const getNotificationHistoryService = async (res, userPayload, min = 0, max = 20, filter = 'all') => {
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
         const limit = parseInt(max, 10) || 20;
         const offset = parseInt(min, 10) || 0;
 
+        const whereClause = {
+            user_id: String(userPayload.id),
+            user_type: 'MEMBER'
+        };
+
+        if (filter === 'unread') {
+            whereClause.is_read = false;
+        } else if (filter === 'read') {
+            whereClause.is_read = true;
+        }
+
+        const unread_count = await NotificationHistory.count({
+            where: { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false }
+        });
+
         const { count, rows } = await NotificationHistory.findAndCountAll({
-            where: { user_id: String(userPayload.id), user_type: 'MEMBER' },
+            where: whereClause,
             order: [['createdAt', 'DESC']],
             limit,
             offset
         });
 
-        return successResponse(res, statusCodes.OK, 'Notification history retrieved successfully', { count, rows });
+        return successResponse(res, statusCodes.OK, 'Notification history retrieved successfully', {
+            unread_count,
+            count,
+            rows
+        });
     } catch (error) {
         console.error('Error in getNotificationHistoryService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getNotificationBadgeCountService = async (res, userPayload) => {
+    try {
+        if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+
+        const unread_count = await NotificationHistory.count({
+            where: { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false }
+        });
+
+        return successResponse(res, statusCodes.OK, 'Notification badge count retrieved successfully', {
+            unread_count
+        });
+    } catch (error) {
+        console.error('Error in getNotificationBadgeCountService:', error);
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
     }
 };
@@ -2411,9 +2460,64 @@ const markNotificationReadService = async (res, userPayload, notification_id) =>
         }
 
         await notification.update({ is_read: true });
-        return successResponse(res, statusCodes.OK, 'Notification marked as read');
+
+        const unread_count = await NotificationHistory.count({
+            where: { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false }
+        });
+
+        return successResponse(res, statusCodes.OK, 'Notification marked as read', { unread_count });
     } catch (error) {
         console.error('Error in markNotificationReadService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const markAllNotificationsReadService = async (res, userPayload) => {
+    try {
+        if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+
+        await NotificationHistory.update(
+            { is_read: true },
+            { where: { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false } }
+        );
+
+        return successResponse(res, statusCodes.OK, 'All notifications marked as read', { unread_count: 0 });
+    } catch (error) {
+        console.error('Error in markAllNotificationsReadService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const deleteNotificationService = async (res, userPayload, notification_id, delete_all = false) => {
+    try {
+        if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+
+        if (delete_all) {
+            await NotificationHistory.destroy({
+                where: { user_id: String(userPayload.id), user_type: 'MEMBER' }
+            });
+            return successResponse(res, statusCodes.OK, 'All notifications deleted successfully', { unread_count: 0 });
+        }
+
+        if (!notification_id) {
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Notification ID is required');
+        }
+
+        const deletedCount = await NotificationHistory.destroy({
+            where: { id: notification_id, user_id: String(userPayload.id), user_type: 'MEMBER' }
+        });
+
+        if (deletedCount === 0) {
+            return errorResponse(res, statusCodes.NOT_FOUND, 'Notification not found');
+        }
+
+        const unread_count = await NotificationHistory.count({
+            where: { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false }
+        });
+
+        return successResponse(res, statusCodes.OK, 'Notification deleted successfully', { unread_count });
+    } catch (error) {
+        console.error('Error in deleteNotificationService:', error);
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
     }
 };
@@ -3069,7 +3173,10 @@ module.exports = {
     getAllGalleryService,
     registerDeviceTokenService,
     getNotificationHistoryService,
+    getNotificationBadgeCountService,
     markNotificationReadService,
+    markAllNotificationsReadService,
+    deleteNotificationService,
     getMemberDocumentsService,
     uploadMemberDocumentService,
     getGroupsByCollectionAgentIdService,

@@ -232,8 +232,7 @@ const getAllGallery = async (req, res) => {
 
 const registerDeviceToken = async (req, res) => {
   try {
-    const { fcm_token } = req.body;
-    return await userService.registerDeviceTokenService(res, req.user, fcm_token);
+    return await userService.registerDeviceTokenService(res, req.user, req.body);
   } catch (error) {
     console.error('Error in registerDeviceToken:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -242,10 +241,19 @@ const registerDeviceToken = async (req, res) => {
 
 const getNotificationHistory = async (req, res) => {
   try {
-    const { min, max } = req.body || {};
-    return await userService.getNotificationHistoryService(res, req.user, min, max);
+    const { min, max, filter } = req.body || {};
+    return await userService.getNotificationHistoryService(res, req.user, min, max, filter);
   } catch (error) {
     console.error('Error in getNotificationHistory:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getNotificationBadgeCount = async (req, res) => {
+  try {
+    return await userService.getNotificationBadgeCountService(res, req.user);
+  } catch (error) {
+    console.error('Error in getNotificationBadgeCount:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -256,6 +264,25 @@ const markNotificationRead = async (req, res) => {
     return await userService.markNotificationReadService(res, req.user, notification_id);
   } catch (error) {
     console.error('Error in markNotificationRead:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const markAllNotificationsRead = async (req, res) => {
+  try {
+    return await userService.markAllNotificationsReadService(res, req.user);
+  } catch (error) {
+    console.error('Error in markAllNotificationsRead:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteNotification = async (req, res) => {
+  try {
+    const { notification_id, delete_all } = req.body || {};
+    return await userService.deleteNotificationService(res, req.user, notification_id, delete_all);
+  } catch (error) {
+    console.error('Error in deleteNotification:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -398,7 +425,10 @@ module.exports = {
   getAllGallery,
   registerDeviceToken,
   getNotificationHistory,
+  getNotificationBadgeCount,
   markNotificationRead,
+  markAllNotificationsRead,
+  deleteNotification,
   getMemberDocuments,
   uploadMemberDocument,
   getGroupsByCollectionAgentId,

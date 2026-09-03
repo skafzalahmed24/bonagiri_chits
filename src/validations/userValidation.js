@@ -188,16 +188,29 @@ const getAllGallerySchema = Joi.object({
 });
 
 const registerTokenSchema = Joi.object({
-  fcm_token: Joi.string().required()
+  fcm_token: Joi.string().allow('', null).optional(),
+  device_token: Joi.string().allow('', null).optional(),
+  platform_type: Joi.alternatives().try(
+    Joi.number().integer().valid(1, 2, 3),
+    Joi.string().valid('1', '2', '3', 'android', 'ios', 'web', 'other')
+  ).optional().allow('', null),
+  device_id: Joi.string().optional().allow('', null),
+  device_details: Joi.alternatives().try(Joi.string(), Joi.object()).optional().allow('', null)
 });
 
 const getNotificationHistorySchema = Joi.object({
   min: Joi.number().integer().min(0).optional().default(0),
-  max: Joi.number().integer().min(1).optional().default(20)
+  max: Joi.number().integer().min(1).optional().default(20),
+  filter: Joi.string().valid('all', 'unread', 'read').optional().default('all')
 }).unknown(true);
 
 const markNotificationReadSchema = Joi.object({
   notification_id: Joi.string().uuid().required()
+});
+
+const deleteNotificationSchema = Joi.object({
+  notification_id: Joi.string().uuid().optional().allow('', null),
+  delete_all: Joi.boolean().optional().default(false)
 });
 
 const referMemberSchema = Joi.object({
@@ -244,6 +257,7 @@ module.exports = {
   registerTokenSchema,
   getNotificationHistorySchema,
   markNotificationReadSchema,
+  deleteNotificationSchema,
   referMemberSchema,
   getMyReferralsSchema
 };

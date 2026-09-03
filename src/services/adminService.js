@@ -91,17 +91,23 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
 
     // Update device information
     const crypto = require('crypto');
-    const { device_id, device_unique_id, platform_type, device_details } = deviceInfo;
+    const { normalizePlatformType } = require('../utils/platformHelper');
+    const { fcm_token, device_id, device_unique_id, platform_type, device_details } = deviceInfo;
     const activeDeviceUniqueId = (device_unique_id && typeof device_unique_id === 'string' && device_unique_id.trim() !== '')
       ? device_unique_id.trim()
       : crypto.randomUUID();
 
-    await user.update({
+    const updatePayload = {
       device_id: device_id || null,
       device_unique_id: activeDeviceUniqueId,
-      platform_type: platform_type || null,
-      device_details: device_details || null
-    });
+      platform_type: normalizePlatformType(platform_type),
+      device_details: device_details ? (typeof device_details === 'object' ? JSON.stringify(device_details) : String(device_details)) : null
+    };
+    if (fcm_token) {
+      updatePayload.fcm_token = fcm_token;
+    }
+
+    await user.update(updatePayload);
 
     let staffPermissions = null;
     if (role === 'staff') {
@@ -3515,6 +3521,21 @@ const storeDirectPaymentService = async (res, user, data) => {
       recorded_by_role: user.role,
       recorded_by_name
     });
+
+    // Trigger FCM Notification for Payment Received
+    try {
+      const subscriber = await Member.findByPk(installmentInfo.enrollment.subscriber_id);
+      if (subscriber) {
+        fcmService.sendPushToMember(
+          subscriber,
+          'Payment Received',
+          `Payment of ₹${receivedAmountFloat} received successfully for Receipt #${newReceiptNumber}.`,
+          { type: 'PAYMENT_RECEIVED', receipt_number: newReceiptNumber, amount: String(receivedAmountFloat) }
+        );
+      }
+    } catch (notifErr) {
+      console.error('Failed to dispatch payment received push notification:', notifErr);
+    }
 
     return successResponse(res, statusCodes.CREATED, 'Direct payment recorded successfully', newPayment);
   } catch (error) {

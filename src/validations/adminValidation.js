@@ -83,10 +83,15 @@ const companyLoginSchema = Joi.object({
     'any.required': 'Login type is required',
     'any.only': 'Invalid login type'
   }),
+  fcm_token: Joi.string().allow('', null).optional(),
+  device_token: Joi.string().allow('', null).optional(),
   device_id: Joi.string().allow('', null).optional(),
   device_unique_id: Joi.string().allow('', null).optional(),
-  platform_type: Joi.string().allow('', null).optional(),
-  device_details: Joi.string().allow('', null).optional()
+  platform_type: Joi.alternatives().try(
+    Joi.number().integer().valid(1, 2, 3),
+    Joi.string().valid('1', '2', '3', 'android', 'ios', 'web', 'other')
+  ).allow('', null).optional(),
+  device_details: Joi.alternatives().try(Joi.string(), Joi.object()).allow('', null).optional()
 });
 
 const forgotPasswordSchema = Joi.object({
@@ -1055,7 +1060,19 @@ module.exports = {
     new_password: Joi.string().min(8).required()
   }),
   registerTokenSchema: Joi.object({
-    fcm_token: Joi.string().required(),
+    fcm_token: Joi.string().allow('', null).optional(),
+    device_token: Joi.string().allow('', null).optional(),
+    platform_type: Joi.alternatives().try(
+      Joi.number().integer().valid(1, 2, 3),
+      Joi.string().valid('1', '2', '3', 'android', 'ios', 'web', 'other')
+    ).optional().allow('', null),
+    device_id: Joi.string().optional().allow('', null),
+    device_details: Joi.alternatives().try(Joi.string(), Joi.object()).optional().allow('', null)
+  }),
+  getAdminNotificationHistorySchema: Joi.object({
+    min: Joi.number().integer().min(0).optional().default(0),
+    max: Joi.number().integer().min(1).optional().default(20),
+    search: Joi.string().allow('', null).optional()
   }),
   sendManualNotificationSchema: Joi.object({
     target_type: Joi.string().valid('ALL', 'GROUP', 'SPECIFIC_MEMBER').required(),

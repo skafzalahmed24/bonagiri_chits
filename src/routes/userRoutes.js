@@ -59,7 +59,10 @@ router.post('/fixed-scheme-details', fixedSchemeController.getFixedSchemeByType)
 // fcm notifications routes
 router.post('/notifications/register-token', authMiddleware.authenticateToken, validate(userValidation.registerTokenSchema), userController.registerDeviceToken);
 router.post('/notifications/history', authMiddleware.authenticateToken, validate(userValidation.getNotificationHistorySchema), userController.getNotificationHistory);
+router.post('/notifications/badge-count', authMiddleware.authenticateToken, userController.getNotificationBadgeCount);
 router.post('/notifications/mark-read', authMiddleware.authenticateToken, validate(userValidation.markNotificationReadSchema), userController.markNotificationRead);
+router.post('/notifications/mark-all-read', authMiddleware.authenticateToken, userController.markAllNotificationsRead);
+router.post('/notifications/delete', authMiddleware.authenticateToken, validate(userValidation.deleteNotificationSchema), userController.deleteNotification);
 
 // Member referral route
 router.post('/post-refer-member', authMiddleware.authenticateToken, validate(userValidation.referMemberSchema), userController.referMember);
