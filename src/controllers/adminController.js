@@ -1,6 +1,7 @@
 const adminService = require('../services/adminService');
 const memberReportService = require('../services/memberReportService');
 const adminNotificationService = require('../services/adminNotificationService');
+const twilioService = require('../services/twilioService');
 const { errorResponse, successResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 
@@ -1538,7 +1539,46 @@ const searchEnquiry = async (req, res) => {
   }
 };
 
+const testSendTwilioOtp = async (req, res) => {
+  try {
+    const { mobile_number, channel, country_code } = req.body;
+    const result = await twilioService.sendVerificationOtp(mobile_number, channel || 'sms', country_code || null);
+    if (!result.success) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, result.message || 'Failed to send OTP via Twilio', result);
+    }
+    return successResponse(res, statusCodes.OK, result.message || 'Test OTP processed successfully', result);
+  } catch (error) {
+    console.error('Error in testSendTwilioOtp:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const testVerifyTwilioOtp = async (req, res) => {
+  try {
+    const { mobile_number, otp, country_code } = req.body;
+    const result = await twilioService.checkVerificationOtp(mobile_number, otp, country_code || null);
+    if (!result.valid) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, result.message || 'Invalid OTP code', result);
+    }
+    return successResponse(res, statusCodes.OK, result.message || 'Test OTP verified successfully', result);
+  } catch (error) {
+    console.error('Error in testVerifyTwilioOtp:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAppSupportedCountries = async (req, res) => {
+  try {
+    return await adminService.getAppSupportedCountriesService(res);
+  } catch (error) {
+    console.error('Error in getAppSupportedCountries:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+
 module.exports = {
+
   storeOrUpdateFAQ,
   getAllFAQ,
   getFAQById,
@@ -1686,5 +1726,10 @@ module.exports = {
   getLedgerReport,
   getStatutoryReport,
   searchEnquiry,
-  getMemberReferrals
+  getMemberReferrals,
+  testSendTwilioOtp,
+  testVerifyTwilioOtp,
+  getAppSupportedCountries
 };
+
+

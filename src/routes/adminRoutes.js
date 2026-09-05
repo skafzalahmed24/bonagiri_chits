@@ -24,6 +24,13 @@ router.post('/verify-otp', authRateLimiter, authMiddleware.authenticateDefaultTo
 router.post('/reset-password', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resetPasswordSchema), adminController.resetPassword);
 router.post('/change-password', authRateLimiter, authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.changePassword);
 
+// Twilio OTP test routes
+router.post('/test/send-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.testSendTwilioOtpSchema), adminController.testSendTwilioOtp);
+router.post('/test/verify-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.testVerifyTwilioOtpSchema), adminController.testVerifyTwilioOtp);
+router.get('/app-countries', adminController.getAppSupportedCountries);
+router.post('/app-countries', adminController.getAppSupportedCountries);
+
+
 // Contact Us routes
 router.post('/contact-us/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_CONTACT_US), validate(adminValidation.storeOrUpdateContactUsSchema), adminController.storeOrUpdateContactUs);
 router.post('/contact-us/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllContactUsSchema), adminController.getAllContactUs);

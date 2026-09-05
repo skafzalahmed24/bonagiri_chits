@@ -8,6 +8,7 @@ const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 const SystemSettingsService = require('./systemSettingsService');
+const twilioService = require('./twilioService');
 
 const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
   if (reqBody && reqBody.company_id) {
@@ -191,7 +192,8 @@ const forgotPasswordService = async (res, user_code, type) => {
 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
 
-    const otp = '123456'; // Default as per request
+    const isStatic = twilioService.isStaticOtp();
+    const otp = isStatic ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 15 * 60000);
 
     if (role === 'staff') {
@@ -200,8 +202,26 @@ const forgotPasswordService = async (res, user_code, type) => {
       await user.update({ mobile_otp: otp, mobile_otp_expires_at: expiresAt, mobile_otp_attempts: 0 });
     }
 
-    // TODO: Call sendMesageOtpMobile(user.mobile_number, otp) if implemented
-    return successResponse(res, statusCodes.OK, 'OTP sent successfully', { user_code, type });
+    // Send OTP via Twilio Verify/SMS if mobile number exists
+    const targetMobile = user.mobile_number;
+    let twilioStatus = null;
+    let twilioMsg = null;
+    if (targetMobile) {
+      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', user.country_code || null);
+      twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
+      twilioMsg = twilioRes.message;
+    }
+
+    const maskedMobile = targetMobile ? targetMobile.replace(/.(?=.{2})/g, 'x') : null;
+    return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP sent successfully', { 
+      user_code, 
+      type, 
+      is_static_otp: isStatic,
+      static_otp: isStatic ? '123456' : undefined,
+      mobile_number_masked: maskedMobile,
+      twilio_status: twilioStatus,
+      info: twilioMsg
+    });
   } catch (error) {
     console.error('Error in forgotPasswordService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to send OTP');
@@ -247,7 +267,18 @@ const verifyOtpService = async (res, user_code, type, otp) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'OTP has expired');
     }
 
-    if (String(dbOtp) !== String(otp)) {
+    // Check Static OTP, DB OTP match, or Twilio Verify check
+    const isStatic = twilioService.isStaticOtp();
+    let isOtpValid = isStatic ? (String(otp).trim() === '123456' || String(dbOtp) === String(otp)) : (String(dbOtp) === String(otp));
+
+    if (!isOtpValid && user.mobile_number && twilioService.isConfigured()) {
+      const verifyCheck = await twilioService.checkVerificationOtp(user.mobile_number, otp, user.country_code || null);
+      if (verifyCheck.valid) {
+        isOtpValid = true;
+      }
+    }
+
+    if (!isOtpValid) {
       if (role === 'staff') {
         await user.update({ otp_attempts: dbAttempts + 1 });
       } else {
@@ -270,6 +301,7 @@ const verifyOtpService = async (res, user_code, type, otp) => {
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'OTP verification failed');
   }
 };
+
 
 const resetPasswordService = async (res, user_code, type, password, reset_token) => {
   try {
@@ -440,6 +472,10 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
         if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
       }
 
+      if (memberData.country_code) {
+        memberData.country_code = memberData.country_code.toUpperCase().trim();
+      }
+
       // Prevent updating generated fields during edit
       delete memberData.member_id;
       delete memberData.other_info_user_code;
@@ -457,6 +493,11 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       return successResponse(res, statusCodes.OK, 'Member updated successfully', safeMember);
     } else {
       // Create new
+      if (!memberData.country_code) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Country code is required');
+      }
+      memberData.country_code = memberData.country_code.toUpperCase().trim();
+
       if (memberData.mobile_number) {
         const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number } });
         if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
@@ -4251,7 +4292,8 @@ const sendMemberVerificationOtpService = async (res, member_id) => {
       }
     }
 
-    const otp = '123456';
+    const isStatic = twilioService.isStaticOtp();
+    const otp = isStatic ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
     const expiry = new Date(now.getTime() + 5 * 60 * 1000);
 
     await member.update({
@@ -4260,10 +4302,24 @@ const sendMemberVerificationOtpService = async (res, member_id) => {
       verification_otp_attempts: 0
     });
 
-    console.log(`[SMS MOCK] Member ID: ${member_id}, Mobile: ${member.mobile_number}, OTP: ${otp}`);
+    // Send OTP via Twilio
+    let twilioStatus = null;
+    let twilioMsg = null;
+    if (member.mobile_number) {
+      const twilioRes = await twilioService.sendVerificationOtp(member.mobile_number, 'sms', member.country_code || null);
+      twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
+      twilioMsg = twilioRes.message;
+    }
 
     const maskedMobile = member.mobile_number ? member.mobile_number.replace(/.(?=.{2})/g, 'x') : null;
-    return successResponse(res, statusCodes.OK, 'OTP sent successfully', { member_id, mobile_number_masked: maskedMobile });
+    return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP sent successfully', { 
+      member_id, 
+      is_static_otp: isStatic,
+      static_otp: isStatic ? '123456' : undefined,
+      mobile_number_masked: maskedMobile,
+      twilio_status: twilioStatus,
+      info: twilioMsg
+    });
   } catch (error) {
     console.error('Error in sendMemberVerificationOtpService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -4290,7 +4346,18 @@ const verifyMemberOtpService = async (res, member_id, otp) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'OTP has expired, please resend');
     }
 
-    if (member.verification_otp !== otp) {
+    // Match Static OTP, DB OTP, or check Twilio Verify
+    const isStatic = twilioService.isStaticOtp();
+    let isOtpValid = isStatic ? (String(otp).trim() === '123456' || member.verification_otp === String(otp).trim()) : (member.verification_otp === String(otp).trim());
+
+    if (!isOtpValid && member.mobile_number && twilioService.isConfigured()) {
+      const verifyCheck = await twilioService.checkVerificationOtp(member.mobile_number, otp, member.country_code || null);
+      if (verifyCheck.valid) {
+        isOtpValid = true;
+      }
+    }
+
+    if (!isOtpValid) {
       const attempts = member.verification_otp_attempts + 1;
       let updateData = { verification_otp_attempts: attempts };
       if (attempts >= 3) {
@@ -4312,6 +4379,20 @@ const verifyMemberOtpService = async (res, member_id, otp) => {
   } catch (error) {
     console.error('Error in verifyMemberOtpService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAppSupportedCountriesService = async (res) => {
+  try {
+    const countries = twilioService.getSupportedCountries();
+    return successResponse(res, statusCodes.OK, 'Supported countries retrieved successfully', {
+      static_otp_status: twilioService.isStaticOtp(),
+      total_supported: countries.length,
+      countries
+    });
+  } catch (error) {
+    console.error('Error in getAppSupportedCountriesService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to fetch supported countries');
   }
 };
 
@@ -5245,7 +5326,6 @@ const searchEnquiryService = async (res, reqBody) => {
                 group_name: { [Op.like]: `%${query}%` }
             };
         }
-        
         const [members, groups] = await Promise.all([
             Member.findAndCountAll({ where: memberWhere, limit, offset }),
             ChitsGroup.findAndCountAll({ where: groupWhere, limit, offset })
@@ -5413,7 +5493,6 @@ module.exports = {
   getAllGalleryService,
   getGalleryByIdService,
   deleteGalleryService,
-  recordWinnerService,
   sendMemberVerificationOtpService,
   verifyMemberOtpService,
   storeOrUpdateStaffService,
@@ -5444,5 +5523,6 @@ module.exports = {
   getLedgerReportService,
   getStatutoryReportService,
   searchEnquiryService,
-  getMemberReferralsService
+  getMemberReferralsService,
+  getAppSupportedCountriesService
 };

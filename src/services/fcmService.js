@@ -91,7 +91,8 @@ const buildMultiPlatformMessage = ({ token, tokens, title, body, dataPayload = {
     apns: {
       headers: {
         'apns-priority': '10',
-        'apns-push-type': 'alert'
+        'apns-push-type': 'alert',
+        'apns-topic': process.env.APNS_BUNDLE_ID || 'com.bonagiriChits.app'
       },
       payload: {
         aps: {

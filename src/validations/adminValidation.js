@@ -120,6 +120,28 @@ const verifyMemberOtpSchema = Joi.object({
   otp: Joi.string().length(6).required()
 });
 
+const testSendTwilioOtpSchema = Joi.object({
+  mobile_number: Joi.string().required().messages({
+    'any.required': 'Mobile number is required',
+    'string.empty': 'Mobile number cannot be empty'
+  }),
+  country_code: Joi.string().optional().allow(null, ''),
+  channel: Joi.string().valid('sms', 'whatsapp', 'call').default('sms')
+});
+
+const testVerifyTwilioOtpSchema = Joi.object({
+  mobile_number: Joi.string().required().messages({
+    'any.required': 'Mobile number is required',
+    'string.empty': 'Mobile number cannot be empty'
+  }),
+  country_code: Joi.string().optional().allow(null, ''),
+  otp: Joi.string().required().messages({
+    'any.required': 'OTP code is required',
+    'string.empty': 'OTP code cannot be empty'
+  })
+});
+
+
 
 const resetPasswordSchema = Joi.object({
   user_code: Joi.string().required(),
@@ -156,6 +178,14 @@ const memberValidator = Joi.object({
   relation: Joi.string().allow('', null).optional(),
   gender: Joi.number().integer().allow(null).optional(),
   mobile_number: Joi.string().allow('', null).optional(),
+  country_code: Joi.string().trim().uppercase().when('id', {
+    is: Joi.exist().not(null),
+    then: Joi.optional().allow('', null),
+    otherwise: Joi.required().messages({
+      'any.required': 'Country code is required',
+      'string.empty': 'Country code cannot be empty'
+    })
+  }),
   email: Joi.string().email().allow('', null).optional(),
   gst_number: Joi.string().allow('', null).optional(),
   marital_status: Joi.number().integer().allow('', null).optional(),
@@ -506,6 +536,8 @@ module.exports = {
   verifyOtpSchema,
   sendMemberOtpSchema,
   verifyMemberOtpSchema,
+  testSendTwilioOtpSchema,
+  testVerifyTwilioOtpSchema,
   resetPasswordSchema,
   refreshTokenSchema,
   memberValidator,

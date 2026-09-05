@@ -33,6 +33,11 @@ module.exports = (sequelize, DataTypes) => {
     relation: DataTypes.STRING,
     gender: DataTypes.INTEGER,
     mobile_number: DataTypes.STRING,
+    country_code: {
+      type: DataTypes.STRING(10),
+      allowNull: false,
+      defaultValue: 'IN'
+    },
     email: DataTypes.STRING,
     gst_number: DataTypes.STRING,
     marital_status: DataTypes.INTEGER,
