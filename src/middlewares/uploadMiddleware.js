@@ -20,10 +20,10 @@ const storage = multer.diskStorage({
     }
 });
 
-// We use array('document', 10) to support both single and multiple uploads under the 'document' field.
+// We use array('document', 20) to support both single and multiple uploads under the 'document' field.
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit per file
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit per file
 });
 
 module.exports = upload;

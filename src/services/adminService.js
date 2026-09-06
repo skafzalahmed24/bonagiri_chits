@@ -106,6 +106,9 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     };
     if (fcm_token) {
       updatePayload.fcm_token = fcm_token;
+      console.log(`[AUTH LOGIN] User '${user_code}' (${role} ID: ${user.id}) logged in with FCM device token.`);
+    } else {
+      console.log(`[AUTH LOGIN] User '${user_code}' (${role} ID: ${user.id}) logged in WITHOUT FCM device token.`);
     }
 
     await user.update(updatePayload);
@@ -202,14 +205,18 @@ const forgotPasswordService = async (res, user_code, type) => {
       await user.update({ mobile_otp: otp, mobile_otp_expires_at: expiresAt, mobile_otp_attempts: 0 });
     }
 
-    // Send OTP via Twilio Verify/SMS if mobile number exists
     const targetMobile = user.mobile_number;
+    console.log(`[FORGOT PASSWORD] Triggered OTP for User '${user_code}' (${role}) | Mobile: ${targetMobile || 'NO MOBILE'} | Mode: ${isStatic ? 'STATIC (123456)' : 'DYNAMIC TWILIO'}`);
+
+    // Send OTP via Twilio Verify/SMS if mobile number exists
     let twilioStatus = null;
     let twilioMsg = null;
     if (targetMobile) {
       const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', user.country_code || null);
       twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
       twilioMsg = twilioRes.message;
+    } else {
+      console.warn(`[FORGOT PASSWORD] User '${user_code}' has no mobile number on file. SMS trigger skipped.`);
     }
 
     const maskedMobile = targetMobile ? targetMobile.replace(/.(?=.{2})/g, 'x') : null;
@@ -223,7 +230,7 @@ const forgotPasswordService = async (res, user_code, type) => {
       info: twilioMsg
     });
   } catch (error) {
-    console.error('Error in forgotPasswordService:', error);
+    console.error('[FORGOT PASSWORD] Error in forgotPasswordService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to send OTP');
   }
 };
@@ -279,6 +286,7 @@ const verifyOtpService = async (res, user_code, type, otp) => {
     }
 
     if (!isOtpValid) {
+      console.warn(`[VERIFY OTP FAILED] User '${user_code}' entered invalid OTP: "${otp}"`);
       if (role === 'staff') {
         await user.update({ otp_attempts: dbAttempts + 1 });
       } else {
@@ -287,6 +295,7 @@ const verifyOtpService = async (res, user_code, type, otp) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid OTP');
     }
 
+    console.log(`[VERIFY OTP SUCCESS] User '${user_code}' (${role}) successfully verified OTP.`);
     if (role === 'staff') {
       await user.update({ otp: null, otp_expires_at: null, otp_attempts: 0 });
     } else {
@@ -361,7 +370,7 @@ const refreshTokenService = async (res, refresh_token) => {
         return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
       }
       if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
-        return errorResponse(res, statusCodes.UNAUTHORIZED, 'Another device has been logged in');
+        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
       }
     } else if (decoded.role === 'staff') {
       const user = await StaffUser.findByPk(decoded.id, {
@@ -371,7 +380,7 @@ const refreshTokenService = async (res, refresh_token) => {
         return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
       }
       if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
-        return errorResponse(res, statusCodes.UNAUTHORIZED, 'Another device has been logged in');
+        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
       }
     } else if (decoded.role === 'member') {
       const user = await Member.findByPk(decoded.id, {
@@ -381,7 +390,7 @@ const refreshTokenService = async (res, refresh_token) => {
         return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
       }
       if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
-        return errorResponse(res, statusCodes.UNAUTHORIZED, 'Another device has been logged in');
+        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
       }
     }
 
@@ -1388,6 +1397,32 @@ const storeOrUpdateUpcomingChitService = async (res, data = {}) => {
       return successResponse(res, statusCodes.OK, 'Upcoming chit updated successfully', upcomingChit);
     } else {
       const newUpcomingChit = await UpcomingChit.create(upcomingChitData);
+
+      // Trigger Push Notification & Save History for all company members
+      try {
+        const companyId = newUpcomingChit.company_id || upcomingChitData.company_id;
+        if (companyId) {
+          const allMembers = await Member.findAll({
+            where: { company_id: companyId, is_deleted_status: 0 }
+          });
+          if (allMembers && allMembers.length > 0) {
+            fcmService.sendPushToMulticast(
+              allMembers,
+              companyId,
+              'New Upcoming Chit Announced!',
+              `A new upcoming chit "${newUpcomingChit.group_name || 'Upcoming Chit'}" has been announced. Express your interest now!`,
+              {
+                type: 'UPCOMING_CHIT_ANNOUNCED',
+                upcoming_chit_id: String(newUpcomingChit.id),
+                group_name: String(newUpcomingChit.group_name || '')
+              }
+            );
+          }
+        }
+      } catch (fcmErr) {
+        console.error('Failed to trigger FCM for new upcoming chit:', fcmErr);
+      }
+
       return successResponse(res, statusCodes.CREATED, 'Upcoming chit created successfully', newUpcomingChit);
     }
   } catch (error) {
@@ -4302,16 +4337,21 @@ const sendMemberVerificationOtpService = async (res, member_id) => {
       verification_otp_attempts: 0
     });
 
+    const targetMobile = member.mobile_number;
+    console.log(`[MEMBER VERIFICATION OTP] Triggered OTP for Member ID ${member.id} (${member.other_info_user_code || member.name || 'Member'}) | Mobile: ${targetMobile || 'NO MOBILE'} | Mode: ${isStatic ? 'STATIC (123456)' : 'DYNAMIC TWILIO'}`);
+
     // Send OTP via Twilio
     let twilioStatus = null;
     let twilioMsg = null;
-    if (member.mobile_number) {
-      const twilioRes = await twilioService.sendVerificationOtp(member.mobile_number, 'sms', member.country_code || null);
+    if (targetMobile) {
+      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', member.country_code || null);
       twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
       twilioMsg = twilioRes.message;
+    } else {
+      console.warn(`[MEMBER VERIFICATION OTP] Member ID ${member.id} has no mobile number on file. SMS trigger skipped.`);
     }
 
-    const maskedMobile = member.mobile_number ? member.mobile_number.replace(/.(?=.{2})/g, 'x') : null;
+    const maskedMobile = targetMobile ? targetMobile.replace(/.(?=.{2})/g, 'x') : null;
     return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP sent successfully', { 
       member_id, 
       is_static_otp: isStatic,
@@ -4358,6 +4398,7 @@ const verifyMemberOtpService = async (res, member_id, otp) => {
     }
 
     if (!isOtpValid) {
+      console.warn(`[MEMBER VERIFICATION OTP FAILED] Member ID ${member.id} entered invalid OTP: "${otp}"`);
       const attempts = member.verification_otp_attempts + 1;
       let updateData = { verification_otp_attempts: attempts };
       if (attempts >= 3) {
@@ -4368,6 +4409,7 @@ const verifyMemberOtpService = async (res, member_id, otp) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, `Invalid OTP. ${remaining} attempts remaining.`);
     }
 
+    console.log(`[MEMBER VERIFICATION OTP SUCCESS] Member ID ${member.id} successfully verified OTP.`);
     await member.update({
       is_verified: true,
       verification_otp: null,

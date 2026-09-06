@@ -190,6 +190,11 @@ const getAllGallerySchema = Joi.object({
 const registerTokenSchema = Joi.object({
   fcm_token: Joi.string().allow('', null).optional(),
   device_token: Joi.string().allow('', null).optional(),
+  fcmToken: Joi.string().allow('', null).optional(),
+  deviceToken: Joi.string().allow('', null).optional(),
+  push_token: Joi.string().allow('', null).optional(),
+  pushToken: Joi.string().allow('', null).optional(),
+  token: Joi.string().allow('', null).optional(),
   platform_type: Joi.alternatives().try(
     Joi.number().integer().valid(1, 2, 3),
     Joi.string().valid('1', '2', '3', 'android', 'ios', 'web', 'other')

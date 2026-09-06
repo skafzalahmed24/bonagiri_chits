@@ -54,7 +54,7 @@ const authenticateToken = async (req, res, next) => {
         return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
       }
       if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
-        return errorResponse(res, statusCodes.UNAUTHORIZED, 'Another device has been logged in');
+        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
       }
     } else if (decoded.role === 'staff') {
       const user = await StaffUser.findByPk(decoded.id, {
@@ -64,7 +64,7 @@ const authenticateToken = async (req, res, next) => {
         return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
       }
       if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
-        return errorResponse(res, statusCodes.UNAUTHORIZED, 'Another device has been logged in');
+        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
       }
     } else if (decoded.role === 'member') {
       const user = await Member.findByPk(decoded.id, {
@@ -74,7 +74,7 @@ const authenticateToken = async (req, res, next) => {
         return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
       }
       if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
-        return errorResponse(res, statusCodes.UNAUTHORIZED, 'Another device has been logged in');
+        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
       }
     }
 

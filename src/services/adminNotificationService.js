@@ -11,7 +11,9 @@ const registerAdminTokenService = async (res, userPayload, bodyData = {}) => {
   try {
     if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
-    const fcm_token = typeof bodyData === 'string' ? bodyData : (bodyData.fcm_token || bodyData.device_token);
+    const fcm_token = typeof bodyData === 'string'
+      ? bodyData
+      : (bodyData.fcm_token || bodyData.device_token || bodyData.fcmToken || bodyData.deviceToken || bodyData.push_token || bodyData.pushToken || bodyData.token || null);
     const { platform_type, device_id, device_details } = typeof bodyData === 'object' ? bodyData : {};
     const { normalizePlatformType } = require('../utils/platformHelper');
 
@@ -31,6 +33,7 @@ const registerAdminTokenService = async (res, userPayload, bodyData = {}) => {
       await StaffUser.update(updateData, { where: { id: userPayload.id } });
     }
 
+    console.log(`[DEVICE REGISTER] Admin/Staff ID ${userPayload.id} registered device token (${fcm_token ? 'FCM Token Present' : 'No token'}).`);
     return successResponse(res, statusCodes.OK, 'Admin device token registered successfully');
   } catch (error) {
     console.error('Error in registerAdminTokenService:', error);

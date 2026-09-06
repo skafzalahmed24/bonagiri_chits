@@ -46,8 +46,9 @@ const deleteCompany = async (req, res) => {
 
 const loginCompany = async (req, res) => {
   try {
-    const { user_code, company_password, type, fcm_token, device_token, device_id, device_unique_id, platform_type, device_details } = req.body;
-    const deviceInfo = { fcm_token: fcm_token || device_token, device_id, device_unique_id, platform_type, device_details };
+    const { user_code, company_password, type, fcm_token, device_token, fcmToken, deviceToken, push_token, pushToken, token, device_id, device_unique_id, platform_type, device_details } = req.body;
+    const resolvedToken = fcm_token || device_token || fcmToken || deviceToken || push_token || pushToken || token || null;
+    const deviceInfo = { fcm_token: resolvedToken, device_id, device_unique_id, platform_type, device_details };
     return await adminService.loginCompanyService(res, user_code, company_password, type, deviceInfo);
   } catch (error) {
     console.error('Error in loginCompany:', error);

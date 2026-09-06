@@ -137,12 +137,13 @@ class TwilioService {
   async sendVerificationOtp(phoneNumber, channel = 'sms', countryCode = null) {
     const formattedTo = this.formatToE164(phoneNumber, countryCode);
     if (!formattedTo) {
+      console.warn(`[TWILIO OTP] [INVALID NUMBER] Cannot trigger OTP. Invalid phone number: "${phoneNumber}"`);
       return { success: false, message: 'Invalid phone number provided' };
     }
 
     // Check if Static OTP mode is active
     if (this.isStaticOtp()) {
-      console.log(`[OTP STATIC MODE] Mobile: ${formattedTo} -> Static OTP: 123456 (Twilio API bypassed)`);
+      console.log(`[TWILIO OTP] [STATIC TRIGGERED] Mobile: ${formattedTo} (Country: ${countryCode || 'AUTO'}) | Static Code: 123456 | Channel: ${channel} | Live Twilio API Bypassed (STATIC_OTP_STATUS=true)`);
       return {
         success: true,
         is_static: true,
@@ -156,7 +157,7 @@ class TwilioService {
 
     // Dynamic Twilio Verify mode
     if (!this.client || !this.verifyServiceSid) {
-      console.warn(`[TwilioService MOCK] Live OTP requested for ${formattedTo} (Twilio not configured)`);
+      console.warn(`[TWILIO OTP] [MOCK TRIGGERED] Live OTP requested for ${formattedTo} but Twilio credentials/Verify SID not configured in .env. Mock OTP sent.`);
       return {
         success: true,
         mock: true,
@@ -167,6 +168,7 @@ class TwilioService {
     }
 
     try {
+      console.log(`[TWILIO OTP] [DISPATCHING LIVE OTP] Calling Twilio Verify API -> To: ${formattedTo} | Channel: ${channel} | Service SID: ${this.verifyServiceSid}...`);
       const verification = await this.client.verify.v2
         .services(this.verifyServiceSid)
         .verifications.create({
@@ -174,6 +176,7 @@ class TwilioService {
           channel: channel
         });
 
+      console.log(`[TWILIO OTP] [LIVE OTP TRIGGERED - SUCCESS] Twilio SMS dispatched successfully to ${formattedTo} | Verification SID: ${verification.sid} | Status: ${verification.status}`);
       return {
         success: true,
         is_static: false,
@@ -183,7 +186,7 @@ class TwilioService {
         channel: verification.channel
       };
     } catch (error) {
-      console.error('[TwilioService] Error sending verification OTP:', error);
+      console.error(`[TWILIO OTP] [LIVE OTP TRIGGER FAILED] Failed to send SMS via Twilio to ${formattedTo} | Error Code: ${error.code} | Reason: ${error.message}`);
       return {
         success: false,
         is_static: false,
@@ -205,6 +208,7 @@ class TwilioService {
   async checkVerificationOtp(phoneNumber, code, countryCode = null) {
     const formattedTo = this.formatToE164(phoneNumber, countryCode);
     if (!formattedTo || !code) {
+      console.warn(`[TWILIO OTP] [VERIFY SKIPPED] Phone number or OTP code missing (Phone: "${phoneNumber}", Code: "${code}")`);
       return { success: false, valid: false, message: 'Phone number and OTP code are required' };
     }
 
@@ -213,7 +217,7 @@ class TwilioService {
     // Check Static OTP mode
     if (this.isStaticOtp()) {
       const isValid = trimmedCode === '123456';
-      console.log(`[OTP STATIC VERIFY] Mobile: ${formattedTo}, Entered: ${trimmedCode}, Result: ${isValid}`);
+      console.log(`[TWILIO OTP] [STATIC VERIFY] Mobile: ${formattedTo} | Code Entered: "${trimmedCode}" | Expected: "123456" | Result: ${isValid ? 'APPROVED (SUCCESS)' : 'REJECTED (INVALID)'}`);
       return {
         success: true,
         valid: isValid,
@@ -227,6 +231,7 @@ class TwilioService {
     // Dynamic Twilio Verify mode
     if (!this.client || !this.verifyServiceSid) {
       const isValid = trimmedCode === '123456';
+      console.log(`[TWILIO OTP] [MOCK VERIFY] Mobile: ${formattedTo} | Code: "${trimmedCode}" | Result: ${isValid ? 'APPROVED (MOCK)' : 'REJECTED (MOCK)'}`);
       return {
         success: true,
         valid: isValid,
@@ -238,6 +243,7 @@ class TwilioService {
     }
 
     try {
+      console.log(`[TWILIO OTP] [LIVE VERIFY DISPATCH] Checking code with Twilio Verify API -> To: ${formattedTo} | Code: "${trimmedCode}"...`);
       const verificationCheck = await this.client.verify.v2
         .services(this.verifyServiceSid)
         .verificationChecks.create({
@@ -246,6 +252,7 @@ class TwilioService {
         });
 
       const isValid = verificationCheck.status === 'approved';
+      console.log(`[TWILIO OTP] [LIVE VERIFY RESULT] Twilio Verify check for ${formattedTo} -> Status: ${verificationCheck.status} | Verification SID: ${verificationCheck.sid} | Result: ${isValid ? 'APPROVED (SUCCESS)' : 'REJECTED (INVALID)'}`);
       return {
         success: true,
         valid: isValid,
@@ -255,7 +262,7 @@ class TwilioService {
         to: formattedTo
       };
     } catch (error) {
-      console.error('[TwilioService] Error checking verification OTP:', error);
+      console.error(`[TWILIO OTP] [LIVE VERIFY ERROR] Twilio check failed for ${formattedTo} | Error Code: ${error.code} | Reason: ${error.message}`);
       return {
         success: false,
         valid: false,
@@ -272,21 +279,24 @@ class TwilioService {
   async sendCustomSms(phoneNumber, message, countryCode = null) {
     const formattedTo = this.formatToE164(phoneNumber, countryCode);
     if (!formattedTo) {
+      console.warn(`[TWILIO SMS] [INVALID NUMBER] Cannot send SMS. Invalid phone number: "${phoneNumber}"`);
       return { success: false, message: 'Invalid phone number' };
     }
 
     if (this.isStaticOtp() || !this.client || !this.phoneNumber) {
-      console.log(`[SMS MOCK] To: ${formattedTo} | Message: "${message}"`);
+      console.log(`[TWILIO SMS] [MOCK SENT] To: ${formattedTo} | Message: "${message}"`);
       return { success: true, mock: true, to: formattedTo };
     }
 
     try {
+      console.log(`[TWILIO SMS] [DISPATCHING LIVE SMS] Sending SMS via Twilio to ${formattedTo}...`);
       const result = await this.client.messages.create({
         body: message,
         from: this.phoneNumber,
         to: formattedTo
       });
 
+      console.log(`[TWILIO SMS] [LIVE SMS SENT - SUCCESS] Delivered to Twilio gateway -> To: ${formattedTo} | Message SID: ${result.sid} | Status: ${result.status}`);
       return {
         success: true,
         sid: result.sid,
@@ -294,13 +304,28 @@ class TwilioService {
         to: formattedTo
       };
     } catch (error) {
-      console.error('[TwilioService] Error sending custom SMS:', error);
+      console.error(`[TWILIO SMS] [LIVE SMS FAILED] Failed to send SMS to ${formattedTo} | Error Code: ${error.code} | Reason: ${error.message}`);
       return {
         success: false,
         code: error.code,
         message: error.message || 'Failed to send SMS'
       };
     }
+  }
+
+  /**
+   * Standard branded template message for Bonagiri Chits Pvt Ltd
+   */
+  formatOtpMessage(otp) {
+    return `Your Bonagiri Chits Pvt Ltd verification code is: ${otp}. Do not share this OTP with anyone. Valid for 10 minutes.\n- Bonagiri Chits Pvt Ltd`;
+  }
+
+  /**
+   * Send custom branded SMS OTP directly
+   */
+  async sendOtpWithCustomSms(phoneNumber, otp, countryCode = null) {
+    const message = this.formatOtpMessage(otp);
+    return await this.sendCustomSms(phoneNumber, message, countryCode);
   }
 }
 

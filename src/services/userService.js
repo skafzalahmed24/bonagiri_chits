@@ -12,6 +12,7 @@ const { Op } = require('sequelize');
 
 const { getSimulatedNow } = require('../utils/timeSimulator');
 const { isCollectionAgent, isBusinessAgent } = require('../utils/authHelpers');
+const fcmService = require('./fcmService');
 
 const getHomeRecordService = async (res, userPayload) => {
     const subscriber_id = userPayload ? userPayload.id : null;
@@ -344,6 +345,25 @@ const submitChitInterestService = async (res, userPayload, upcoming_chit_id, sho
             });
             if (interestRecord.showing_interest !== 1) {
                 await interestRecord.update({ showing_interest: 1 });
+            }
+
+            // Send notification to member confirming registered interest
+            try {
+                const member = await Member.findByPk(user_id);
+                if (member) {
+                    fcmService.sendPushToMember(
+                        member,
+                        'Interest Registered!',
+                        `You have registered your interest in upcoming chit: ${chit.group_name || 'Upcoming Chit'}. Our team will contact you once enrollment begins.`,
+                        {
+                            type: 'UPCOMING_CHIT_INTEREST',
+                            upcoming_chit_id: String(upcoming_chit_id),
+                            group_name: String(chit.group_name || '')
+                        }
+                    );
+                }
+            } catch (fcmErr) {
+                console.error('Failed to send interest FCM:', fcmErr);
             }
         }
 
@@ -2368,7 +2388,9 @@ const uploadMemberDocumentService = async (res, body, userPayload) => {
 
 const registerDeviceTokenService = async (res, userPayload, bodyData = {}) => {
     try {
-        const fcm_token = typeof bodyData === 'string' ? bodyData : (bodyData.fcm_token || bodyData.device_token);
+        const fcm_token = typeof bodyData === 'string'
+            ? bodyData
+            : (bodyData.fcm_token || bodyData.device_token || bodyData.fcmToken || bodyData.deviceToken || bodyData.push_token || bodyData.pushToken || bodyData.token || null);
         const { platform_type, device_id, device_details } = (typeof bodyData === 'object' ? bodyData : {});
         const { normalizePlatformType } = require('../utils/platformHelper');
 
@@ -2383,6 +2405,7 @@ const registerDeviceTokenService = async (res, userPayload, bodyData = {}) => {
         }
 
         await Member.update(updateData, { where: { id: userPayload.id } });
+        console.log(`[DEVICE REGISTER] Member ID ${userPayload.id} registered device token (${fcm_token ? 'FCM Token Present' : 'No token'}).`);
         return successResponse(res, statusCodes.OK, 'Device token and platform registered successfully');
     } catch (error) {
         console.error('Error in registerDeviceTokenService:', error);
