@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
 const fixedSchemeController = require('../controllers/fixedSchemeController');
+const platformSupportController = require('../controllers/platformSupportController');
 const validate = require('../middlewares/validate');
 const MODULES = require('../utils/modules');
 const authMiddleware = require('../middlewares/authMiddleware');
@@ -265,5 +266,23 @@ router.post('/enquiry/search', authMiddleware.authenticateToken, adminController
 
 // member referrals
 router.post('/refer-members', authMiddleware.authenticateToken, validate(adminValidation.getMemberReferralsSchema), adminController.getMemberReferrals);
+
+// Super Admin Terms & Privacy routes
+router.post('/super-admin/terms-privacy/get', authMiddleware.authenticateSuperAdminToken, validate(adminValidation.getPlatformTermsPrivacySchema), platformSupportController.getPlatformTermsPrivacy);
+router.post('/super-admin/terms-privacy/store-or-update', authMiddleware.authenticateSuperAdminToken, validate(adminValidation.storeOrUpdatePlatformTermsPrivacySchema), platformSupportController.storeOrUpdatePlatformTermsPrivacy);
+
+// Super Admin Support routes (Contact Info & FAQs)
+router.post('/super-admin/support/contact/get', authMiddleware.authenticateSuperAdminToken, platformSupportController.getPlatformSupportContact);
+router.post('/super-admin/support/contact/store-or-update', authMiddleware.authenticateSuperAdminToken, validate(adminValidation.storeOrUpdatePlatformSupportContactSchema), platformSupportController.storeOrUpdatePlatformSupportContact);
+router.post('/super-admin/support/faq/get-all', authMiddleware.authenticateSuperAdminToken, platformSupportController.getAllPlatformSupportFaq);
+router.post('/super-admin/support/faq/store-or-update', authMiddleware.authenticateSuperAdminToken, validate(adminValidation.storeOrUpdatePlatformSupportFaqSchema), platformSupportController.storeOrUpdatePlatformSupportFaq);
+router.post('/super-admin/support/faq/delete', authMiddleware.authenticateSuperAdminToken, validate(adminValidation.deletePlatformSupportFaqSchema), platformSupportController.deletePlatformSupportFaq);
+
+// Public Support route
+router.post('/public/support', authMiddleware.authenticateDefaultToken, platformSupportController.getPublicSupport);
+
+// Member Delete Account routes
+router.post('/member/delete-account/send-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);
+router.post('/member/delete-account/verify', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyDeleteAccountOtpSchema), platformSupportController.verifyDeleteAccountOtp);
 
 module.exports = router;

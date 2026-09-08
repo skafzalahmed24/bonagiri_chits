@@ -13,6 +13,8 @@ yarn-error.log
 # Firebase & Secret Keys
 *firebase-adminsdk*.json
 serviceAccountKey.json
+src/notificationsfiles/
+notificationsfiles/
 *.p8
 *.pem
 

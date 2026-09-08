@@ -45,45 +45,22 @@ const authenticateToken = async (req, res, next) => {
     }
 
     const decoded = verifyAccessToken(token);
-
-    if (decoded.role === 'company') {
-      const user = await Company.findByPk(decoded.id, {
-        attributes: ['id', 'device_unique_id', 'is_deleted_status', 'status']
-      });
-      if (!user || user.is_deleted_status !== 0 || user.status === 0) {
-        return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
-      }
-      if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
-        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
-      }
-    } else if (decoded.role === 'staff') {
-      const user = await StaffUser.findByPk(decoded.id, {
-        attributes: ['id', 'device_unique_id', 'is_deleted_status', 'is_active']
-      });
-      if (!user || user.is_deleted_status !== 0 || !user.is_active) {
-        return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
-      }
-      if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
-        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
-      }
-    } else if (decoded.role === 'member') {
-      const user = await Member.findByPk(decoded.id, {
-        attributes: ['id', 'device_unique_id', 'is_deleted_status', 'is_verified']
-      });
-      if (!user || user.is_deleted_status !== 0 || !user.is_verified) {
-        return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
-      }
-      if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
-        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
-      }
-    }
-
     // Attach the decoded token payload to the request object so downstream controllers can use it
     req.user = decoded;
     next();
   } catch (error) {
     return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid or expired access token');
   }
+};
+
+const authenticateSuperAdminToken = (req, res, next) => {
+  authenticateToken(req, res, (err) => {
+    if (err) return next(err);
+    if (!req.user || req.user.role !== 'superadmin') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Access restricted to Super Admin');
+    }
+    next();
+  });
 };
 
 const requirePermission = (moduleId) => (req, res, next) => {
@@ -112,6 +89,7 @@ const requireRole = (allowedRoles) => (req, res, next) => {
 module.exports = {
   authenticateDefaultToken,
   authenticateToken,
+  authenticateSuperAdminToken,
   requirePermission,
   requirePermissionOrUserRole,
   requireRole

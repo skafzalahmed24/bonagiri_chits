@@ -1179,5 +1179,65 @@ module.exports = {
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional(),
     search: Joi.string().allow('', null).optional()
+  }),
+  getPlatformTermsPrivacySchema: Joi.object({
+    type: Joi.number().integer().valid(1, 2).required().messages({
+      'any.required': 'Type is required (1 - Terms and Conditions, 2 - Privacy Policy)',
+      'any.only': 'Invalid type. Must be 1 (Terms) or 2 (Privacy Policy).'
+    })
+  }),
+  storeOrUpdatePlatformTermsPrivacySchema: Joi.object({
+    type: Joi.number().integer().valid(1, 2).required().messages({
+      'any.required': 'Type is required (1 - Terms and Conditions, 2 - Privacy Policy)',
+      'any.only': 'Invalid type. Must be 1 (Terms) or 2 (Privacy Policy).'
+    }),
+    content: Joi.string().allow('', null).required().messages({
+      'any.required': 'Content is required'
+    })
+  }),
+  storeOrUpdatePlatformSupportContactSchema: Joi.object({
+    id: Joi.number().integer().optional(),
+    address: Joi.string().allow('', null).optional(),
+    phone_numbers: Joi.array().items(Joi.string().allow('', null)).allow(null).optional(),
+    emails: Joi.array().items(Joi.string().email().allow('', null)).allow(null).optional(),
+    website_link: Joi.string().allow('', null).optional(),
+    social_media_links: Joi.object().unknown(true).allow(null).optional()
+  }),
+  storeOrUpdatePlatformSupportFaqSchema: Joi.object({
+    id: Joi.number().integer().optional(),
+    question: Joi.string().required().messages({
+      'any.required': 'Question is required',
+      'string.empty': 'Question cannot be empty'
+    }),
+    answer: Joi.string().required().messages({
+      'any.required': 'Answer is required',
+      'string.empty': 'Answer cannot be empty'
+    }),
+    sort_order: Joi.number().integer().optional()
+  }),
+  deletePlatformSupportFaqSchema: Joi.object({
+    id: Joi.number().integer().required().messages({
+      'any.required': 'FAQ ID is required'
+    })
+  }),
+  sendDeleteAccountOtpSchema: Joi.object({
+    mobile: Joi.string().required().messages({
+      'any.required': 'Mobile number is required',
+      'string.empty': 'Mobile number cannot be empty'
+    }),
+    password: Joi.string().required().messages({
+      'any.required': 'Password is required',
+      'string.empty': 'Password cannot be empty'
+    })
+  }),
+  verifyDeleteAccountOtpSchema: Joi.object({
+    mobile: Joi.string().required().messages({
+      'any.required': 'Mobile number is required',
+      'string.empty': 'Mobile number cannot be empty'
+    }),
+    otp: Joi.alternatives().try(Joi.string(), Joi.number()).required().messages({
+      'any.required': 'OTP is required',
+      'string.empty': 'OTP cannot be empty'
+    })
   })
 };

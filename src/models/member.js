@@ -152,6 +152,19 @@ module.exports = (sequelize, DataTypes) => {
     fcm_token: {
       type: DataTypes.STRING,
       allowNull: true
+    },
+    is_active: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+      allowNull: false
+    },
+    delete_account_otp: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    delete_account_otp_expires_at: {
+      type: DataTypes.DATE,
+      allowNull: true
     }
   }, {
     sequelize,

@@ -82,6 +82,9 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
         if (!user.is_verified) {
           return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin will review your account, please wait.');
         }
+        if (user.is_active === false) {
+          return errorResponse(res, statusCodes.OK, 'Your account has been deactivated. Please contact your branch.');
+        }
         role = 'member';
       } else {
         user = null;
