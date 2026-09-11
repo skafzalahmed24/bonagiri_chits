@@ -70,6 +70,9 @@ router.post('/notifications/delete', authMiddleware.authenticateToken, validate(
 router.post('/post-refer-member', authMiddleware.authenticateToken, validate(userValidation.referMemberSchema), userController.referMember);
 router.post('/my-referrals', authMiddleware.authenticateToken, validate(userValidation.getMyReferralsSchema), userController.getMyReferrals);
 
+// Public Terms & Privacy route
+router.post('/public/terms-privacy', authMiddleware.authenticateDefaultToken, validate(adminValidation.getPlatformTermsPrivacySchema), platformSupportController.getPlatformTermsPrivacy);
+
 // Public Support route
 router.post('/public/support', authMiddleware.authenticateDefaultToken, platformSupportController.getPublicSupport);
 

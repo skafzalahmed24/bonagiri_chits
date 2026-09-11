@@ -278,6 +278,9 @@ router.post('/super-admin/support/faq/get-all', authMiddleware.authenticateSuper
 router.post('/super-admin/support/faq/store-or-update', authMiddleware.authenticateSuperAdminToken, validate(adminValidation.storeOrUpdatePlatformSupportFaqSchema), platformSupportController.storeOrUpdatePlatformSupportFaq);
 router.post('/super-admin/support/faq/delete', authMiddleware.authenticateSuperAdminToken, validate(adminValidation.deletePlatformSupportFaqSchema), platformSupportController.deletePlatformSupportFaq);
 
+// Public Terms & Privacy route
+router.post('/public/terms-privacy', authMiddleware.authenticateDefaultToken, validate(adminValidation.getPlatformTermsPrivacySchema), platformSupportController.getPlatformTermsPrivacy);
+
 // Public Support route
 router.post('/public/support', authMiddleware.authenticateDefaultToken, platformSupportController.getPublicSupport);
 

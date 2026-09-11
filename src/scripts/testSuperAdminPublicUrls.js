@@ -89,6 +89,16 @@ async function runTests() {
     if (res.body.status !== 1 || !res.body.data.content.includes('Platform terms.')) throw new Error('Failed to retrieve updated terms');
     console.log('✓ 1.1 & 1.2 Terms & Privacy endpoints verified');
 
+    // TEST 1.3: Public Terms & Privacy (Both /api and /api/user routes)
+    res = await request(server, '/api/public/terms-privacy', 'POST', { type: 1 }, defaultTokenHeader);
+    console.log('1.3 GET Public Terms:', res.statusCode, res.body);
+    if (res.body.status !== 1 || !res.body.data.content.includes('Platform terms.')) throw new Error('Failed Public Terms');
+
+    res = await request(server, '/api/user/public/terms-privacy', 'POST', { type: 2 }, defaultTokenHeader);
+    console.log('1.3 GET Public Privacy (/api/user):', res.statusCode, res.body);
+    if (res.body.status !== 1 || !res.body.data.content.includes('Platform privacy')) throw new Error('Failed Public Privacy');
+    console.log('✓ 1.3 Public Terms & Privacy endpoints verified');
+
     // TEST 2.1 & 2.2: Super Admin Support Contact
     res = await request(server, '/api/super-admin/support/contact/store-or-update', 'POST', {
       address: 'Bonagiri Chits HQ, Vijayawada, AP',
