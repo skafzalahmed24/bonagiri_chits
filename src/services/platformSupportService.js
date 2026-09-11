@@ -272,17 +272,26 @@ const getPublicSupportService = async (res) => {
 };
 
 /**
- * Helper to find member by phone number
+ * Helper to find member by user_id, user_code, member_id, or mobile number
  */
-const findMemberByPhone = async (mobile, withPassword = false) => {
-  const cleanMobile = String(mobile).trim();
-  const digitsOnly = cleanMobile.replace(/\D/g, '');
+const findMemberByIdentifier = async (identifier, withPassword = false) => {
+  if (!identifier) return null;
+  const cleanId = String(identifier).trim();
+  const digitsOnly = cleanId.replace(/\D/g, '');
   const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
 
   const whereConditions = [
-    { mobile_number: cleanMobile },
+    { member_id: cleanId },
+    { mobile_number: cleanId },
     { mobile_number: last10Digits }
   ];
+
+  const parsedNum = parseInt(cleanId, 10);
+  // Only search on INTEGER columns if within 32-bit signed integer range to prevent PG integer overflow
+  if (!isNaN(parsedNum) && parsedNum > 0 && parsedNum <= 2147483647 && /^\d+$/.test(cleanId) && cleanId.length <= 9) {
+    whereConditions.push({ id: parsedNum });
+    whereConditions.push({ other_info_user_code: parsedNum });
+  }
 
   if (digitsOnly.length > 10) {
     whereConditions.push({ mobile_number: digitsOnly });
@@ -305,17 +314,17 @@ const findMemberByPhone = async (mobile, withPassword = false) => {
 /**
  * 4.1 Public: Send Delete Account OTP
  */
-const sendDeleteAccountOtpService = async (res, mobile, password) => {
+const sendDeleteAccountOtpService = async (res, identifier, password) => {
   try {
-    const member = await findMemberByPhone(mobile, true);
+    const member = await findMemberByIdentifier(identifier, true);
 
     if (!member || !member.other_info_user_password) {
-      return errorResponse(res, statusCodes.OK, 'Incorrect mobile number or password. Please try again.');
+      return errorResponse(res, statusCodes.OK, 'Incorrect User ID or password. Please try again.');
     }
 
     const isPasswordValid = await bcrypt.compare(password, member.other_info_user_password);
     if (!isPasswordValid) {
-      return errorResponse(res, statusCodes.OK, 'Incorrect mobile number or password. Please try again.');
+      return errorResponse(res, statusCodes.OK, 'Incorrect User ID or password. Please try again.');
     }
 
     if (member.is_active === false) {
@@ -350,9 +359,9 @@ const sendDeleteAccountOtpService = async (res, mobile, password) => {
 /**
  * 4.2 Public: Verify Delete Account OTP & Deactivate Account
  */
-const verifyDeleteAccountOtpService = async (res, mobile, otp) => {
+const verifyDeleteAccountOtpService = async (res, identifier, otp) => {
   try {
-    const member = await findMemberByPhone(mobile, false);
+    const member = await findMemberByIdentifier(identifier, false);
 
     if (!member) {
       return errorResponse(res, statusCodes.OK, 'Invalid OTP. Please check and try again.');

@@ -108,8 +108,9 @@ const getPublicSupport = async (req, res) => {
  */
 const sendDeleteAccountOtp = async (req, res) => {
   try {
-    const { mobile, password } = req.body;
-    return await platformSupportService.sendDeleteAccountOtpService(res, mobile, password);
+    const { user_id, mobile, user_code, password } = req.body;
+    const identifier = user_id || mobile || user_code;
+    return await platformSupportService.sendDeleteAccountOtpService(res, identifier, password);
   } catch (error) {
     console.error('[CONTROLLER] Error in sendDeleteAccountOtp:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -121,8 +122,9 @@ const sendDeleteAccountOtp = async (req, res) => {
  */
 const verifyDeleteAccountOtp = async (req, res) => {
   try {
-    const { mobile, otp } = req.body;
-    return await platformSupportService.verifyDeleteAccountOtpService(res, mobile, otp);
+    const { user_id, mobile, user_code, otp } = req.body;
+    const identifier = user_id || mobile || user_code;
+    return await platformSupportService.verifyDeleteAccountOtpService(res, identifier, otp);
   } catch (error) {
     console.error('[CONTROLLER] Error in verifyDeleteAccountOtp:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

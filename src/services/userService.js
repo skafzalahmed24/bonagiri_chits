@@ -79,7 +79,7 @@ const getHomeRecordService = async (res, userPayload) => {
                         const h12 = h % 12 || 12;
                         timeStr = `${h12.toString().padStart(2, '0')}:${minutes} ${ampm}`;
                     }
-                    
+
                     upcoming_auction.push({
                         date: auctionDate.getDate().toString(),
                         month_name: months[auctionDate.getMonth()],
@@ -756,8 +756,8 @@ const getBidDetailsService = async (res, group_id, userPayload) => {
         // Status label mapping: 0 = Upcoming, 1 = Live Now, 2 = Completed
         const groupStatus = Number(group.chits_group_status);
 
-        const isWinnerStatus = latestAuction && userPayload 
-            ? latestAuction.bidder_id === userPayload.id 
+        const isWinnerStatus = latestAuction && userPayload
+            ? latestAuction.bidder_id === userPayload.id
             : false;
 
         const responseData = {
@@ -957,7 +957,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                 : null;
 
             const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
-            
+
             let countdownStart = new Date(simulatedNow);
             if (group && group.auction_date) {
                 const groupAuctionDate = new Date(group.auction_date);
@@ -1062,7 +1062,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
             // Math card stats
             const originalAmountVal = getSchemeOriginalAmount(schemeConfig, auction);
             let profitAmountVal = 0.00;
-            
+
             const matchingInstallment = allUserInstallments.find(inst => inst.installment_no === auction.auction_number);
 
             // Calculate profit primarily from auction dividend if available
@@ -1141,7 +1141,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
             if (matchingInstallment) {
                 const pendingForInst = payableAmountVal - totalPaidAmountForAuction;
                 const dueDate = matchingInstallment.due_date ? new Date(matchingInstallment.due_date) : null;
-                
+
                 if (dueDate && pendingForInst > 0) {
                     const simulatedNow = await getSimulatedNow();
                     simulatedNow.setHours(0, 0, 0, 0);
@@ -1150,7 +1150,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                     if (dueDate < simulatedNow) {
                         const diffTime = simulatedNow.getTime() - dueDate.getTime();
                         const overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-                        
+
                         if (overDueDaysCount > 0) {
                             const isSubscriberWinner = auctions.some(a => a.bidder_id === subscriber_id);
                             const penaltyRate = isSubscriberWinner
@@ -1303,7 +1303,7 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id, from
         });
 
         let startOfPeriod, endOfPeriod;
-        
+
         if (from_date && to_date) {
             startOfPeriod = new Date(from_date);
             startOfPeriod.setHours(0, 0, 0, 0);
@@ -1663,7 +1663,7 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
             attributes: ['member_id', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
             group: ['member_id']
         });
-        
+
         const pendingSubMap = {};
         pendingSubmissions.forEach(sub => {
             pendingSubMap[sub.member_id] = parseInt(sub.getDataValue('count'), 10) || 0;
@@ -2548,7 +2548,7 @@ const deleteNotificationService = async (res, userPayload, notification_id, dele
 const getGroupsByCollectionAgentIdService = async (res, reqUser, requested_agent_id) => {
     try {
         let collection_agent_id = requested_agent_id;
-        
+
         if (isCollectionAgent(reqUser)) {
             collection_agent_id = reqUser.id; // Force their own ID
         } else if (reqUser.role === 'staff') {
@@ -2558,7 +2558,7 @@ const getGroupsByCollectionAgentIdService = async (res, reqUser, requested_agent
             const agent = await Member.findOne({ where: { id: requested_agent_id, company_id: reqUser.id } });
             if (!agent) return errorResponse(res, statusCodes.FORBIDDEN, 'Access denied');
         } else {
-             return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized role');
+            return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized role');
         }
 
         const enrollments = await Enrollment.findAll({
@@ -2566,7 +2566,7 @@ const getGroupsByCollectionAgentIdService = async (res, reqUser, requested_agent
             attributes: ['group_id']
         });
         const groupIds = Array.from(new Set(enrollments.map(e => e.group_id)));
-        
+
         const groups = await ChitsGroup.findAll({
             where: { id: { [Op.in]: groupIds }, is_deleted_status: 0 },
             attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments']
@@ -2644,7 +2644,7 @@ const getMembersByGroupIdService = async (res, reqUser, group_id, search, min, m
         // Sum up the counts per subscriber because group by might return multiple rows per subscriber depending on postgres strictness, actually let's group by subscriber_id only. 
         // Wait, postgres might complain if group.id is in group but not in select, let's remove group from group by if possible, but sequelize might automatically add it.
         // It's safer to just aggregate in JS if needed, but since we are doing a simple count, let's just use raw query or loop.
-        
+
         // Let's refine the activeChitsCount logic to avoid postgres GROUP BY errors:
         const activeChitsMap = {};
         for (const item of activeChitsCount) {
@@ -2688,7 +2688,7 @@ const getMembersByCollectionAgentIdService = async (res, collection_agent_id, se
             attributes: [[sequelize.fn('DISTINCT', sequelize.col('subscriber_id')), 'subscriber_id']],
             raw: true
         });
-        
+
         const distinctSubscriberIds = enrollments.map(e => e.subscriber_id).filter(Boolean);
 
         const { count, rows: members } = await Member.findAndCountAll({
@@ -2743,7 +2743,7 @@ const getMembersByCollectionAgentIdService = async (res, collection_agent_id, se
 const getCustomerDetailsByIdService = async (res, payload) => {
     try {
         const { member_id } = payload;
-        
+
         const member = await Member.findByPk(member_id, {
             attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image', 'gender']
         });
@@ -2806,7 +2806,7 @@ const getCustomerDetailsByIdService = async (res, payload) => {
                     const minutes = date.getMinutes().toString().padStart(2, '0');
                     const ampm = hours >= 12 ? 'PM' : 'AM';
                     hours = hours % 12;
-                    hours = hours ? hours : 12; 
+                    hours = hours ? hours : 12;
                     return `${d} ${m} ${y}, ${hours}:${minutes} ${ampm}`;
                 };
 
@@ -2881,7 +2881,7 @@ const getVisitHistoryService = async (res, payload) => {
             const minutes = date.getMinutes().toString().padStart(2, '0');
             const ampm = hours >= 12 ? 'PM' : 'AM';
             hours = hours % 12;
-            hours = hours ? hours : 12; 
+            hours = hours ? hours : 12;
             return `${d} ${m} ${y}, ${hours}:${minutes} ${ampm}`;
         };
 
@@ -2913,7 +2913,7 @@ const getVisitHistoryService = async (res, payload) => {
 const getVisitDetailsByIdService = async (res, payload) => {
     try {
         const { visit_id } = payload;
-        
+
         const visit = await CustomerVisit.findByPk(visit_id, {
             include: [{
                 model: Member,
@@ -2937,7 +2937,7 @@ const getVisitDetailsByIdService = async (res, payload) => {
             const minutes = date.getMinutes().toString().padStart(2, '0');
             const ampm = hours >= 12 ? 'PM' : 'AM';
             hours = hours % 12;
-            hours = hours ? hours : 12; 
+            hours = hours ? hours : 12;
             return `${d} ${m} ${y}, ${hours}:${minutes} ${ampm}`;
         };
 
@@ -2962,7 +2962,7 @@ const getVisitDetailsByIdService = async (res, payload) => {
 const storeCustomerVisitService = async (res, payload) => {
     try {
         const { member_id, collection_agent_id, visitor_type, upload_proof, remarks, customer_vistor_status } = payload;
-        
+
         // Verify member and collection agent exist
         const member = await Member.findByPk(member_id);
         if (!member) {
@@ -3005,8 +3005,8 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
                 isAllowed = true;
             }
         } else if (isCollectionAgent(reqUser)) {
-            const count = await Enrollment.count({ 
-                where: { subscriber_id: member_id, collection_agent_id: reqUser.id, delete_status: 0 } 
+            const count = await Enrollment.count({
+                where: { subscriber_id: member_id, collection_agent_id: reqUser.id, delete_status: 0 }
             });
             if (count > 0) isAllowed = true;
         }
@@ -3040,6 +3040,19 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
             where: whereClause,
             include: [
                 {
+                    model: CollectionAgentAmount,
+                    as: 'collection_submission',
+                    required: false,
+                    include: [
+                        {
+                            model: Member,
+                            as: 'collection_agent',
+                            attributes: ['id', 'name', 'rep_by_first_name', 'sur_name', 'other_info_user_code', 'member_id'],
+                            required: false
+                        }
+                    ]
+                },
+                {
                     model: ChitsInstallment,
                     as: 'installment',
                     required: true,
@@ -3054,6 +3067,12 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
                                     model: ChitsGroup,
                                     as: 'group',
                                     required: true
+                                },
+                                {
+                                    model: Member,
+                                    as: 'collection_agent',
+                                    attributes: ['id', 'name', 'rep_by_first_name', 'sur_name', 'other_info_user_code', 'member_id'],
+                                    required: false
                                 }
                             ]
                         }
@@ -3086,6 +3105,17 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
 
             const group = payment.installment?.enrollment?.group;
 
+            let collectionAgentName = null;
+            if (payment.collection_submission && payment.collection_submission.collection_agent) {
+                const ca = payment.collection_submission.collection_agent;
+                collectionAgentName = ca.name || `${ca.rep_by_first_name || ''} ${ca.sur_name || ''}`.trim() || null;
+            } else if (payment.recorded_by_name) {
+                collectionAgentName = payment.recorded_by_name;
+            } else if (payment.installment?.enrollment?.collection_agent) {
+                const ca = payment.installment.enrollment.collection_agent;
+                collectionAgentName = ca.name || `${ca.rep_by_first_name || ''} ${ca.sur_name || ''}`.trim() || null;
+            }
+
             let paymentModeStr = 'Unknown';
             if (payment.payment_mode === 1) paymentModeStr = 'Cash';
             else if (payment.payment_mode === 2) paymentModeStr = 'UPI';
@@ -3102,7 +3132,8 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
                 time: timeKey,
                 amount: amount,
                 payment_mode: paymentModeStr,
-                status: payment.payment_status
+                status: payment.payment_status,
+                collection_agent_name: collectionAgentName
             });
         });
 
@@ -3130,7 +3161,7 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
 const referMemberService = async (res, userPayload, payload) => {
     try {
         const { name, mobile_number } = payload;
-        
+
         // userPayload.id is the ID of the logged in user/member
         const refer_by_user_id = userPayload.id;
 
@@ -3152,11 +3183,11 @@ const getMyReferralsService = async (res, userPayload, min = 0, max = 10, search
     try {
         const limit = parseInt(max, 10);
         const offset = parseInt(min, 10);
-        
+
         const refer_by_user_id = userPayload.id;
 
         const whereClause = { refer_by_user_id };
-        
+
         if (search) {
             whereClause.name = { [Op.iLike]: `%${search}%` };
         }

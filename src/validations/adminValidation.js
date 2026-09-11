@@ -1221,23 +1221,21 @@ module.exports = {
     })
   }),
   sendDeleteAccountOtpSchema: Joi.object({
-    mobile: Joi.string().required().messages({
-      'any.required': 'Mobile number is required',
-      'string.empty': 'Mobile number cannot be empty'
-    }),
+    user_id: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
+    mobile: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
+    user_code: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
     password: Joi.string().required().messages({
       'any.required': 'Password is required',
       'string.empty': 'Password cannot be empty'
     })
-  }),
+  }).or('user_id', 'mobile', 'user_code'),
   verifyDeleteAccountOtpSchema: Joi.object({
-    mobile: Joi.string().required().messages({
-      'any.required': 'Mobile number is required',
-      'string.empty': 'Mobile number cannot be empty'
-    }),
+    user_id: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
+    mobile: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
+    user_code: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
     otp: Joi.alternatives().try(Joi.string(), Joi.number()).required().messages({
       'any.required': 'OTP is required',
       'string.empty': 'OTP cannot be empty'
     })
-  })
+  }).or('user_id', 'mobile', 'user_code')
 };

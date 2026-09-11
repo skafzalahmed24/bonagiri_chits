@@ -349,10 +349,15 @@ in an in-app browser.
 **Important:** We do NOT actually delete the member record. Chit fund regulations
 (Chit Funds Act 1982, RBI guidelines) require financial records to be preserved.
 Instead, we **disable login access** by setting `is_active = false` (or equivalent)
-on the member record. The member can no longer log in, but all financial data
-is intact.
+on the **member** record for that specific company. A member who belongs to multiple
+companies (tenants) is only deactivated for the company whose `user_id` they enter —
+their accounts at other companies are unaffected.
 
 The Android app gives users this URL:  `https://<your-domain>/delete-account`
+
+> **Why `user_id` and not `mobile`?** A mobile number can be registered across
+> multiple companies. Using the company-specific `user_id` scopes the deletion to
+> a single tenant, which is the correct behaviour.
 
 ---
 
@@ -362,18 +367,21 @@ The Android app gives users this URL:  `https://<your-domain>/delete-account`
 
 **Request body:**
 ```json
-{ "mobile": "9876543210", "password": "member_password" }
+{ "user_id": "BNG-00123", "password": "member_password" }
 ```
 
+`user_id` is the company-specific login ID the member uses to log in (the same
+value they enter in the app's login screen — your `user_code` / `member_code`
+column, whatever it is called in your schema).
+
 **What it does:**
-1. Find member by `mobile` (or `mobile_number` — whichever column stores the phone).
+1. Find member by `user_id` (look up the login-code column, e.g. `user_code`).
 2. Verify `password` against the stored hashed password (same bcrypt compare used in login).
 3. If credentials are wrong → return error (see below).
 4. Generate a 6-digit OTP, set expiry to **10 minutes** from now.
-5. Store OTP (hashed or plain, your choice — but do NOT use the existing `mobile_otp`
-   column which is shared with password-reset flow; add a new column or a
-   dedicated table — see DB note below).
-6. Send OTP via SMS to the member's registered mobile number.
+5. Store OTP (do NOT reuse `mobile_otp` — that column is shared with the
+   password-reset flow; add a new column or dedicated table — see DB note below).
+6. Send OTP via SMS to the mobile number registered for that `user_id`.
 7. Return success.
 
 **Response (success):**
@@ -389,7 +397,7 @@ The Android app gives users this URL:  `https://<your-domain>/delete-account`
 ```json
 {
   "status": 0,
-  "message": "Incorrect mobile number or password. Please try again."
+  "message": "Incorrect User ID or password. Please try again."
 }
 ```
 
@@ -409,14 +417,14 @@ The Android app gives users this URL:  `https://<your-domain>/delete-account`
 
 **Request body:**
 ```json
-{ "mobile": "9876543210", "otp": "482913" }
+{ "user_id": "BNG-00123", "otp": "482913" }
 ```
 
 **What it does:**
-1. Find member by `mobile`.
+1. Find member by `user_id`.
 2. Check OTP matches and is not expired.
 3. If OTP is wrong or expired → return error.
-4. Set `is_active = false` on the member record (disables login).
+4. Set `is_active = false` on that member record (disables login for this company only).
 5. Clear the stored OTP fields.
 6. Return success.
 
@@ -503,8 +511,8 @@ if (!member.is_active) {
 | `POST super-admin/support/faq/store-or-update` | `authenticateSuperAdminToken` | `platform_support_faq` |
 | `POST super-admin/support/faq/delete` | `authenticateSuperAdminToken` | `platform_support_faq` |
 | `POST public/support` | `authenticateDefaultToken` | `platform_support_contact`, `platform_support_faq` (read-only) |
-| `POST member/delete-account/send-otp` | `authenticateDefaultToken` | `member` (read + OTP write) |
-| `POST member/delete-account/verify` | `authenticateDefaultToken` | `member` (`is_active = false`) |
+| `POST member/delete-account/send-otp` | `authenticateDefaultToken` | `member` (lookup by `user_id`, OTP write) |
+| `POST member/delete-account/verify` | `authenticateDefaultToken` | `member` (`is_active = false` for that user_id) |
 
 **New DB tables to create (migrations):**
 - `platform_terms_privacy`

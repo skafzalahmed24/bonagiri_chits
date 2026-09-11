@@ -6,6 +6,8 @@ const validate = require('../middlewares/validate');
 const authMiddleware = require('../middlewares/authMiddleware');
 const userValidation = require('../validations/userValidation');
 const adminValidation = require('../validations/adminValidation');
+const platformSupportController = require('../controllers/platformSupportController');
+const { authRateLimiter } = require('../middlewares/rateLimiter');
 
 // get home record based on subscriber_id
 router.post('/home', authMiddleware.authenticateToken, validate(userValidation.getHomeRecordSchema), userController.getHomeRecord);
@@ -67,5 +69,12 @@ router.post('/notifications/delete', authMiddleware.authenticateToken, validate(
 // Member referral route
 router.post('/post-refer-member', authMiddleware.authenticateToken, validate(userValidation.referMemberSchema), userController.referMember);
 router.post('/my-referrals', authMiddleware.authenticateToken, validate(userValidation.getMyReferralsSchema), userController.getMyReferrals);
+
+// Public Support route
+router.post('/public/support', authMiddleware.authenticateDefaultToken, platformSupportController.getPublicSupport);
+
+// Member Delete Account routes
+router.post('/member/delete-account/send-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);
+router.post('/member/delete-account/verify', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyDeleteAccountOtpSchema), platformSupportController.verifyDeleteAccountOtp);
 
 module.exports = router;

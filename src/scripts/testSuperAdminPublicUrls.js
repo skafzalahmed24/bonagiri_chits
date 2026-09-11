@@ -187,7 +187,7 @@ async function runTests() {
       password: 'WrongPassword!'
     }, defaultTokenHeader);
     console.log('4.1a SEND OTP (Wrong Password):', res.statusCode, res.body);
-    if (res.statusCode !== 200 || res.body.status !== 0 || !res.body.message.includes('Incorrect mobile number')) {
+    if (res.statusCode !== 200 || res.body.status !== 0 || !res.body.message.includes('Incorrect')) {
       throw new Error('Failed Send OTP Wrong Password check');
     }
 
