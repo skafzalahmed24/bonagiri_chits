@@ -9,6 +9,7 @@ const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAd
 const { Op } = require('sequelize');
 const SystemSettingsService = require('./systemSettingsService');
 const twilioService = require('./twilioService');
+const { calculateMemberRating } = require('../utils/ratingHelper');
 
 const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
   if (reqBody && reqBody.company_id) {
@@ -149,6 +150,11 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       }
     }
 
+    let memberRating = null;
+    if (type === 2 && role === 'member') {
+      memberRating = await calculateMemberRating(user.id, user);
+    }
+
     const payload = {
       id: user.id,
       user_id: type === 1 ? (role === 'company' ? user.company_id : user.user_code) : user.other_info_user_code,
@@ -160,19 +166,33 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     };
     const tokens = generateTokens(payload);
 
+    const userResponse = {
+      id: user.id,
+      user_id: payload.user_id,
+      company_id: type === 1 ? (role === 'company' ? user.id : user.company_id) : user.company_id,
+      name: user.company_name || (user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user.name),
+      type: user.type,
+      role: role,
+      gender: user.gender || null,
+      profile_image: user.upload_image || null,
+      is_favorites: user.is_favorites || [],
+      introduced_as: introduced_as_details
+    };
+
+    if (memberRating) {
+      userResponse.star_rating = memberRating.star_rating;
+      userResponse.rating_tier = memberRating.rating_tier;
+      userResponse.rating_category = memberRating.rating_category;
+      userResponse.rating_color = memberRating.rating_color;
+      userResponse.rating_label = memberRating.rating_label;
+      userResponse.trust_tier = memberRating.trust_tier;
+      userResponse.risk_level = memberRating.risk_level;
+      userResponse.badges = memberRating.badges;
+      userResponse.rating = memberRating;
+    }
+
     return successResponse(res, statusCodes.OK, 'Login success', {
-      user: {
-        id: user.id,
-        user_id: payload.user_id,
-        company_id: type === 1 ? (role === 'company' ? user.id : user.company_id) : user.company_id,
-        name: user.company_name || (user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user.name),
-        type: user.type,
-        role: role,
-        gender: user.gender || null,
-        profile_image: user.upload_image || null,
-        is_favorites: user.is_favorites || [],
-        introduced_as: introduced_as_details
-      },
+      user: userResponse,
       tokens
     });
   } catch (error) {
@@ -3694,6 +3714,14 @@ const getMemberByIdService = async (res, id, companyId) => {
         memberData.kyc_details_dropdown = [];
       }
     }
+
+    const ratingDetails = await calculateMemberRating(member.id, member);
+    memberData.star_rating = ratingDetails.star_rating;
+    memberData.rating_tier = ratingDetails.rating_tier;
+    memberData.rating_category = ratingDetails.rating_category;
+    memberData.rating_color = ratingDetails.rating_color;
+    memberData.rating_label = ratingDetails.rating_label;
+    memberData.rating = ratingDetails;
 
     return successResponse(res, statusCodes.OK, 'Member retrieved successfully', memberData);
   } catch (error) {
