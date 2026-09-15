@@ -10,6 +10,7 @@ const { Op } = require('sequelize');
 const SystemSettingsService = require('./systemSettingsService');
 const twilioService = require('./twilioService');
 const { calculateMemberRating } = require('../utils/ratingHelper');
+const { deleteUploadedFile } = require('../utils/fileHelper');
 
 const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
   if (reqBody && reqBody.company_id) {
@@ -289,9 +290,9 @@ const verifyOtpService = async (res, user_code, type, otp) => {
       dbAttempts = user.mobile_otp_attempts || 0;
     }
 
-    if (dbAttempts >= maxAttempts) {
-      return errorResponse(res, statusCodes.BAD_REQUEST, 'Maximum OTP attempts exceeded');
-    }
+    // if (dbAttempts >= maxAttempts) {
+    //   return errorResponse(res, statusCodes.BAD_REQUEST, 'Maximum OTP attempts exceeded');
+    // }
 
     if (dbExpiresAt && now > new Date(dbExpiresAt)) {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'OTP has expired');
@@ -4270,21 +4271,33 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
 const storeOrUpdateGalleryService = async (res, reqBody, userPayload) => {
   try {
     const { id, gallery_image, status } = reqBody;
-    const company_id = await resolveCompanyIdForAuth(userPayload);
+    const company_id = await resolveCompanyIdForAssociation(userPayload, reqBody);
 
     if (id) {
       // Update
-      const gallery = await Gallery.findOne({ where: { id, company_id: companyId } });
+      const whereClause = { id };
+      if (company_id) {
+        whereClause.company_id = company_id;
+      }
+      const gallery = await Gallery.findOne({ where: whereClause });
       if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
 
-      await gallery.update({ gallery_image, status });
+      // If updating image and it changed, remove previous file from uploads folder
+      if (gallery_image && gallery.gallery_image && gallery.gallery_image !== gallery_image) {
+        deleteUploadedFile(gallery.gallery_image);
+      }
+
+      await gallery.update({
+        gallery_image: gallery_image !== undefined ? gallery_image : gallery.gallery_image,
+        status: status !== undefined ? status : gallery.status
+      });
       return successResponse(res, statusCodes.OK, 'Gallery updated successfully', gallery);
     } else {
       // Store
       const gallery = await Gallery.create({
         company_id,
         gallery_image,
-        status: status || 0
+        status: status !== undefined ? status : 0
       });
       return successResponse(res, statusCodes.CREATED, 'Gallery added successfully', gallery);
     }
@@ -4294,11 +4307,15 @@ const storeOrUpdateGalleryService = async (res, reqBody, userPayload) => {
   }
 };
 
-const getAllGalleryService = async (res, reqBody) => {
+const getAllGalleryService = async (res, reqBody, userPayload) => {
   try {
-    const { company_id, min = 0, max = 10, status } = reqBody;
-    const limit = parseInt(max, 10);
-    const offset = parseInt(min, 10);
+    const { min = 0, max = 10, status } = reqBody || {};
+    let company_id = reqBody ? reqBody.company_id : null;
+    if (!company_id && userPayload) {
+      company_id = await resolveCompanyIdForAuth(userPayload);
+    }
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
 
     const whereClause = {};
     if (company_id) whereClause.company_id = company_id;
@@ -4318,9 +4335,21 @@ const getAllGalleryService = async (res, reqBody) => {
   }
 };
 
-const getGalleryByIdService = async (res, id, companyId) => {
+const getGalleryByIdService = async (res, id, userOrCompanyId) => {
   try {
-    const gallery = await Gallery.findOne({ where: { id, company_id: companyId } });
+    let companyId = null;
+    if (userOrCompanyId && typeof userOrCompanyId === 'object') {
+      companyId = await resolveCompanyIdForAuth(userOrCompanyId);
+    } else if (typeof userOrCompanyId === 'string' || typeof userOrCompanyId === 'number') {
+      companyId = userOrCompanyId;
+    }
+
+    const whereClause = { id };
+    if (companyId) {
+      whereClause.company_id = companyId;
+    }
+
+    const gallery = await Gallery.findOne({ where: whereClause });
     if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
     return successResponse(res, statusCodes.OK, 'Gallery retrieved successfully', gallery);
   } catch (error) {
@@ -4329,10 +4358,27 @@ const getGalleryByIdService = async (res, id, companyId) => {
   }
 };
 
-const deleteGalleryService = async (res, id, companyId) => {
+const deleteGalleryService = async (res, id, userOrCompanyId) => {
   try {
-    const gallery = await Gallery.findOne({ where: { id, company_id: companyId } });
+    let companyId = null;
+    if (userOrCompanyId && typeof userOrCompanyId === 'object') {
+      companyId = await resolveCompanyIdForAuth(userOrCompanyId);
+    } else if (typeof userOrCompanyId === 'string' || typeof userOrCompanyId === 'number') {
+      companyId = userOrCompanyId;
+    }
+
+    const whereClause = { id };
+    if (companyId) {
+      whereClause.company_id = companyId;
+    }
+
+    const gallery = await Gallery.findOne({ where: whereClause });
     if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+    // Delete image from uploads folder if exists on disk
+    if (gallery.gallery_image) {
+      deleteUploadedFile(gallery.gallery_image);
+    }
 
     await gallery.destroy();
     return successResponse(res, statusCodes.OK, 'Gallery deleted successfully');
@@ -4408,9 +4454,9 @@ const verifyMemberOtpService = async (res, member_id, otp) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'No OTP has been sent for this member');
     }
 
-    if (member.verification_otp_attempts >= 3) {
-      return errorResponse(res, statusCodes.BAD_REQUEST, 'Too many failed attempts. Please request a new OTP after 15 minutes.');
-    }
+    // if (member.verification_otp_attempts >= 3) {
+    //   return errorResponse(res, statusCodes.BAD_REQUEST, 'Too many failed attempts. Please request a new OTP after 15 minutes.');
+    // }
 
     const now = new Date();
     if (now > new Date(member.verification_otp_expires_at)) {

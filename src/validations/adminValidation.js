@@ -975,18 +975,20 @@ module.exports = {
     max: Joi.number().integer().min(1).optional()
   }),
   galleryValidator: Joi.object({
-    id: Joi.string().uuid().optional(),
+    id: Joi.alternatives().try(Joi.string().uuid(), Joi.string(), Joi.number()).optional(),
     gallery_image: Joi.string().required(),
     status: Joi.number().integer().valid(0, 1).optional()
   }),
   getAllGallerySchema: Joi.object({
-    company_id: Joi.string().uuid().optional(),
+    company_id: Joi.alternatives().try(Joi.string().uuid(), Joi.string(), Joi.number()).optional(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional(),
     status: Joi.number().integer().valid(0, 1).optional()
   }),
   deleteGallerySchema: Joi.object({
-    id: Joi.string().uuid().required()
+    id: Joi.alternatives().try(Joi.string().uuid(), Joi.string(), Joi.number()).required().messages({
+      'any.required': 'Gallery ID is required'
+    })
   }),
   getMemberDocumentsAdminSchema: Joi.object({
     group_id: Joi.string().uuid().required(),

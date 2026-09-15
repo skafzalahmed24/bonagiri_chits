@@ -1297,15 +1297,15 @@ const storeOrUpdateGallery = async (req, res) => {
 };
 
 const getAllGallery = async (req, res) => {
-  return await adminService.getAllGalleryService(res, req.body);
+  return await adminService.getAllGalleryService(res, req.body, req.user);
 };
 
 const getGalleryById = async (req, res) => {
-  return await adminService.getGalleryByIdService(res, req.body.id);
+  return await adminService.getGalleryByIdService(res, req.body.id, req.user);
 };
 
 const deleteGallery = async (req, res) => {
-  return await adminService.deleteGalleryService(res, req.body.id);
+  return await adminService.deleteGalleryService(res, req.body.id, req.user);
 };
 
 const getInstallmentsByGroup = async (req, res) => {
