@@ -5,8 +5,9 @@ const getHomeRecordSchema = Joi.object({
 });
 
 const getAllHomeRecordsSchema = Joi.object({
-  subscriber_id: Joi.string().required(),
+  subscriber_id: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
   type: Joi.number().valid(0, 1, 2).optional().default(0),
+  auction_type: Joi.number().valid(1, 2).optional(),
   min: Joi.number().min(0).optional().default(0),
   max: Joi.number().min(1).optional().default(10)
 });
@@ -53,7 +54,8 @@ const getChitDetailsSchema = Joi.object({
   group_id: Joi.string().uuid().required().messages({
     'any.required': 'Group ID is required',
     'string.uuid': 'Invalid Group ID format'
-  })
+  }),
+  auction_type: Joi.number().valid(1, 2).optional()
 });
 
 const getPaymentHistorySchema = Joi.object({

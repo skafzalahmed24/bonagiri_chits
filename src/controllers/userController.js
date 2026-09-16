@@ -16,8 +16,8 @@ const getHomeRecord = async (req, res) => {
 
 const getAllHomeRecords = async (req, res) => {
   try {
-    const { subscriber_id, type, min, max } = req.body;
-    return await userService.getAllHomeRecordsService(res, req.user, type, min, max);
+    const { subscriber_id, type, auction_type, min, max } = req.body || {};
+    return await userService.getAllHomeRecordsService(res, req.user, type, min, max, auction_type);
   } catch (error) {
     console.error('Error in getAllHomeRecords:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -76,8 +76,8 @@ const getBidDetails = async (req, res) => {
 
 const getChitDetails = async (req, res) => {
   try {
-    const { group_id } = req.body;
-    return await userService.getChitDetailsService(res, req.user, group_id);
+    const { group_id, auction_type } = req.body || {};
+    return await userService.getChitDetailsService(res, req.user, group_id, auction_type);
   } catch (error) {
     console.error('Error in getChitDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
