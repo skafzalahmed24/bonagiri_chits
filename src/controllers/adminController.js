@@ -1263,8 +1263,9 @@ const getBusinessAgentCommissionSummary = async (req, res) => {
 
 const getHistoryByGroupId = async (req, res) => {
   try {
-    const { group_id, min, max } = req.body || {};
-    return await adminService.getHistoryByGroupIdService(res, group_id, min, max);
+    const { group_id, business_agent_id, min, max } = req.body || {};
+    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : null);
+    return await adminService.getHistoryByGroupIdService(res, group_id, min, max, agentId);
   } catch (error) {
     console.error('Error in getHistoryByGroupId:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

@@ -97,7 +97,7 @@ const getHomeRecordService = async (res, userPayload) => {
             const member = await Member.findByPk(subscriber_id);
             const company_id = member ? member.company_id : null;
 
-            const whereClause = { status: 0 };
+            const whereClause = { status: 1 };
             if (company_id) {
                 whereClause.company_id = company_id;
             }
@@ -284,7 +284,7 @@ const getUpcomingChitsService = async (res, userPayload, min = 0, max = 10) => {
         const offset = parseInt(min, 10) || 0;
 
         const whereClause = {
-            status: 0
+            status: 1
         };
         if (company_id) {
             whereClause.company_id = company_id;
