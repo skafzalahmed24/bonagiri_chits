@@ -3500,7 +3500,7 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
         const total_pending = Math.max(0, commission_amount - total_paid);
 
         return {
-          id: configId || eData.id,
+          id: configId || null,
           group_name: group.group_name || null,
           chit_amount: parseFloat(group.chit_amount) || 0,
           group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
