@@ -1335,7 +1335,6 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 winner_name: auction.bidder ? auction.bidder.name : 'N/A',
                 winner_member_id: winnerInfo ? winnerInfo.winner_member_id : 'N/A',
                 winner_info: winnerInfo,
-                winner_details: winnerInfo,
                 is_winner_status: isWinnerStatus,
 
                 // Amounts (supports all UI cards & screens)
