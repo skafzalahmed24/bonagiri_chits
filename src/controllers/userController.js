@@ -157,6 +157,50 @@ const getHistoryByGroupId = async (req, res) => {
   }
 };
 
+const getBusinessAgentTotalCommission = async (req, res) => {
+  try {
+    const { business_agent_id, min, max, search } = req.body;
+    const agentId = business_agent_id || req.user.id;
+    return await userService.getBusinessAgentTotalCommissionService(res, agentId, min, max, search);
+  } catch (error) {
+    console.error('Error in getBusinessAgentTotalCommission:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentPaidCommission = async (req, res) => {
+  try {
+    const { business_agent_id, min, max, search, from_date, to_date } = req.body;
+    const agentId = business_agent_id || req.user.id;
+    return await userService.getBusinessAgentPaidCommissionService(res, agentId, min, max, search, from_date, to_date);
+  } catch (error) {
+    console.error('Error in getBusinessAgentPaidCommission:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentPendingCommission = async (req, res) => {
+  try {
+    const { business_agent_id, min, max, search, from_date, to_date } = req.body;
+    const agentId = business_agent_id || req.user.id;
+    return await userService.getBusinessAgentPendingCommissionService(res, agentId, min, max, search, from_date, to_date);
+  } catch (error) {
+    console.error('Error in getBusinessAgentPendingCommission:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentMemberJoined = async (req, res) => {
+  try {
+    const { business_agent_id, min, max, search } = req.body;
+    const agentId = business_agent_id || req.user.id;
+    return await userService.getBusinessAgentMemberJoinedService(res, agentId, min, max, search);
+  } catch (error) {
+    console.error('Error in getBusinessAgentMemberJoined:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getCollectionAgentDashboard = async (req, res) => {
   try {
     const { collection_agent_id, from_date, to_date } = req.body;
@@ -180,9 +224,32 @@ const getCollectionAgentGroupDashboard = async (req, res) => {
 const getCollectionAgentActiveGroups = async (req, res) => {
   try {
     const { collection_agent_id, min, max } = req.body;
-    return await userService.getCollectionAgentActiveGroupsService(res, req.user.id, min, max);
+    const agentId = collection_agent_id || req.user.id;
+    return await userService.getCollectionAgentActiveGroupsService(res, agentId, min, max);
   } catch (error) {
     console.error('Error in getCollectionAgentActiveGroups:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTotalPendingCollection = async (req, res) => {
+  try {
+    const { collection_agent_id, min, max, from_date, to_date } = req.body;
+    const agentId = collection_agent_id || req.user.id;
+    return await userService.getTotalPendingCollectionService(res, agentId, min, max, from_date, to_date);
+  } catch (error) {
+    console.error('Error in getTotalPendingCollection:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTodayCollection = async (req, res) => {
+  try {
+    const { collection_agent_id, min, max, from_date, to_date } = req.body;
+    const agentId = collection_agent_id || req.user.id;
+    return await userService.getTodayCollectionService(res, agentId, min, max, from_date, to_date);
+  } catch (error) {
+    console.error('Error in getTodayCollection:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -440,5 +507,11 @@ module.exports = {
   storeCustomerVisit,
   getMemberLedger,
   referMember,
-  getMyReferrals
+  getMyReferrals,
+  getTotalPendingCollection,
+  getTodayCollection,
+  getBusinessAgentTotalCommission,
+  getBusinessAgentPaidCommission,
+  getBusinessAgentPendingCommission,
+  getBusinessAgentMemberJoined
 };

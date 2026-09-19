@@ -6,6 +6,7 @@ const {
     UpcomingChit, UpcomingChitInterest, CustomerPayment, GroupUnderStaticList,
     Auction, CollectionAgentAmount, FixedSchemeChitsConfiguration,
     NotificationHistory, MemberDocument, CustomerVisit, Gallery, MemberReferral,
+    ConfigureBusinessAgentCommission, HistoryBusinessAgent,
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
@@ -1684,6 +1685,359 @@ const getCollectionAgentActiveGroupsService = async (res, collection_agent_id, m
         return successResponse(res, statusCodes.OK, 'Active groups retrieved', { count, rows });
     } catch (error) {
         console.error('Error in getCollectionAgentActiveGroupsService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getTotalPendingCollectionService = async (res, collection_agent_id, min, max, from_date, to_date) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const enrollments = await Enrollment.findAll({
+            where: {
+                collection_agent_id,
+                delete_status: 0
+            },
+            include: [
+                {
+                    model: Member,
+                    as: 'subscriber',
+                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender']
+                },
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    where: { is_deleted_status: 0 },
+                    required: true
+                }
+            ]
+        });
+
+        if (!enrollments || enrollments.length === 0) {
+            return successResponse(res, statusCodes.OK, 'Total pending collection retrieved successfully', {
+                total_pending_amount: 0,
+                total_pending_members: 0,
+                from_groups_count: 0,
+                count: 0,
+                rows: []
+            });
+        }
+
+        const enrollmentIds = enrollments.map(e => e.id);
+
+        const installmentWhere = {
+            enrollment_id: { [Op.in]: enrollmentIds },
+            payable_amount: { [Op.gt]: 0 }
+        };
+
+        if (from_date && to_date) {
+            const startDate = new Date(from_date).toISOString().split('T')[0];
+            const endDate = new Date(to_date).toISOString().split('T')[0];
+            installmentWhere.due_date = {
+                [Op.between]: [startDate, endDate]
+            };
+        } else if (from_date) {
+            const startDate = new Date(from_date).toISOString().split('T')[0];
+            installmentWhere.due_date = { [Op.gte]: startDate };
+        } else if (to_date) {
+            const endDate = new Date(to_date).toISOString().split('T')[0];
+            installmentWhere.due_date = { [Op.lte]: endDate };
+        }
+
+        const installments = await ChitsInstallment.findAll({
+            where: installmentWhere,
+            order: [['due_date', 'ASC']]
+        });
+
+        const installmentIds = installments.map(i => i.id);
+
+        const payments = await CustomerPayment.findAll({
+            where: {
+                chits_installment_id: { [Op.in]: installmentIds },
+                payment_status: 1
+            }
+        });
+
+        // Group by group_id and member
+        const groupMap = {};
+        const overallPendingMembersSet = new Set();
+        let overallPendingAmount = 0;
+
+        installments.forEach(inst => {
+            const payable = parseFloat(inst.payable_amount) || 0;
+            const relatedPayments = payments.filter(p => p.chits_installment_id === inst.id);
+            const paid = relatedPayments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0);
+            const pending = Math.max(0, payable - paid);
+
+            if (pending <= 0) return;
+
+            const e = enrollments.find(en => en.id === inst.enrollment_id);
+            if (!e || !e.group || !e.subscriber) return;
+
+            const group = e.group;
+            const subscriber = e.subscriber;
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    pending_amount: 0,
+                    pending_members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            if (!groupMap[group.id].membersMap[subscriber.id]) {
+                groupMap[group.id].membersMap[subscriber.id] = {
+                    id: subscriber.id,
+                    name: subscriber.name || 'Unknown',
+                    member_id: subscriber.member_id || `#${subscriber.id}`,
+                    profile_image: subscriber.upload_image || null,
+                    mobile_number: subscriber.mobile_number || null,
+                    gender: subscriber.gender || null,
+                    pending_amount: 0
+                };
+            }
+
+            const memberPending = parseFloat(((groupMap[group.id].membersMap[subscriber.id].pending_amount || 0) + pending).toFixed(2));
+            groupMap[group.id].membersMap[subscriber.id].pending_amount = memberPending;
+
+            groupMap[group.id].pending_amount = parseFloat(((groupMap[group.id].pending_amount || 0) + pending).toFixed(2));
+            overallPendingAmount = parseFloat((overallPendingAmount + pending).toFixed(2));
+            overallPendingMembersSet.add(subscriber.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                pending_amount: parseFloat(g.pending_amount) || 0,
+                pending_members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Total pending collection retrieved successfully', {
+            total_pending_amount: overallPendingAmount,
+            total_pending_members: overallPendingMembersSet.size,
+            from_groups_count: totalGroupsCount,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getTotalPendingCollectionService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getTodayCollectionService = async (res, collection_agent_id, min, max, from_date, to_date) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const enrollments = await Enrollment.findAll({
+            where: {
+                collection_agent_id,
+                delete_status: 0
+            },
+            include: [
+                {
+                    model: Member,
+                    as: 'subscriber',
+                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender']
+                },
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    where: { is_deleted_status: 0 },
+                    required: true
+                }
+            ]
+        });
+
+        if (!enrollments || enrollments.length === 0) {
+            return successResponse(res, statusCodes.OK, 'Today collection retrieved successfully', {
+                today_collection: 0,
+                total_today_collection: 0,
+                from_collection_group_count: 0,
+                from_members_count: 0,
+                count: 0,
+                rows: []
+            });
+        }
+
+        const enrollmentIds = enrollments.map(e => e.id);
+
+        let startOfPeriod, endOfPeriod, dateStrFrom, dateStrTo;
+
+        if (from_date && to_date) {
+            startOfPeriod = new Date(from_date);
+            startOfPeriod.setHours(0, 0, 0, 0);
+            endOfPeriod = new Date(to_date);
+            endOfPeriod.setHours(23, 59, 59, 999);
+            dateStrFrom = new Date(from_date).toISOString().split('T')[0];
+            dateStrTo = new Date(to_date).toISOString().split('T')[0];
+        } else if (from_date) {
+            startOfPeriod = new Date(from_date);
+            startOfPeriod.setHours(0, 0, 0, 0);
+            endOfPeriod = new Date(from_date);
+            endOfPeriod.setHours(23, 59, 59, 999);
+            dateStrFrom = new Date(from_date).toISOString().split('T')[0];
+            dateStrTo = dateStrFrom;
+        } else {
+            const simulatedNow = await getSimulatedNow();
+            startOfPeriod = new Date(simulatedNow);
+            startOfPeriod.setHours(0, 0, 0, 0);
+            endOfPeriod = new Date(simulatedNow);
+            endOfPeriod.setHours(23, 59, 59, 999);
+            dateStrFrom = startOfPeriod.toISOString().split('T')[0];
+            dateStrTo = endOfPeriod.toISOString().split('T')[0];
+        }
+
+        const payments = await CustomerPayment.findAll({
+            where: {
+                payment_status: 1,
+                [Op.or]: [
+                    {
+                        payment_date: {
+                            [Op.between]: [dateStrFrom, dateStrTo]
+                        }
+                    },
+                    {
+                        createdAt: {
+                            [Op.between]: [startOfPeriod, endOfPeriod]
+                        }
+                    }
+                ]
+            },
+            include: [
+                {
+                    model: ChitsInstallment,
+                    as: 'installment',
+                    required: true,
+                    where: {
+                        enrollment_id: { [Op.in]: enrollmentIds }
+                    }
+                }
+            ],
+            order: [
+                ['payment_date', 'DESC'],
+                ['createdAt', 'DESC']
+            ]
+        });
+
+        const getPaymentModeLabel = (mode) => {
+            switch (Number(mode)) {
+                case 1: return 'Cash';
+                case 2: return 'UPI';
+                case 3: return 'Cheque';
+                case 4: return 'Bank';
+                case 5: return 'Others';
+                default: return 'Cash';
+            }
+        };
+
+        const formatDateDMY = (dateInput) => {
+            if (!dateInput) return '';
+            const d = new Date(dateInput);
+            if (isNaN(d.getTime())) return String(dateInput);
+            const day = d.getDate();
+            const month = d.getMonth() + 1;
+            const year = String(d.getFullYear()).slice(-2);
+            return `${day}/${month}/${year}`;
+        };
+
+        const groupMap = {};
+        const overallCollectedMembersSet = new Set();
+        let overallCollectedAmount = 0;
+
+        payments.forEach(payment => {
+            const inst = payment.installment;
+            if (!inst) return;
+
+            const e = enrollments.find(en => en.id === inst.enrollment_id);
+            if (!e || !e.group || !e.subscriber) return;
+
+            const group = e.group;
+            const subscriber = e.subscriber;
+
+            const received = parseFloat(payment.received_amount) || 0;
+            const penalty = parseFloat(payment.penalty_paid) || 0;
+            const totalPaid = received + penalty;
+
+            if (totalPaid <= 0) return;
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    collected_amount: 0,
+                    collected_members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            const rawDate = payment.payment_date || (payment.createdAt ? new Date(payment.createdAt).toISOString().split('T')[0] : '');
+            const mode = payment.payment_mode || 1;
+
+            if (!groupMap[group.id].membersMap[subscriber.id]) {
+                groupMap[group.id].membersMap[subscriber.id] = {
+                    id: subscriber.id,
+                    name: subscriber.name || 'Unknown',
+                    member_id: subscriber.member_id || `#${subscriber.id}`,
+                    profile_image: subscriber.upload_image || null,
+                    amount: 0,
+                    penalty_amount: 0,
+                    total_amount: 0,
+                    payment_date: rawDate,
+                    formatted_date: formatDateDMY(rawDate),
+                    payment_mode: mode,
+                    payment_mode_label: getPaymentModeLabel(mode)
+                };
+            }
+
+            groupMap[group.id].membersMap[subscriber.id].amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].amount || 0) + received).toFixed(2));
+            groupMap[group.id].membersMap[subscriber.id].penalty_amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].penalty_amount || 0) + penalty).toFixed(2));
+            groupMap[group.id].membersMap[subscriber.id].total_amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].total_amount || 0) + totalPaid).toFixed(2));
+
+            groupMap[group.id].collected_amount = parseFloat(((groupMap[group.id].collected_amount || 0) + totalPaid).toFixed(2));
+            overallCollectedAmount = parseFloat((overallCollectedAmount + totalPaid).toFixed(2));
+            overallCollectedMembersSet.add(subscriber.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                collected_amount: parseFloat(g.collected_amount) || 0,
+                collected_members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Today collection retrieved successfully', {
+            today_collection: overallCollectedAmount,
+            total_today_collection: overallCollectedAmount,
+            from_collection_group_count: totalGroupsCount,
+            from_members_count: overallCollectedMembersSet.size,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getTodayCollectionService:', error);
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
     }
 };
@@ -3392,6 +3746,488 @@ const getMyReferralsService = async (res, userPayload, min = 0, max = 10, search
     }
 };
 
+const getBusinessAgentTotalCommissionService = async (res, business_agent_id, min, max, search) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const configRecords = await ConfigureBusinessAgentCommission.findAll({
+            where: { business_agent_id, is_deleted_status: 0 },
+            include: [
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    where: { is_deleted_status: 0 },
+                    required: true
+                },
+                {
+                    model: Member,
+                    as: 'member',
+                    where: { is_deleted_status: 0 },
+                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code'],
+                    required: true
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        let filteredConfigs = configRecords;
+        if (search && search.trim() !== '') {
+            const term = search.trim().toLowerCase();
+            filteredConfigs = configRecords.filter(c => {
+                const gName = (c.group && c.group.group_name) ? c.group.group_name.toLowerCase() : '';
+                const mName = (c.member && c.member.name) ? c.member.name.toLowerCase() : '';
+                const mCode = (c.member && c.member.member_id) ? c.member.member_id.toLowerCase() : '';
+                const mPhone = (c.member && c.member.mobile_number) ? c.member.mobile_number.toLowerCase() : '';
+                return gName.includes(term) || mName.includes(term) || mCode.includes(term) || mPhone.includes(term);
+            });
+        }
+
+        const groupMap = {};
+        let overallTotalCommission = 0;
+        const overallMembersSet = new Set();
+
+        filteredConfigs.forEach(c => {
+            const group = c.group;
+            const member = c.member;
+            const commissionAmt = parseFloat(c.commission_amount) || 0;
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    total_commission_amount: 0,
+                    members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            if (!groupMap[group.id].membersMap[member.id]) {
+                groupMap[group.id].membersMap[member.id] = {
+                    id: member.id,
+                    name: member.name || 'Unknown',
+                    member_id: member.member_id || (member.other_info_user_code ? `MEM-${member.other_info_user_code}` : `#${member.id}`),
+                    profile_image: member.upload_image || null,
+                    mobile_number: member.mobile_number || null,
+                    gender: member.gender || null,
+                    commission_amount: 0
+                };
+            }
+
+            groupMap[group.id].membersMap[member.id].commission_amount = parseFloat(((groupMap[group.id].membersMap[member.id].commission_amount || 0) + commissionAmt).toFixed(2));
+            groupMap[group.id].total_commission_amount = parseFloat(((groupMap[group.id].total_commission_amount || 0) + commissionAmt).toFixed(2));
+            overallTotalCommission = parseFloat((overallTotalCommission + commissionAmt).toFixed(2));
+            overallMembersSet.add(member.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                total_commission_amount: parseFloat(g.total_commission_amount) || 0,
+                members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Total commission retrieved successfully', {
+            total_commission_amount: overallTotalCommission,
+            from_groups_count: totalGroupsCount,
+            from_members_count: overallMembersSet.size,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getBusinessAgentTotalCommissionService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getBusinessAgentPaidCommissionService = async (res, business_agent_id, min, max, search, from_date, to_date) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const configRecords = await ConfigureBusinessAgentCommission.findAll({
+            where: { business_agent_id, is_deleted_status: 0 },
+            include: [
+                { model: ChitsGroup, as: 'group', where: { is_deleted_status: 0 }, required: true },
+                { model: Member, as: 'member', where: { is_deleted_status: 0 }, attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code'], required: true }
+            ]
+        });
+
+        const configIds = configRecords.map(c => c.id);
+
+        if (configIds.length === 0) {
+            return successResponse(res, statusCodes.OK, 'Paid commission retrieved successfully', {
+                total_paid_commission: 0,
+                from_groups_count: 0,
+                from_members_count: 0,
+                count: 0,
+                rows: []
+            });
+        }
+
+        const historyWhere = {
+            configure_business_agent_id: { [Op.in]: configIds },
+            is_deleted_status: 0,
+            paid_amount: { [Op.gt]: 0 }
+        };
+
+        if (from_date && to_date) {
+            const start = new Date(from_date);
+            start.setHours(0, 0, 0, 0);
+            const end = new Date(to_date);
+            end.setHours(23, 59, 59, 999);
+            historyWhere.createdAt = { [Op.between]: [start, end] };
+        } else if (from_date) {
+            const start = new Date(from_date);
+            start.setHours(0, 0, 0, 0);
+            historyWhere.createdAt = { [Op.gte]: start };
+        } else if (to_date) {
+            const end = new Date(to_date);
+            end.setHours(23, 59, 59, 999);
+            historyWhere.createdAt = { [Op.lte]: end };
+        }
+
+        const histories = await HistoryBusinessAgent.findAll({
+            where: historyWhere,
+            order: [['createdAt', 'DESC']]
+        });
+
+        const formatDateDMY = (dateInput) => {
+            if (!dateInput) return '';
+            const d = new Date(dateInput);
+            if (isNaN(d.getTime())) return String(dateInput);
+            const day = d.getDate();
+            const month = d.getMonth() + 1;
+            const year = String(d.getFullYear()).slice(-2);
+            return `${day}/${month}/${year}`;
+        };
+
+        const groupMap = {};
+        let overallTotalPaid = 0;
+        const overallMembersSet = new Set();
+
+        histories.forEach(h => {
+            const config = configRecords.find(c => c.id === h.configure_business_agent_id);
+            if (!config || !config.group || !config.member) return;
+
+            const group = config.group;
+            const member = config.member;
+            const paid = parseFloat(h.paid_amount) || 0;
+            if (paid <= 0) return;
+
+            if (search && search.trim() !== '') {
+                const term = search.trim().toLowerCase();
+                const gName = (group.group_name || '').toLowerCase();
+                const mName = (member.name || '').toLowerCase();
+                const mCode = (member.member_id || '').toLowerCase();
+                const mPhone = (member.mobile_number || '').toLowerCase();
+                if (!gName.includes(term) && !mName.includes(term) && !mCode.includes(term) && !mPhone.includes(term)) {
+                    return;
+                }
+            }
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    paid_commission_amount: 0,
+                    members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            const rawDate = h.createdAt ? new Date(h.createdAt).toISOString().split('T')[0] : '';
+
+            if (!groupMap[group.id].membersMap[member.id]) {
+                groupMap[group.id].membersMap[member.id] = {
+                    id: member.id,
+                    name: member.name || 'Unknown',
+                    member_id: member.member_id || (member.other_info_user_code ? `MEM-${member.other_info_user_code}` : `#${member.id}`),
+                    profile_image: member.upload_image || null,
+                    mobile_number: member.mobile_number || null,
+                    paid_amount: 0,
+                    payment_date: rawDate,
+                    formatted_date: formatDateDMY(rawDate),
+                    payment_mode_label: 'Cash',
+                    upload_document: h.upload_document || null
+                };
+            }
+
+            groupMap[group.id].membersMap[member.id].paid_amount = parseFloat(((groupMap[group.id].membersMap[member.id].paid_amount || 0) + paid).toFixed(2));
+            groupMap[group.id].paid_commission_amount = parseFloat(((groupMap[group.id].paid_commission_amount || 0) + paid).toFixed(2));
+            overallTotalPaid = parseFloat((overallTotalPaid + paid).toFixed(2));
+            overallMembersSet.add(member.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                paid_commission_amount: parseFloat(g.paid_commission_amount) || 0,
+                members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Paid commission retrieved successfully', {
+            total_paid_commission: overallTotalPaid,
+            from_groups_count: totalGroupsCount,
+            from_members_count: overallMembersSet.size,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getBusinessAgentPaidCommissionService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getBusinessAgentPendingCommissionService = async (res, business_agent_id, min, max, search, from_date, to_date) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const configWhere = {
+            business_agent_id,
+            is_deleted_status: 0
+        };
+
+        if (from_date && to_date) {
+            const start = new Date(from_date);
+            start.setHours(0, 0, 0, 0);
+            const end = new Date(to_date);
+            end.setHours(23, 59, 59, 999);
+            configWhere.createdAt = { [Op.between]: [start, end] };
+        } else if (from_date) {
+            const start = new Date(from_date);
+            start.setHours(0, 0, 0, 0);
+            configWhere.createdAt = { [Op.gte]: start };
+        } else if (to_date) {
+            const end = new Date(to_date);
+            end.setHours(23, 59, 59, 999);
+            configWhere.createdAt = { [Op.lte]: end };
+        }
+
+        const configRecords = await ConfigureBusinessAgentCommission.findAll({
+            where: configWhere,
+            include: [
+                { model: ChitsGroup, as: 'group', where: { is_deleted_status: 0 }, required: true },
+                { model: Member, as: 'member', where: { is_deleted_status: 0 }, attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code'], required: true }
+            ]
+        });
+
+        const configIds = configRecords.map(c => c.id);
+
+        let allHistories = [];
+        if (configIds.length > 0) {
+            allHistories = await HistoryBusinessAgent.findAll({
+                where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+                raw: true
+            });
+        }
+
+        const groupMap = {};
+        let overallTotalPending = 0;
+        const overallMembersSet = new Set();
+
+        configRecords.forEach(c => {
+            const group = c.group;
+            const member = c.member;
+            const commission = parseFloat(c.commission_amount) || 0;
+
+            const paid = allHistories
+                .filter(h => h.configure_business_agent_id === c.id)
+                .reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+
+            const pending = Math.max(0, commission - paid);
+            if (pending <= 0) return;
+
+            if (search && search.trim() !== '') {
+                const term = search.trim().toLowerCase();
+                const gName = (group.group_name || '').toLowerCase();
+                const mName = (member.name || '').toLowerCase();
+                const mCode = (member.member_id || '').toLowerCase();
+                const mPhone = (member.mobile_number || '').toLowerCase();
+                if (!gName.includes(term) && !mName.includes(term) && !mCode.includes(term) && !mPhone.includes(term)) {
+                    return;
+                }
+            }
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    pending_commission_amount: 0,
+                    pending_members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            if (!groupMap[group.id].membersMap[member.id]) {
+                groupMap[group.id].membersMap[member.id] = {
+                    id: member.id,
+                    name: member.name || 'Unknown',
+                    member_id: member.member_id || (member.other_info_user_code ? `MEM-${member.other_info_user_code}` : `#${member.id}`),
+                    profile_image: member.upload_image || null,
+                    mobile_number: member.mobile_number || null,
+                    gender: member.gender || null,
+                    pending_commission_amount: 0
+                };
+            }
+
+            groupMap[group.id].membersMap[member.id].pending_commission_amount = parseFloat(((groupMap[group.id].membersMap[member.id].pending_commission_amount || 0) + pending).toFixed(2));
+            groupMap[group.id].pending_commission_amount = parseFloat(((groupMap[group.id].pending_commission_amount || 0) + pending).toFixed(2));
+            overallTotalPending = parseFloat((overallTotalPending + pending).toFixed(2));
+            overallMembersSet.add(member.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                pending_commission_amount: parseFloat(g.pending_commission_amount) || 0,
+                pending_members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Pending commission retrieved successfully', {
+            total_pending_commission: overallTotalPending,
+            from_groups_count: totalGroupsCount,
+            from_members_count: overallMembersSet.size,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getBusinessAgentPendingCommissionService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getBusinessAgentMemberJoinedService = async (res, business_agent_id, min, max, search) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const enrollments = await Enrollment.findAll({
+            where: {
+                business_agent_id,
+                delete_status: 0
+            },
+            include: [
+                {
+                    model: Member,
+                    as: 'subscriber',
+                    where: { is_deleted_status: 0 },
+                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code', 'registration_date', 'createdAt'],
+                    required: true
+                },
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    where: { is_deleted_status: 0 },
+                    required: true
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        const formatDateDMY = (dateInput) => {
+            if (!dateInput) return '';
+            const d = new Date(dateInput);
+            if (isNaN(d.getTime())) return String(dateInput);
+            const day = d.getDate();
+            const month = d.getMonth() + 1;
+            const year = String(d.getFullYear()).slice(-2);
+            return `${day}/${month}/${year}`;
+        };
+
+        const groupMap = {};
+        let overallTotalMembers = 0;
+        const overallMembersSet = new Set();
+
+        enrollments.forEach(e => {
+            const group = e.group;
+            const subscriber = e.subscriber;
+            if (!group || !subscriber) return;
+
+            if (search && search.trim() !== '') {
+                const term = search.trim().toLowerCase();
+                const gName = (group.group_name || '').toLowerCase();
+                const mName = (subscriber.name || '').toLowerCase();
+                const mCode = (subscriber.member_id || '').toLowerCase();
+                const mPhone = (subscriber.mobile_number || '').toLowerCase();
+                if (!gName.includes(term) && !mName.includes(term) && !mCode.includes(term) && !mPhone.includes(term)) {
+                    return;
+                }
+            }
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    members_count: 0,
+                    members: []
+                };
+            }
+
+            const rawJoinedDate = e.enrollment_date || (e.createdAt ? new Date(e.createdAt).toISOString().split('T')[0] : '');
+
+            groupMap[group.id].members.push({
+                id: subscriber.id,
+                name: subscriber.name || 'Unknown',
+                member_id: subscriber.member_id || (subscriber.other_info_user_code ? `MEM-${subscriber.other_info_user_code}` : `#${subscriber.id}`),
+                profile_image: subscriber.upload_image || null,
+                mobile_number: subscriber.mobile_number || null,
+                gender: subscriber.gender || null,
+                joined_date: rawJoinedDate,
+                formatted_joined_date: formatDateDMY(rawJoinedDate)
+            });
+
+            groupMap[group.id].members_count += 1;
+            overallTotalMembers += 1;
+            overallMembersSet.add(subscriber.id);
+        });
+
+        const allGroupRows = Object.values(groupMap);
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Members joined retrieved successfully', {
+            total_members_joined: overallTotalMembers,
+            total_unique_members: overallMembersSet.size,
+            from_groups_count: totalGroupsCount,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getBusinessAgentMemberJoinedService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
 module.exports = {
     getPaymentHistoryService,
     getPaymentReceiptService,
@@ -3428,5 +4264,11 @@ module.exports = {
     storeCustomerVisitService,
     getMemberLedgerService,
     referMemberService,
-    getMyReferralsService
+    getMyReferralsService,
+    getTotalPendingCollectionService,
+    getTodayCollectionService,
+    getBusinessAgentTotalCommissionService,
+    getBusinessAgentPaidCommissionService,
+    getBusinessAgentPendingCommissionService,
+    getBusinessAgentMemberJoinedService
 };
