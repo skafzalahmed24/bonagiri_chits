@@ -1218,7 +1218,6 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                             payment_mode: pMode,
                             payment_mode_label: pModeLabel,
                             received_amount: parseFloat(pReceived.toFixed(2)),
-                            formatted_amount: `${parseFloat(pReceived.toFixed(2))}/-`,
                             penalty_paid: parseFloat(pPenalty.toFixed(2))
                         };
                     });
@@ -1308,6 +1307,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     paid_amount: parseFloat(ticketPaidAmount.toFixed(2)),
                     pending_amount: parseFloat(ticketPending.toFixed(2)),
                     advance_payment: parseFloat(ticketAdvance.toFixed(2)),
+                    advance_amount_status: ticketAdvance > 0,
                     penalty_amount: parseFloat(ticketPenaltyAmount.toFixed(2)),
                     penalty_text: ticketPenaltyText,
                     total_amount: parseFloat(ticketTotalAmount.toFixed(2)),
@@ -1347,6 +1347,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 paid_amount: parseFloat(monthPaidTotal.toFixed(2)),
                 pending_amount: parseFloat(monthPendingTotal.toFixed(2)),
                 advance_payment: parseFloat(monthAdvanceTotal.toFixed(2)),
+                advance_amount_status: monthAdvanceTotal > 0,
                 penalty_amount: parseFloat(monthPenaltyTotal.toFixed(2)),
                 penalty_text: monthPenaltyText,
                 total_amount: parseFloat(monthTotalAmountSum.toFixed(2)),
@@ -1364,6 +1365,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     total_paid_amount: parseFloat(monthPaidTotal.toFixed(2)),
                     total_pending: parseFloat(monthPendingTotal.toFixed(2)),
                     total_advance: parseFloat(monthAdvanceTotal.toFixed(2)),
+                    advance_amount_status: monthAdvanceTotal > 0,
                     total_amount: parseFloat(monthTotalAmountSum.toFixed(2)),
                     total_penalty: parseFloat(monthPenaltyTotal.toFixed(2))
                 }
@@ -1380,6 +1382,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 total_amount: parseInt(singleChitAmount, 10) || 0,
                 pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
                 advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
+                advance_amount_status: groupAdvanceAmount > 0,
                 total_months: totalMonthsCount,
                 current_month: currentMonthCount,
                 total_installments: totalMonthsCount,
@@ -1400,6 +1403,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 total_paid_amount: parseFloat(totalPaidAmount.toFixed(2)),
                 total_pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
                 total_advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
+                advance_amount_status: groupAdvanceAmount > 0,
                 next_payment_due: nextPaymentDue
             },
             scheme: schemeConfig ? {
