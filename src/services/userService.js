@@ -1377,7 +1377,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 group_name: group.group_name || 'Unknown Chit',
                 start_date: startDateFormatted,
                 end_date: endDateFormatted,
-                total_amount: parseFloat(singleChitAmount.toFixed(2)),
+                total_amount: parseInt(singleChitAmount, 10) || 0,
                 pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
                 advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
                 total_months: totalMonthsCount,
