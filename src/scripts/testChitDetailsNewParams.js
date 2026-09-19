@@ -79,13 +79,13 @@ async function testNewParams() {
     console.log('total_amount:', chitGroup.total_amount);
     console.log('pending_amount:', chitGroup.pending_amount);
     console.log('advance_payment:', chitGroup.advance_payment);
-    console.log('total_months_count:', chitGroup.total_months_count);
-    console.log('current_months_count:', chitGroup.current_months_count);
+    console.log('total_months:', chitGroup.total_months);
+    console.log('current_month:', chitGroup.current_month);
 
     if (chitGroup.start_date === undefined) throw new Error('Missing start_date in chit_group_details');
     if (chitGroup.end_date === undefined) throw new Error('Missing end_date in chit_group_details');
-    if (chitGroup.total_months_count === undefined) throw new Error('Missing total_months_count in chit_group_details');
-    if (chitGroup.current_months_count === undefined) throw new Error('Missing current_months_count in chit_group_details');
+    if (chitGroup.total_months === undefined) throw new Error('Missing total_months in chit_group_details');
+    if (chitGroup.current_month === undefined) throw new Error('Missing current_month in chit_group_details');
 
     console.log('\n--- Checking Monthly Activity ---');
     if (res.body.data.monthly_activity && res.body.data.monthly_activity.length > 0) {
