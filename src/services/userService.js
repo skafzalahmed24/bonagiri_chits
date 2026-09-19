@@ -2042,18 +2042,35 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
     }
 };
 
-const getCollectionAgentGroupDashboardService = async (res, group_id) => {
+const getCollectionAgentGroupDashboardService = async (res, group_id, collection_agent_id, min, max) => {
     try {
         const group = await ChitsGroup.findByPk(group_id);
         if (!group) {
             return errorResponse(res, statusCodes.NOT_FOUND, 'Group not found');
         }
 
+        const whereClause = { group_id, delete_status: 0 };
+        if (collection_agent_id) {
+            whereClause.collection_agent_id = collection_agent_id;
+        }
+
         const enrollments = await Enrollment.findAll({
-            where: { group_id, delete_status: 0 },
+            where: whereClause,
             include: [{ model: Member, as: 'subscriber' }]
         });
         const enrollmentIds = enrollments.map(e => e.id);
+
+        if (!enrollments || enrollments.length === 0) {
+            return successResponse(res, statusCodes.OK, 'Group dashboard', {
+                today_group_value_price: parseFloat(group.chit_amount) || 0,
+                total_collected: 0,
+                pending_amount: 0,
+                overdue_members: 0,
+                overall_collection_process_percentage: 0,
+                current_date: new Date().toISOString().split('T')[0],
+                pending_members: []
+            });
+        }
 
         const allInstallments = await ChitsInstallment.findAll({
             where: { enrollment_id: { [Op.in]: enrollmentIds } }
@@ -2121,7 +2138,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
                         memberMap[sub.id].pending_months += 1;
                         memberMap[sub.id].balance += pending;
                         memberMap[sub.id].penalty_amount += (parseFloat(inst.penalty_amount) || 0);
-                        memberMap[sub.id].penalty_text = `Penalty - ₹ ${memberMap[sub.id].penalty_amount}`;
+                        memberMap[sub.id].penalty_text = `Penalty - ₹ ${parseFloat(memberMap[sub.id].penalty_amount.toFixed(2))}`;
 
                         if (new Date(inst.due_date) < new Date(memberMap[sub.id].oldest_due_date)) {
                             memberMap[sub.id].oldest_due_date = inst.due_date;
@@ -2140,25 +2157,33 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
         const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         let pending_members_list = Object.values(memberMap);
         pending_members_list.sort((a, b) => new Date(a.oldest_due_date) - new Date(b.oldest_due_date));
-        pending_members_list = pending_members_list.slice(0, 3);
+
+        if (max !== undefined && max !== null) {
+            const offset = parseInt(min, 10) || 0;
+            const limit = parseInt(max, 10);
+            pending_members_list = pending_members_list.slice(offset, offset + limit);
+        }
+
         pending_members_list = pending_members_list.map(row => {
             const d = new Date(row.oldest_due_date);
             row.oldest_due = `${months[d.getMonth()]} ${d.getFullYear()}`;
+            row.balance = parseFloat(row.balance.toFixed(2));
+            row.penalty_amount = parseFloat(row.penalty_amount.toFixed(2));
             delete row.oldest_due_date;
             return row;
         });
 
         return successResponse(res, statusCodes.OK, 'Group dashboard', {
             today_group_value_price: parseFloat(group.chit_amount) || 0,
-            total_collected,
-            pending_amount: total_pending,
+            total_collected: parseFloat(total_collected.toFixed(2)),
+            pending_amount: parseFloat(total_pending.toFixed(2)),
             overdue_members: overdue_members_set.size,
             overall_collection_process_percentage: parseFloat(percentage),
             current_date: new Date().toISOString().split('T')[0],
             pending_members: pending_members_list
         });
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error in getCollectionAgentGroupDashboardService:', error);
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
     }
 };
@@ -2632,14 +2657,46 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
     }
 };
 
-const getAllGalleryService = async (res, reqBody) => {
+const getAllGalleryService = async (res, reqBody, userPayload) => {
     try {
-        const { company_id, min = 0, max = 10 } = reqBody;
-        const limit = parseInt(max, 10);
-        const offset = parseInt(min, 10);
+        const { min = 0, max = 10 } = reqBody || {};
+        let company_id = reqBody ? reqBody.company_id : null;
 
-        const whereClause = { status: 0 }; // Only fetch active galleries for users
-        if (company_id) whereClause.company_id = company_id;
+        // If company_id not explicitly passed in body, resolve it from authenticated user
+        if (!company_id && userPayload) {
+            if (userPayload.company_id) {
+                company_id = userPayload.company_id;
+            } else if (userPayload.role === 'company') {
+                company_id = userPayload.id;
+            } else if (userPayload.role === 'staff' && userPayload.company_id) {
+                company_id = userPayload.company_id;
+            } else if (userPayload.id) {
+                // Find company_id from user's active enrollment
+                const userEnrollment = await Enrollment.findOne({
+                    where: {
+                        [Op.or]: [
+                            { subscriber_id: userPayload.id },
+                            { collection_agent_id: userPayload.id },
+                            { business_agent_id: userPayload.id }
+                        ],
+                        delete_status: 0
+                    },
+                    attributes: ['company_id'],
+                    order: [['createdAt', 'DESC']]
+                });
+                if (userEnrollment && userEnrollment.company_id) {
+                    company_id = userEnrollment.company_id;
+                }
+            }
+        }
+
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const whereClause = { status: 0 }; // Only fetch active galleries (status: 0)
+        if (company_id) {
+            whereClause.company_id = company_id;
+        }
 
         const galleries = await Gallery.findAndCountAll({
             where: whereClause,

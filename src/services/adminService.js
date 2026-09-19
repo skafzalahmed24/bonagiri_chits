@@ -22,21 +22,32 @@ const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
 const resolveCompanyIdForAuth = async (userPayload) => {
   if (!userPayload) return null;
 
+  if (userPayload.company_id) {
+    return userPayload.company_id;
+  }
   if (userPayload.role === 'company') {
     return userPayload.id;
   }
   if (userPayload.role === 'staff') {
-    return userPayload.company_id; // already embedded in the JWT, no DB lookup needed
-  }
-  if (userPayload.role === 'member') {
-    const mem = await Member.findByPk(userPayload.id);
-    return mem ? mem.company_id : null;
-  }
-
-  if (userPayload.company_id) {
     return userPayload.company_id;
   }
-  if (userPayload.user_id && userPayload.user_id.length > 20) {
+  if (userPayload.role === 'member' || userPayload.role === 'subscriber') {
+    const userEnrollment = await Enrollment.findOne({
+      where: {
+        [Op.or]: [
+          { subscriber_id: userPayload.id },
+          { collection_agent_id: userPayload.id },
+          { business_agent_id: userPayload.id }
+        ],
+        delete_status: 0
+      },
+      attributes: ['company_id'],
+      order: [['createdAt', 'DESC']]
+    });
+    return userEnrollment ? userEnrollment.company_id : null;
+  }
+
+  if (userPayload.user_id && typeof userPayload.user_id === 'string' && userPayload.user_id.length > 20) {
     return userPayload.user_id;
   }
   return null;
@@ -4344,13 +4355,13 @@ const getGalleryByIdService = async (res, id, userOrCompanyId) => {
       companyId = userOrCompanyId;
     }
 
-    const whereClause = { id };
-    if (companyId) {
-      whereClause.company_id = companyId;
+    const gallery = await Gallery.findByPk(id);
+    if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+    if (companyId && gallery.company_id && gallery.company_id !== companyId) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized to view this gallery');
     }
 
-    const gallery = await Gallery.findOne({ where: whereClause });
-    if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
     return successResponse(res, statusCodes.OK, 'Gallery retrieved successfully', gallery);
   } catch (error) {
     console.error('Error in getGalleryByIdService:', error);
@@ -4367,13 +4378,12 @@ const deleteGalleryService = async (res, id, userOrCompanyId) => {
       companyId = userOrCompanyId;
     }
 
-    const whereClause = { id };
-    if (companyId) {
-      whereClause.company_id = companyId;
-    }
-
-    const gallery = await Gallery.findOne({ where: whereClause });
+    const gallery = await Gallery.findByPk(id);
     if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+    if (companyId && gallery.company_id && gallery.company_id !== companyId) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized to delete this gallery');
+    }
 
     // Delete image from uploads folder if exists on disk
     if (gallery.gallery_image) {

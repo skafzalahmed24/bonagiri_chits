@@ -116,7 +116,10 @@ const getCollectionAgentDashboardSchema = Joi.object({
 });
 
 const getCollectionAgentGroupDashboardSchema = Joi.object({
-  group_id: Joi.string().uuid().required()
+  group_id: Joi.string().uuid().required(),
+  collection_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
 });
 
 const getPendingMembersSchema = Joi.object({
