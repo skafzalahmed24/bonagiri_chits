@@ -1218,7 +1218,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                             payment_mode: pMode,
                             payment_mode_label: pModeLabel,
                             received_amount: parseFloat(pReceived.toFixed(2)),
-                            formatted_amount: `${Math.round(pReceived)}/-`,
+                            formatted_amount: `${parseFloat(pReceived.toFixed(2))}/-`,
                             penalty_paid: parseFloat(pPenalty.toFixed(2))
                         };
                     });
