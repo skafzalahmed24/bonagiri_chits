@@ -3501,30 +3501,22 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
 
         return {
           id: configId || eData.id,
-          enrollment_id: eData.id,
-          configure_business_agent_id: configId,
-          has_commission: !!config,
-          group_id: eData.group_id,
           group_name: group.group_name || null,
           chit_amount: parseFloat(group.chit_amount) || 0,
           group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
-          group_created_date: group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null,
           commission_amount: parseFloat(commission_amount.toFixed(2)),
           total_paid: parseFloat(total_paid.toFixed(2)),
           total_pending: parseFloat(total_pending.toFixed(2)),
           upload_document: upload_document,
           member_id: member.id || null,
           member_name: member.name || null,
-          gender_dropdown: member.gender_dropdown || null,
-          profile_image: member.upload_image || null,
-          other_info_user_code: member.other_info_user_code ? `MEM-${member.other_info_user_code}` : null,
           status: configStatus
         };
       });
 
       // Also include any configs that might exist without an enrollment row
       configs.forEach(config => {
-        const alreadyIncluded = recordsList.some(r => r.configure_business_agent_id === config.id);
+        const alreadyIncluded = recordsList.some(r => r.id === config.id);
         if (!alreadyIncluded) {
           const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
           let total_paid = 0;
@@ -3539,14 +3531,9 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
 
           recordsList.push({
             id: config.id,
-            enrollment_id: null,
-            configure_business_agent_id: config.id,
-            has_commission: true,
-            group_id: config.group_id,
             group_name: group.group_name || null,
             chit_amount: parseFloat(group.chit_amount) || 0,
             group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
-            group_created_date: group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null,
             commission_amount: parseFloat(commission_amount.toFixed(2)),
             total_paid: parseFloat(total_paid.toFixed(2)),
             total_pending: parseFloat((commission_amount - total_paid).toFixed(2)),
@@ -3573,14 +3560,9 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
 
         return {
           id: config.id,
-          enrollment_id: null,
-          configure_business_agent_id: config.id,
-          has_commission: true,
-          group_id: config.group_id,
           group_name: group.group_name || null,
           chit_amount: parseFloat(group.chit_amount) || 0,
           group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
-          group_created_date: group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null,
           commission_amount: parseFloat(commission_amount.toFixed(2)),
           total_paid: parseFloat(total_paid.toFixed(2)),
           total_pending: parseFloat((commission_amount - total_paid).toFixed(2)),
