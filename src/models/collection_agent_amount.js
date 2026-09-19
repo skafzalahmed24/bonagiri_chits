@@ -13,6 +13,7 @@ module.exports = (sequelize, DataTypes) => {
       // define association here
       CollectionAgentAmount.belongsTo(models.Member, { foreignKey: 'collection_agent_id', as: 'collection_agent' });
       CollectionAgentAmount.belongsTo(models.Member, { foreignKey: 'member_id', as: 'member' });
+      CollectionAgentAmount.hasOne(models.CustomerPayment, { foreignKey: 'collection_agent_amount_id', as: 'customer_payment' });
     }
   }
   CollectionAgentAmount.init({

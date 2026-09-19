@@ -70,6 +70,17 @@ const requirePermission = (moduleId) => (req, res, next) => {
   return errorResponse(res, statusCodes.FORBIDDEN, `You don't have permission to access this module`);
 };
 
+// Passes when a staff user holds view access to at least one of the modules.
+// moduleIds may be an array, or a function of req returning one (for endpoints
+// shared by several modules, e.g. vouchers routed by voucher_type).
+const requireAnyPermission = (moduleIds) => (req, res, next) => {
+  if (!req.user) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+  if (req.user.role === 'company') return next();
+  const ids = typeof moduleIds === 'function' ? moduleIds(req) : moduleIds;
+  if (req.user.role === 'staff' && ids.some((id) => req.user.permissions?.[id]?.view)) return next();
+  return errorResponse(res, statusCodes.FORBIDDEN, `You don't have permission to access this module`);
+};
+
 const requirePermissionOrUserRole = (moduleId, extraRole) => (req, res, next) => {
   if (!req.user) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
   if (req.user.role === extraRole) return next();
@@ -91,6 +102,7 @@ module.exports = {
   authenticateToken,
   authenticateSuperAdminToken,
   requirePermission,
+  requireAnyPermission,
   requirePermissionOrUserRole,
   requireRole
 };

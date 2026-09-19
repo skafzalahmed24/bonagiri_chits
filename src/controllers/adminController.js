@@ -1273,19 +1273,39 @@ const getHistoryByGroupId = async (req, res) => {
 
 const updateCollectionSubmissionStatus = async (req, res) => {
   try {
-    const { id, status } = req.body;
-    return await adminService.updateCollectionSubmissionStatusService(res, id, status, req.user);
+    const { id, status, account_id } = req.body;
+    return await adminService.updateCollectionSubmissionStatusService(res, id, status, account_id, req.user);
   } catch (error) {
     console.error('Error in updateCollectionSubmissionStatus:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
 
+const getAdvancesByMember = async (req, res) => {
+  try {
+    const { member_id } = req.body;
+    return await adminService.getAdvancesByMemberService(res, member_id, req.user);
+  } catch (error) {
+    console.error('Error in getAdvancesByMember:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const applyAdvance = async (req, res) => {
+  try {
+    const { member_advance_id, chits_installment_id, amount } = req.body;
+    return await adminService.applyAdvanceService(res, member_advance_id, chits_installment_id, amount, req.user);
+  } catch (error) {
+    console.error('Error in applyAdvance:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getAllCollectionSubmissions = async (req, res) => {
   try {
-    const { collection_agent_id, type, min, max } = req.body;
+    const { collection_agent_id, type, min, max, from_date, to_date, group_id } = req.body;
     const companyId = (req.user.role === 'staff' || req.user.role === 'member') ? req.user.company_id : req.user.id;
-    return await adminService.getAllCollectionSubmissionsService(res, collection_agent_id, type, min, max, companyId);
+    return await adminService.getAllCollectionSubmissionsService(res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id);
   } catch (error) {
     console.error('Error in getAllCollectionSubmissions:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1730,7 +1750,9 @@ module.exports = {
   getMemberReferrals,
   testSendTwilioOtp,
   testVerifyTwilioOtp,
-  getAppSupportedCountries
+  getAppSupportedCountries,
+  getAdvancesByMember,
+  applyAdvance
 };
 
 

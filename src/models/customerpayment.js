@@ -7,6 +7,13 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       CustomerPayment.belongsTo(models.ChitsInstallment, { foreignKey: 'chits_installment_id', as: 'installment' });
       CustomerPayment.belongsTo(models.CollectionAgentAmount, { foreignKey: 'collection_agent_amount_id', as: 'collection_submission' });
+      if (models.PaymentAccount) {
+        CustomerPayment.belongsTo(models.PaymentAccount, { foreignKey: 'upi_account_id', as: 'upi_account' });
+        CustomerPayment.belongsTo(models.PaymentAccount, { foreignKey: 'bank_account_id', as: 'bank_account' });
+      }
+      if (models.MemberAdvance) {
+        CustomerPayment.belongsTo(models.MemberAdvance, { foreignKey: 'member_advance_id', as: 'member_advance' });
+      }
     }
   }
   CustomerPayment.init({
@@ -63,6 +70,42 @@ module.exports = (sequelize, DataTypes) => {
     },
     recorded_by_name: {
       type: DataTypes.STRING,
+      allowNull: true
+    },
+    cash_amount: {
+      type: DataTypes.DECIMAL(15, 2),
+      defaultValue: 0.00
+    },
+    upi_amount: {
+      type: DataTypes.DECIMAL(15, 2),
+      defaultValue: 0.00
+    },
+    upi_account_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    bank_amount: {
+      type: DataTypes.DECIMAL(15, 2),
+      defaultValue: 0.00
+    },
+    bank_account_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    cheque_number: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    cheque_date: {
+      type: DataTypes.DATEONLY,
+      allowNull: true
+    },
+    narration: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+    member_advance_id: {
+      type: DataTypes.INTEGER,
       allowNull: true
     }
   }, {

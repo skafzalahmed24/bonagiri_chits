@@ -2,10 +2,30 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
 const fixedSchemeController = require('../controllers/fixedSchemeController');
+const paymentAccountController = require('../controllers/paymentAccountController');
+const accountingVoucherController = require('../controllers/accountingVoucherController');
+const selfTransferController = require('../controllers/selfTransferController');
+const borrowRepayController = require('../controllers/borrowRepayController');
+const outgoingPaymentController = require('../controllers/outgoingPaymentController');
+const expenditureController = require('../controllers/expenditureController');
+const reportController = require('../controllers/reportController');
 const platformSupportController = require('../controllers/platformSupportController');
 const validate = require('../middlewares/validate');
 const MODULES = require('../utils/modules');
+
 const authMiddleware = require('../middlewares/authMiddleware');
+
+const VOUCHER_MODULES = { CR: MODULES.T_CASH_RECEIPTS, CP: MODULES.T_CASH_PAYMENTS, BD: MODULES.T_BANK_DEPOSITS, BP: MODULES.T_BANK_PAYMENTS };
+// Vouchers share endpoints; check the module for the voucher_type when the request carries one.
+const voucherPermission = authMiddleware.requireAnyPermission((req) =>
+  VOUCHER_MODULES[req.body?.voucher_type] ? [VOUCHER_MODULES[req.body.voucher_type]] : Object.values(VOUCHER_MODULES)
+);
+// Every Phase 1 accounting screen needs the payment-account dropdown.
+const PAYMENT_ACCOUNT_READERS = [
+  MODULES.M_PAYMENT_ACCOUNTS, MODULES.T_MEMBER_RECEIPTS, MODULES.T_COLLECTION_VERIFY, ...Object.values(VOUCHER_MODULES),
+  MODULES.T_SELF_TRANSFER, MODULES.T_BORROW_REPAY, MODULES.T_PAYMENTS, MODULES.T_EXPENDITURE,
+  MODULES.T_DAY_REPORT, MODULES.R_BALANCE_SUMMARY, MODULES.R_CASH_BOOK, MODULES.R_BANK_BOOK, MODULES.R_DAY_BOOK,
+];
 const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
 const userController = require('../controllers/userController');
@@ -201,7 +221,7 @@ router.post('/history-business-agent/history-by-group-id', authMiddleware.authen
 
 // collection-agent submissions update
 router.post('/collection-agent/submissions/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.updateCollectionSubmissionStatusSchema), adminController.updateCollectionSubmissionStatus);
-router.post('/collection-agent/submissions/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllCollectionSubmissionsSchema), adminController.getAllCollectionSubmissions);
+router.post('/collection-agent/submissions/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.getAllCollectionSubmissionsSchema), adminController.getAllCollectionSubmissions);
 
 // member documents
 router.post('/member/documents/list', authMiddleware.authenticateToken, validate(adminValidation.getMemberDocumentsAdminSchema), adminController.getMemberDocumentsAdmin);
@@ -210,6 +230,10 @@ router.post('/member/documents/verify', authMiddleware.authenticateToken, valida
 // admin direct payment route
 router.post('/customer-payment/store-direct', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.storeDirectPaymentSchema), adminController.storeDirectPayment);
 router.post('/customer-payment/get-all-receipts', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.getAllReceiptsSchema), adminController.getAllReceipts);
+
+// member advances
+router.post('/member-advance/get-by-member', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.getAdvancesByMemberSchema), adminController.getAdvancesByMember);
+router.post('/member-advance/apply', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.applyAdvanceSchema), adminController.applyAdvance);
 
 // gallery routes
 router.post('/gallery/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.galleryValidator), adminController.storeOrUpdateGallery);
@@ -230,11 +254,16 @@ router.post('/staff/get-by-id', authMiddleware.authenticateToken, authMiddleware
 router.post('/staff/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteStaffSchema), adminController.deleteStaff);
 router.post('/staff/change-password', authMiddleware.authenticateToken, validate(adminValidation.staffChangePasswordSchema), adminController.staffChangePassword);
 
-// role routes
-router.post('/role/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.roleValidator), adminController.storeOrUpdateRole);
+// Role specific routes
+router.post('/role/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.S_ROLES), validate(adminValidation.roleValidator), adminController.storeOrUpdateRole);
 router.post('/role/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.S_ROLES), validate(adminValidation.getAllRoleSchema), adminController.getAllRole);
 router.post('/role/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.S_ROLES), validate(adminValidation.getByIdSchema), adminController.getRoleById);
-router.post('/role/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteRoleSchema), adminController.deleteRole);
+router.post('/role/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.S_ROLES), validate(adminValidation.deleteRoleSchema), adminController.deleteRole);
+
+// Payment Accounts specific routes
+router.post('/payment-account/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_PAYMENT_ACCOUNTS), paymentAccountController.storeOrUpdatePaymentAccount);
+router.post('/payment-account/get-all', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(PAYMENT_ACCOUNT_READERS), paymentAccountController.getAllPaymentAccounts);
+router.post('/payment-account/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_PAYMENT_ACCOUNTS), paymentAccountController.deletePaymentAccount);
 
 // dashboard route
 router.post('/dashboard/summary', authMiddleware.authenticateToken, adminController.getDashboardSummary);
@@ -287,5 +316,42 @@ router.post('/public/support', authMiddleware.authenticateDefaultToken, platform
 // Member Delete Account routes
 router.post('/member/delete-account/send-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);
 router.post('/member/delete-account/verify', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyDeleteAccountOtpSchema), platformSupportController.verifyDeleteAccountOtp);
+
+// Accounting Vouchers Routes
+router.post('/accounting-voucher/get-all', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.getAll);
+router.post('/accounting-voucher/get-by-id', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.getById);
+router.post('/accounting-voucher/store-or-update', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.storeOrUpdate);
+router.post('/accounting-voucher/delete', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.deleteVoucher);
+router.post('/accounting-voucher/get-account-balance', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.getAccountBalance);
+
+// Self Transfer Routes
+router.post('/self-transfer/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SELF_TRANSFER), selfTransferController.getAll);
+router.post('/self-transfer/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SELF_TRANSFER), selfTransferController.getById);
+router.post('/self-transfer/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SELF_TRANSFER), selfTransferController.storeOrUpdate);
+router.post('/self-transfer/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SELF_TRANSFER), selfTransferController.deleteTransfer);
+
+// Borrow/Repay Routes
+router.post('/borrow-repay/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_BORROW_REPAY), borrowRepayController.getAll);
+router.post('/borrow-repay/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_BORROW_REPAY), borrowRepayController.getById);
+router.post('/borrow-repay/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_BORROW_REPAY), borrowRepayController.storeOrUpdate);
+router.post('/borrow-repay/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_BORROW_REPAY), borrowRepayController.deleteEntry);
+
+// Outgoing Payments Routes
+router.post('/outgoing-payment/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_PAYMENTS), outgoingPaymentController.getAll);
+router.post('/outgoing-payment/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_PAYMENTS), outgoingPaymentController.getById);
+router.post('/outgoing-payment/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_PAYMENTS), outgoingPaymentController.storeOrUpdate);
+router.post('/outgoing-payment/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_PAYMENTS), outgoingPaymentController.deletePayment);
+
+// Expenditure Routes
+router.post('/expenditure/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_EXPENDITURE), expenditureController.getAll);
+router.post('/expenditure/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_EXPENDITURE), expenditureController.getById);
+router.post('/expenditure/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_EXPENDITURE), expenditureController.storeOrUpdate);
+router.post('/expenditure/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_EXPENDITURE), expenditureController.deleteExpenditure);
+
+// Reports Routes
+router.post('/reports/day-report', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_DAY_REPORT), reportController.getDayReport);
+router.post('/reports/cb-inflow', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_CB_INFLOW), reportController.getCbInflowReport);
+router.post('/reports/account-book', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_CASH_BOOK, MODULES.R_BANK_BOOK]), reportController.getAccountBookReport);
+router.post('/reports/day-book', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_DAY_BOOK), reportController.getDayBookReport);
 
 module.exports = router;

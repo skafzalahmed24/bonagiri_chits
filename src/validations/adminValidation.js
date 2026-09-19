@@ -966,13 +966,25 @@ module.exports = {
   }),
   updateCollectionSubmissionStatusSchema: Joi.object({
     id: Joi.string().uuid().required(),
-    status: Joi.number().integer().valid(0, 1, 2, 3).required()
+    status: Joi.number().integer().valid(0, 1, 2, 3).required(),
+    account_id: Joi.number().integer().allow(null).optional()
+  }),
+  getAdvancesByMemberSchema: Joi.object({
+    member_id: Joi.number().integer().required()
+  }),
+  applyAdvanceSchema: Joi.object({
+    member_advance_id: Joi.number().integer().required(),
+    chits_installment_id: Joi.string().uuid().required(),
+    amount: Joi.number().precision(2).positive().required()
   }),
   getAllCollectionSubmissionsSchema: Joi.object({
     collection_agent_id: Joi.number().integer().optional(),
     type: Joi.number().integer().valid(1, 2, 3, 4).required(),
     min: Joi.number().integer().min(0).optional(),
-    max: Joi.number().integer().min(1).optional()
+    max: Joi.number().integer().min(1).optional(),
+    from_date: Joi.date().iso().optional(),
+    to_date: Joi.date().iso().optional(),
+    group_id: Joi.string().uuid().optional()
   }),
   galleryValidator: Joi.object({
     id: Joi.alternatives().try(Joi.string().uuid(), Joi.string(), Joi.number()).optional(),
@@ -1131,7 +1143,15 @@ module.exports = {
     penalty_paid: Joi.number().min(0).optional(),
     payment_date: Joi.date().iso().optional(),
     payment_mode: Joi.number().integer().optional(),
-    transaction_reference: Joi.string().allow('', null).optional()
+    transaction_reference: Joi.string().allow('', null).optional(),
+    cash_amount: Joi.number().min(0).optional(),
+    upi_amount: Joi.number().min(0).optional(),
+    upi_account_id: Joi.number().integer().allow(null).optional(),
+    bank_amount: Joi.number().min(0).optional(),
+    bank_account_id: Joi.number().integer().allow(null).optional(),
+    cheque_number: Joi.string().allow('', null).optional(),
+    cheque_date: Joi.date().iso().allow('', null).optional(),
+    narration: Joi.string().allow('', null).optional()
   }),
   getMemberDocumentsAdminSchema: Joi.object({
     group_id: Joi.string().uuid().required(),
@@ -1149,6 +1169,7 @@ module.exports = {
     source: Joi.string().valid('direct', 'collection_agent').optional(),
     group_id: Joi.string().uuid().optional(),
     member_id: Joi.number().integer().optional(),
+    collection_agent_id: Joi.number().integer().optional(),
     payment_mode: Joi.number().integer().optional(),
     date_from: Joi.date().iso().optional(),
     date_to: Joi.date().iso().optional(),

@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
@@ -3477,15 +3477,23 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
   }
 };
 
-const updateCollectionSubmissionStatusService = async (res, id, status, userToken) => {
+const updateCollectionSubmissionStatusService = async (res, id, status, account_id, userToken) => {
+  const transaction = await sequelize.transaction();
   try {
     const companyId = await resolveCompanyIdForAuth(userToken);
     const submission = await CollectionAgentAmount.findOne({ 
       where: { id },
-      include: [{ model: Member, as: 'member', where: { company_id: companyId } }]
+      include: [{ model: Member, as: 'member', where: { company_id: companyId } }],
+      transaction
     });
     if (!submission) {
+      await transaction.rollback();
       return errorResponse(res, statusCodes.NOT_FOUND, 'Submission not found');
+    }
+
+    if (submission.status !== 0 && submission.status !== 1) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Only pending submissions can be verified or rejected');
     }
 
     let verified_by_id = null;
@@ -3497,15 +3505,14 @@ const updateCollectionSubmissionStatusService = async (res, id, status, userToke
       verified_by_role = userToken.role;
       verified_by_name = 'Unknown';
       if (userToken.role === 'company') {
-        const company = await Company.findByPk(userToken.id);
+        const company = await Company.findByPk(userToken.id, { transaction });
         if (company) verified_by_name = company.company_name;
       } else {
-        const staff = await StaffUser.findByPk(userToken.id);
+        const staff = await StaffUser.findByPk(userToken.id, { transaction });
         if (staff) verified_by_name = staff.name;
       }
     }
 
-    // update status (0 - pending, 1 - pending, 2 - verified, 3 - rejected)
     await submission.update({
       status,
       confirm_date: status === 2 ? new Date() : null,
@@ -3514,53 +3521,158 @@ const updateCollectionSubmissionStatusService = async (res, id, status, userToke
         verified_by_role,
         verified_by_name
       })
-    });
+    }, { transaction });
 
     if (status === 2) {
-      // Verified - Generate receipt numbers and update pending CustomerPayments
-      const pendingPayments = await CustomerPayment.findAll({
-        where: { collection_agent_amount_id: id, payment_status: 0 }
-      });
-
-      const companyId = submission.member ? submission.member.company_id : null;
-      
-      for (const payment of pendingPayments) {
-        let newReceiptNumber = null;
-        if (companyId) {
-          newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId);
-        }
-        
-        await payment.update({ 
-          payment_status: 1,
-          receipt_number: newReceiptNumber
+      let targetAccount = null;
+      if (submission.payment_type === 1) {
+        targetAccount = await PaymentAccount.findOne({
+          where: { company_id: companyId, account_type: 'CASH', is_active: true },
+          order: [['id', 'ASC']],
+          transaction
         });
+      } else {
+        if (!account_id) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Payment account is required for this payment type');
+        }
+        targetAccount = await PaymentAccount.findOne({
+          where: { id: account_id, company_id: companyId, is_active: true },
+          transaction
+        });
+        if (!targetAccount) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid payment account');
+        }
+        const expectedType = submission.payment_type === 2 ? 'UPI' : 'BANK';
+        if (targetAccount.account_type !== expectedType) {
+           await transaction.rollback();
+           return errorResponse(res, statusCodes.BAD_REQUEST, `Selected account must be of type ${expectedType}`);
+        }
       }
 
-      // FCM Notification logic follows (which we've already done elsewhere or below this block)
+      if (!targetAccount) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Target payment account not found or inactive');
+      }
+
+      const pendingPayments = await CustomerPayment.findAll({
+        where: { collection_agent_amount_id: id, payment_status: 0 },
+        transaction
+      });
+
+      const localDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+      let allocated = 0;
+      for (const payment of pendingPayments) {
+        const rowTotal = parseFloat(payment.received_amount) + parseFloat(payment.penalty_paid);
+        allocated += rowTotal;
+
+        let newReceiptNumber = null;
+        if (companyId) {
+          newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId, transaction);
+        }
+        
+        let splitUpdate = {
+          payment_status: 1,
+          receipt_number: newReceiptNumber,
+          payment_date: localDate
+        };
+        if (targetAccount.account_type === 'CASH') {
+          splitUpdate.cash_amount = rowTotal;
+        } else if (targetAccount.account_type === 'UPI') {
+          splitUpdate.upi_amount = rowTotal;
+          splitUpdate.upi_account_id = targetAccount.id;
+        } else if (targetAccount.account_type === 'BANK') {
+          splitUpdate.bank_amount = rowTotal;
+          splitUpdate.bank_account_id = targetAccount.id;
+        }
+
+        await payment.update(splitUpdate, { transaction });
+      }
+
+      let excess = parseFloat(submission.received_amount) - allocated;
+      excess = Math.round(excess * 100) / 100;
+      if (excess < 0.01 && excess > -0.01) excess = 0;
+
+      if (excess < 0) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Allocated amount exceeds submission amount');
+      }
+
+      if (excess > 0) {
+        const localDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        await MemberAdvance.create({
+          company_id: companyId,
+          member_id: submission.member_id,
+          collection_agent_amount_id: id,
+          account_id: targetAccount ? targetAccount.id : null,
+          payment_type: submission.payment_type,
+          amount: excess,
+          balance: excess,
+          date: localDate,
+          narration: `Advance created from excess collection (Sub ID: ${id})`
+        }, { transaction });
+      }
+
+      await targetAccount.update({
+        current_balance: parseFloat(targetAccount.current_balance) + parseFloat(submission.received_amount)
+      }, { transaction });
+
     } else if (status === 3) {
-      // Rejected - Delete the pending CustomerPayments to revert clearance
       await CustomerPayment.destroy({
-        where: { collection_agent_amount_id: id, payment_status: 0 }
+        where: { collection_agent_amount_id: id, payment_status: 0 },
+        transaction
       });
     }
 
+    await transaction.commit();
     return successResponse(res, statusCodes.OK, 'Submission status updated successfully', submission);
   } catch (error) {
+    if (transaction) await transaction.rollback();
     console.error('Error in updateCollectionSubmissionStatusService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
 
 const storeDirectPaymentService = async (res, user, data) => {
+  const transaction = await sequelize.transaction();
   try {
-    const { chits_installment_id, received_amount, penalty_paid, payment_date, payment_mode, transaction_reference } = data;
+    const { 
+      chits_installment_id, received_amount, penalty_paid, payment_date, 
+      payment_mode, transaction_reference,
+      cash_amount, upi_amount, upi_account_id, bank_amount, bank_account_id,
+      cheque_number, cheque_date, narration
+    } = data;
     
     if (!chits_installment_id || received_amount === undefined) {
+      await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Missing required payment fields');
+    }
+
+    const cash = parseFloat(cash_amount) || 0;
+    const upi = parseFloat(upi_amount) || 0;
+    const bank = parseFloat(bank_amount) || 0;
+    const totalCollected = parseFloat(received_amount) || 0;
+
+    if (totalCollected > 0 && Math.abs(cash + upi + bank - totalCollected) > 0.01) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Sum of cash, upi, and bank amounts must equal total received amount');
+    }
+
+    if (upi > 0 && !upi_account_id) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'UPI account is required when UPI amount is greater than 0');
+    }
+
+    if (bank > 0 && !bank_account_id) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Bank account is required when Bank amount is greater than 0');
     }
 
     const companyId = user.role === 'company' ? user.id : user.company_id;
     if (!companyId) {
+      await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin company ID is required');
     }
 
@@ -3578,10 +3690,12 @@ const storeDirectPaymentService = async (res, user, data) => {
     });
 
     if (!installmentInfo || !installmentInfo.enrollment || !installmentInfo.enrollment.group) {
+      await transaction.rollback();
       return errorResponse(res, statusCodes.NOT_FOUND, 'Installment not found');
     }
 
     if (installmentInfo.enrollment.group.company_id !== companyId) {
+      await transaction.rollback();
       return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized access to this installment');
     }
 
@@ -3593,6 +3707,7 @@ const storeDirectPaymentService = async (res, user, data) => {
     const penaltyPaidFloat = parseFloat(penalty_paid) || 0;
     
     if (receivedAmountFloat > dueAmount + penaltyPaidFloat) {
+      await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, `Payment exceeds the due amount. Maximum allowed is ${dueAmount + penaltyPaidFloat}`);
     }
 
@@ -3608,19 +3723,72 @@ const storeDirectPaymentService = async (res, user, data) => {
       if (staff) recorded_by_name = staff.name;
     }
 
+    let final_payment_mode = parseInt(payment_mode);
+    if (!final_payment_mode) {
+      if (cash > 0 && upi === 0 && bank === 0 && !cheque_number) final_payment_mode = 1;
+      else if (cash === 0 && upi > 0 && bank === 0 && !cheque_number) final_payment_mode = 2;
+      else if (cash === 0 && upi === 0 && bank === 0 && cheque_number) final_payment_mode = 3;
+      else if (cash === 0 && upi === 0 && bank > 0 && !cheque_number) final_payment_mode = 4;
+      else final_payment_mode = 5; // Mixed / Others
+    }
+
     const newPayment = await CustomerPayment.create({
       chits_installment_id,
       received_amount: parseFloat(received_amount) || 0.00,
       penalty_paid: parseFloat(penalty_paid) || 0.00,
       payment_status: 1, // Auto-verified for admin direct payments
       payment_date: payment_date || new Date().toISOString().split('T')[0],
-      payment_mode: parseInt(payment_mode) || 1,
+      payment_mode: final_payment_mode,
       transaction_reference: transaction_reference || null,
       receipt_number: newReceiptNumber,
       recorded_by_id: user.role === 'company' ? user.id : String(user.id),
       recorded_by_role: user.role,
-      recorded_by_name
-    });
+      recorded_by_name,
+      cash_amount: cash,
+      upi_amount: upi,
+      upi_account_id: upi_account_id || null,
+      bank_amount: bank,
+      bank_account_id: bank_account_id || null,
+      cheque_number: cheque_number || null,
+      cheque_date: cheque_date || null,
+      narration: narration || null
+    }, { transaction });
+
+    // Update balances of the referenced payment accounts
+    if (upi > 0 && upi_account_id) {
+      const upiAccount = await PaymentAccount.findByPk(upi_account_id, { transaction });
+      if (upiAccount) {
+        await upiAccount.update({
+          current_balance: Number(upiAccount.current_balance) + upi
+        }, { transaction });
+      }
+    }
+
+    if (bank > 0 && bank_account_id) {
+      const bankAccount = await PaymentAccount.findByPk(bank_account_id, { transaction });
+      if (bankAccount) {
+        await bankAccount.update({
+          current_balance: Number(bankAccount.current_balance) + bank
+        }, { transaction });
+      }
+    }
+    
+    if (cash > 0) {
+      // Find cash account to update
+      // Must match reportService's cash attribution: lowest-id active CASH account.
+      const cashAccount = await PaymentAccount.findOne({
+        where: { company_id: companyId, account_type: 'CASH', is_active: true },
+        order: [['id', 'ASC']],
+        transaction
+      });
+      if (cashAccount) {
+        await cashAccount.update({
+          current_balance: Number(cashAccount.current_balance) + cash
+        }, { transaction });
+      }
+    }
+
+    await transaction.commit();
 
     // Trigger FCM Notification for Payment Received
     try {
@@ -3639,6 +3807,7 @@ const storeDirectPaymentService = async (res, user, data) => {
 
     return successResponse(res, statusCodes.CREATED, 'Direct payment recorded successfully', newPayment);
   } catch (error) {
+    if (transaction) await transaction.rollback();
     console.error('Error in storeDirectPaymentService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
@@ -4150,7 +4319,7 @@ const logoutService = async (req, res, userPayload) => {
   }
 };
 
-const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max, companyId) => {
+const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id) => {
   try {
     const whereClause = {};
     if (collection_agent_id) {
@@ -4160,6 +4329,27 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
     if (type === 2) whereClause.status = { [Op.in]: [0, 1] }; // pending
     if (type === 3) whereClause.status = 2; // verified
     if (type === 4) whereClause.status = 3; // rejected
+
+    if (from_date || to_date) {
+      // Joi has already turned the dates into Date objects; take their IST calendar day.
+      const istDay = (d) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      whereClause.createdAt = {};
+      if (from_date) {
+        whereClause.createdAt[Op.gte] = new Date(`${istDay(from_date)}T00:00:00+05:30`);
+      }
+      if (to_date) {
+        whereClause.createdAt[Op.lte] = new Date(`${istDay(to_date)}T23:59:59.999+05:30`);
+      }
+    }
+
+    if (group_id) {
+      const groupEnrollments = await Enrollment.findAll({
+        where: { group_id, delete_status: 0 },
+        attributes: ['subscriber_id']
+      });
+      const groupMemberIds = groupEnrollments.map(e => e.subscriber_id);
+      whereClause.member_id = { [Op.in]: groupMemberIds };
+    }
 
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
@@ -4189,6 +4379,20 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
       where: { subscriber_id: { [Op.in]: memberIds }, delete_status: 0 },
       include: [{ model: ChitsGroup, as: 'group' }]
     });
+
+    const submissionIds = submissions.map(s => s.id);
+    const advances = await MemberAdvance.findAll({ where: { collection_agent_amount_id: { [Op.in]: submissionIds } } });
+    // One submission can pay several installments; all rows share the verifier's chosen account.
+    const creditedPayments = await CustomerPayment.findAll({
+      where: { collection_agent_amount_id: { [Op.in]: submissionIds } },
+      attributes: ['collection_agent_amount_id'],
+      include: [
+        { model: PaymentAccount, as: 'upi_account', attributes: ['name'] },
+        { model: PaymentAccount, as: 'bank_account', attributes: ['name'] }
+      ]
+    });
+    const accountNames = (subId, key) =>
+      creditedPayments.find(p => p.collection_agent_amount_id === subId && p[key])?.[key]?.name || null;
 
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const formatDate = (date) => {
@@ -4249,9 +4453,15 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         profile_image: sub.member ? sub.member.upload_image : '',
         group_name: groupNames || 'No Group',
         amount,
+        cash_amount: sub.payment_type === 1 ? amount : null,
+        upi_amount: sub.payment_type === 2 ? amount : null,
+        upi_account: accountNames(sub.id, 'upi_account'),
+        bank_amount: [3, 4, 5].includes(sub.payment_type) || sub.bank_details ? amount : null,
+        bank_account: accountNames(sub.id, 'bank_account'),
+        advance_created: advances.find(a => a.collection_agent_amount_id === sub.id)?.amount || 0,
         method: getPaymentMethod(sub.payment_type),
-        date: formatDate(sub.createdAt),
-        payment_date: sub.paid_date ? formatDate(sub.paid_date) : formatDate(sub.createdAt),
+        date: sub.createdAt,
+        payment_date: sub.paid_date || sub.createdAt,
         collection_id: collection_id_value,
         status: statusStr,
         status_int: sub.status,
@@ -5050,7 +5260,7 @@ const getAllAuditLogsService = async (res, user_id, action_type, min, max, searc
 
 const getAllReceiptsService = async (res, companyId, filters = {}) => {
   try {
-    const { min = 0, max = 20, source, group_id, member_id, payment_mode, date_from, date_to, search } = filters;
+    const { min = 0, max = 20, source, group_id, member_id, payment_mode, date_from, date_to, search, collection_agent_id } = filters;
 
     const where = { payment_status: 1 };
     if (payment_mode) where.payment_mode = payment_mode;
@@ -5098,9 +5308,12 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
         {
           model: CollectionAgentAmount,
           as: 'collection_submission',
-          required: false,
+          required: collection_agent_id ? true : false,
+          ...(collection_agent_id && { where: { collection_agent_id } }),
           include: [{ model: Member, as: 'collection_agent', attributes: ['id', 'name'] }]
-        }
+        },
+        { model: PaymentAccount, as: 'upi_account', attributes: ['id', 'name'] },
+        { model: PaymentAccount, as: 'bank_account', attributes: ['id', 'name'] }
       ],
       limit: parseInt(max, 10) || 20,
       offset: parseInt(min, 10) || 0,
@@ -5115,6 +5328,12 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
         receipt_number: p.receipt_number,
         payment_date: p.payment_date,
         payment_mode: p.payment_mode,
+        cash_amount: p.cash_amount || 0,
+        upi_amount: p.upi_amount || 0,
+        upi_account: p.upi_account?.name || null,
+        bank_amount: p.bank_amount || 0,
+        bank_account: p.bank_account?.name || null,
+        is_advance: !!p.member_advance_id,
         transaction_reference: p.transaction_reference,
         received_amount: p.received_amount,
         penalty_paid: p.penalty_paid,
@@ -5493,6 +5712,127 @@ const getMemberReferralsService = async (res, min = 0, max = 10, search = '') =>
   }
 };
 
+const getAdvancesByMemberService = async (res, member_id, userToken) => {
+  try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    const advances = await MemberAdvance.findAll({
+      where: {
+        member_id,
+        company_id: companyId,
+        balance: { [Op.gt]: 0 }
+      },
+      order: [['date', 'ASC']]
+    });
+
+    let total = 0;
+    advances.forEach(adv => total += parseFloat(adv.balance));
+
+    return successResponse(res, statusCodes.OK, 'Advances fetched successfully', {
+      advances,
+      total_balance: total
+    });
+  } catch (error) {
+    console.error('Error in getAdvancesByMemberService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const applyAdvanceService = async (res, member_advance_id, chits_installment_id, amount, userToken) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    const advance = await MemberAdvance.findOne({
+      where: { id: member_advance_id, company_id: companyId },
+      transaction
+    });
+
+    if (!advance || advance.balance < amount) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid advance or insufficient balance');
+    }
+
+    const installment = await ChitsInstallment.findOne({
+      where: { id: chits_installment_id },
+      include: [{
+        model: Enrollment, as: 'enrollment',
+        where: { company_id: companyId, subscriber_id: advance.member_id },
+        required: true
+      }],
+      transaction
+    });
+
+    if (!installment) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid installment or member mismatch');
+    }
+
+    const { getInstallmentBalance } = require('./installmentBalanceHelper');
+    const paidSoFar = await getInstallmentBalance(chits_installment_id);
+    const due = parseFloat(installment.payable_amount) - paidSoFar;
+
+    if (amount > due) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Advance application exceeds installment dues');
+    }
+
+    if (amount > parseFloat(advance.balance)) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Amount exceeds advance balance');
+    }
+
+    let newReceiptNumber = null;
+    if (companyId) {
+      newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId, transaction);
+    }
+
+    let verified_by_id = null;
+    let verified_by_role = null;
+    let verified_by_name = null;
+    if (userToken) {
+      verified_by_id = userToken.role === 'company' ? userToken.id : String(userToken.id);
+      verified_by_role = userToken.role;
+      verified_by_name = 'Unknown';
+      if (userToken.role === 'company') {
+        const company = await Company.findByPk(userToken.id, { transaction });
+        if (company) verified_by_name = company.company_name;
+      } else {
+        const staff = await StaffUser.findByPk(userToken.id, { transaction });
+        if (staff) verified_by_name = staff.name;
+      }
+    }
+
+    await CustomerPayment.create({
+      chits_installment_id,
+      received_amount: amount,
+      penalty_paid: 0,
+      payment_status: 1,
+      payment_mode: 6,
+      receipt_number: newReceiptNumber,
+      member_advance_id: advance.id,
+      cash_amount: 0,
+      upi_amount: 0,
+      bank_amount: 0,
+      upi_account_id: null,
+      bank_account_id: null,
+      payment_date: new Date(),
+      recorded_by_id: verified_by_id,
+      recorded_by_role: verified_by_role,
+      recorded_by_name: verified_by_name
+    }, { transaction });
+
+    await advance.update({
+      balance: parseFloat(advance.balance) - parseFloat(amount)
+    }, { transaction });
+
+    await transaction.commit();
+    return successResponse(res, statusCodes.OK, 'Advance applied successfully');
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    console.error('Error in applyAdvanceService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdateFAQService,
   getAllFAQService,
@@ -5643,5 +5983,7 @@ module.exports = {
   getStatutoryReportService,
   searchEnquiryService,
   getMemberReferralsService,
-  getAppSupportedCountriesService
+  getAppSupportedCountriesService,
+  getAdvancesByMemberService,
+  applyAdvanceService
 };
