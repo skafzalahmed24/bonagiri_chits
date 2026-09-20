@@ -54,7 +54,7 @@ const changeBannerStatus = async (req, res) => {
 
 const getUserValidOffers = async (req, res) => {
   try {
-    return await bannerService.getUserValidOffersService(res, req.user);
+    return await bannerService.getUserValidOffersService(res, req.user, req.body);
   } catch (error) {
     console.error('Error in getUserValidOffers controller:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

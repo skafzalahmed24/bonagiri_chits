@@ -133,13 +133,17 @@ async function runTests() {
     }, null);
     console.log('Update Banner Response:', res.body?.status, res.body?.message);
 
-    // TEST 6: Check User Valid Offers Helper for sub1 and sub2
-    console.log('\n--- Test 6: Check Valid Offers for Subscriber 1 and Subscriber 2 ---');
-    const sub1Offers = await getValidOffersForSubscriberHelper(sub1.id, companyId);
-    console.log(`Subscriber 1 (${sub1.id}) sees ${sub1Offers.length} offers:`, sub1Offers.map(o => ({ id: o.id, type: o.banner_type_label })));
+    // TEST 6: Check User Valid Offers Helper & Service with min/max pagination for sub1 and sub2
+    console.log('\n--- Test 6: Check Valid Offers Service with min/max for Subscriber 1 ---');
+    const subscriberUser = { id: sub1.id, role: 'member', company_id: companyId };
+    res = createMockRes();
+    await bannerService.getUserValidOffersService(res, subscriberUser, { min: 0, max: 10 });
+    console.log(`Subscriber 1 (${sub1.id}) API response count: ${res.body?.data?.count}, rows length: ${res.body?.data?.rows?.length}`);
+    console.log('Offers:', res.body?.data?.rows);
 
-    const nonExistentSubOffers = await getValidOffersForSubscriberHelper(9999999, companyId);
-    console.log(`Non-targeted Subscriber (9999999) sees ${nonExistentSubOffers.length} offers (only regular):`, nonExistentSubOffers.map(o => ({ id: o.id, type: o.banner_type_label })));
+    const nonRes = createMockRes();
+    await bannerService.getUserValidOffersService(nonRes, { id: 9999999, role: 'member', company_id: companyId }, { min: 0, max: 10 });
+    console.log(`Non-targeted Subscriber (9999999) sees ${nonRes.body?.data?.count} offers (only regular):`, nonRes.body?.data?.rows?.map(o => ({ id: o.id, type: o.banner_type_label })));
 
     // TEST 7: Change Status Toggle
     console.log('\n--- Test 7: Toggle Banner Status to Inactive ---');

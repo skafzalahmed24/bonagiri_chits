@@ -395,7 +395,7 @@ const changeBannerStatusService = async (res, userToken, id, status) => {
   }
 };
 
-const getUserValidOffersService = async (res, userPayload) => {
+const getUserValidOffersService = async (res, userPayload, body = {}) => {
   try {
     if (!userPayload || !userPayload.id) {
       return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
@@ -403,12 +403,57 @@ const getUserValidOffersService = async (res, userPayload) => {
 
     const subscriberId = userPayload.id;
     const companyId = userPayload.company_id || null;
+    const { min = 0, max = 10 } = body;
 
-    const offers = await getValidOffersForSubscriberHelper(subscriberId, companyId);
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const simulatedNow = await getSimulatedNow();
+    const todayStr = simulatedNow.toISOString().split('T')[0];
+
+    // Find assigned banner IDs for this subscriber
+    const assignedRecords = await AssignedBannerToPeople.findAll({
+      where: { subscriber_id: subscriberId },
+      attributes: ['assigned_banner_id']
+    });
+    const assignedBannerIds = assignedRecords.map(r => r.assigned_banner_id);
+
+    const whereClause = {
+      is_deleted_status: 0,
+      status: 1,
+      banner_start_date: { [Op.lte]: todayStr },
+      banner_end_date: { [Op.gte]: todayStr },
+      [Op.or]: [
+        { banner_type: 1 }, // Regular (for all)
+        ...(assignedBannerIds.length > 0 ? [{ id: { [Op.in]: assignedBannerIds }, banner_type: 2 }] : [])
+      ]
+    };
+
+    if (companyId) {
+      whereClause.company_id = companyId;
+    }
+
+    const { count, rows } = await Banner.findAndCountAll({
+      where: whereClause,
+      order: [['banner_start_date', 'DESC'], ['id', 'DESC']],
+      attributes: ['id', 'company_id', 'banner_image', 'banner_type', 'status', 'banner_start_date', 'banner_end_date', 'createdAt'],
+      limit,
+      offset
+    });
+
+    const formattedRows = rows.map(b => ({
+      id: b.id,
+      banner_image: b.banner_image,
+      banner_type: b.banner_type,
+      banner_type_label: b.banner_type === 1 ? 'Regular' : 'Targeted',
+      banner_start_date: b.banner_start_date,
+      banner_end_date: b.banner_end_date,
+      status: b.status
+    }));
 
     return successResponse(res, statusCodes.OK, 'Valid offers retrieved successfully', {
-      count: offers.length,
-      rows: offers
+      count,
+      rows: formattedRows
     });
   } catch (error) {
     console.error('Error in getUserValidOffersService:', error);

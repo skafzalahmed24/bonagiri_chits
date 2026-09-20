@@ -65,7 +65,6 @@ router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(userV
 
 // valid offers / banner routes (authenticated)
 router.post('/valid-offers', authMiddleware.authenticateToken, validate(userValidation.getUserValidOffersSchema), bannerController.getUserValidOffers);
-router.post('/banners', authMiddleware.authenticateToken, validate(userValidation.getUserValidOffersSchema), bannerController.getUserValidOffers);
 
 // Fixed Scheme Chits Routes (Public / No Authorization)
 router.post('/fixed-scheme-details', fixedSchemeController.getFixedSchemeByType);
