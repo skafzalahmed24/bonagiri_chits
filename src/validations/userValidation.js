@@ -282,7 +282,13 @@ const getMyReferralsSchema = Joi.object({
   search: Joi.string().allow('', null).optional()
 });
 
+const getChitTypesSchema = Joi.object({
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
 module.exports = {
+  getChitTypesSchema,
   getHomeRecordSchema,
   getAllHomeRecordsSchema,
   getUpcomingChitsSchema,

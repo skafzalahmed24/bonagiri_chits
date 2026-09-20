@@ -474,6 +474,15 @@ const getMyReferrals = async (req, res) => {
   }
 };
 
+const getChitTypes = async (req, res) => {
+  try {
+    return await userService.getChitTypesService(res, req.body, req.user);
+  } catch (error) {
+    console.error('Error in getChitTypes:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   getHomeRecord,
   getAllHomeRecords,
@@ -483,6 +492,7 @@ module.exports = {
   getBids,
   getBidDetails,
   getChitDetails,
+  getChitTypes,
   getPaymentHistory,
   getPaymentReceipt,
   getBusinessListUnderMembers,

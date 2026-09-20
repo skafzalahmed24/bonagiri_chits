@@ -24,6 +24,7 @@ router.post('/pending-payments', authMiddleware.authenticateToken, validate(user
 router.post('/bids', authMiddleware.authenticateToken, validate(userValidation.getBidsSchema), userController.getBids);
 router.post('/bid-details', authMiddleware.authenticateToken, validate(userValidation.getBidDetailsSchema), userController.getBidDetails);
 router.post('/chit-details', authMiddleware.authenticateToken, validate(userValidation.getChitDetailsSchema), userController.getChitDetails);
+router.post('/chit-types', authMiddleware.authenticateToken, validate(userValidation.getChitTypesSchema), userController.getChitTypes);
 
 // payment history & receipt routes (authenticated)
 router.post('/payment-history', authMiddleware.authenticateToken, validate(userValidation.getPaymentHistorySchema), userController.getPaymentHistory);

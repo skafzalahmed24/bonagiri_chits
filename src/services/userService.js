@@ -6,7 +6,7 @@ const {
     UpcomingChit, UpcomingChitInterest, CustomerPayment, GroupUnderStaticList,
     Auction, CollectionAgentAmount, FixedSchemeChitsConfiguration,
     NotificationHistory, MemberDocument, CustomerVisit, Gallery, MemberReferral,
-    ConfigureBusinessAgentCommission, HistoryBusinessAgent,
+    ConfigureBusinessAgentCommission, HistoryBusinessAgent, ChitType,
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
@@ -4283,6 +4283,32 @@ const getBusinessAgentMemberJoinedService = async (res, business_agent_id, min, 
     }
 };
 
+const getChitTypesService = async (res, reqBody) => {
+    try {
+        const { min, max } = reqBody || {};
+
+        const whereClause = { is_deleted_status: 0 };
+
+        const queryOptions = {
+            where: whereClause,
+            attributes: ['id', 'name', 'description', 'bg_color', 'image', 'auction_type', 'status', 'display_order'],
+            order: [['display_order', 'ASC'], ['id', 'ASC']]
+        };
+
+        if (max) {
+            queryOptions.limit = parseInt(max, 10);
+            queryOptions.offset = parseInt(min, 10) || 0;
+        }
+
+        const chitTypes = await ChitType.findAndCountAll(queryOptions);
+
+        return successResponse(res, statusCodes.OK, 'Chit types retrieved successfully', chitTypes);
+    } catch (error) {
+        console.error('Error in getChitTypesService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
 module.exports = {
     getPaymentHistoryService,
     getPaymentReceiptService,
@@ -4294,6 +4320,7 @@ module.exports = {
     getBidsService,
     getBidDetailsService,
     getChitDetailsService,
+    getChitTypesService,
     getCollectionAgentDashboardService,
     getCollectionAgentActiveGroupsService,
     getCollectionAgentGroupDashboardService,
