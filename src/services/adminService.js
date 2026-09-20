@@ -5284,13 +5284,35 @@ const getMemberDocumentsAdminService = async (res, group_id, member_id) => {
 
     let documents = docRecord && docRecord.documents ? docRecord.documents : {};
 
-    const types = ['aadhar', 'bank_id', 'upi_details', 'certificates'];
-    const result = types.map(type => {
-      const doc = documents[type] || { url: null, status: null };
+    const documentDefinitions = [
+      { key: 'aadhar', title: 'Aadhaar Card _ (Both sides)', aliases: ['aadhaar', 'aadhaar_card'] },
+      { key: 'pan_card', title: 'PAN Card', aliases: ['pan'] },
+      { key: 'bank_statement', title: 'Bank Statement', aliases: ['bank_id'] },
+      { key: 'photos', title: "Photo's", aliases: ['photo'] },
+      { key: 'bond_paper_100', title: '100 ruppees Bond Paper', aliases: ['bond_paper'] },
+      { key: 'pay_slips', title: 'Pay Slips', aliases: ['pay_slip', 'salary_slips'] },
+      { key: 'id_cards', title: 'ID Cards (Employee Card)', aliases: ['id_card', 'employee_card'] },
+      { key: 'property_documents', title: 'Property Dcoments Zerox', aliases: ['property_documents_xerox'] },
+      { key: 'cheques', title: "Cheque's", aliases: ['cheque'] }
+    ];
+
+    const result = documentDefinitions.map(def => {
+      let doc = documents[def.key];
+      if (!doc && def.aliases) {
+        for (const alias of def.aliases) {
+          if (documents[alias]) {
+            doc = documents[alias];
+            break;
+          }
+        }
+      }
+      doc = doc || { url: null, status: null };
+
       return {
-        document_type: type,
-        document_url: doc.url,
-        status: doc.status
+        document_type: def.key,
+        document_title: def.title,
+        document_url: doc.url || null,
+        status: doc.status !== undefined ? doc.status : null
       };
     });
 
@@ -5301,9 +5323,62 @@ const getMemberDocumentsAdminService = async (res, group_id, member_id) => {
   }
 };
 
+const uploadMemberDocumentService = async (res, reqBody, userPayload) => {
+  try {
+    const { group_id, member_id, document_type, document_url, status = 1 } = reqBody;
+    
+    let uploaded_by = null;
+    if (userPayload && userPayload.id) {
+      const memberExists = await Member.findByPk(userPayload.id);
+      if (memberExists) {
+        uploaded_by = userPayload.id;
+      }
+    }
+
+    let docRecord = await MemberDocument.findOne({
+      where: { group_id, member_id }
+    });
+
+    let documents = docRecord && docRecord.documents ? { ...docRecord.documents } : {};
+
+    documents[document_type] = {
+      url: document_url || null,
+      status: parseInt(status, 10) || 1,
+      uploaded_at: new Date().toISOString()
+    };
+
+    if (docRecord) {
+      await docRecord.update({
+        documents,
+        uploaded_by: uploaded_by || docRecord.uploaded_by,
+        status: 1
+      });
+    } else {
+      docRecord = await MemberDocument.create({
+        group_id,
+        member_id,
+        documents,
+        uploaded_by,
+        status: 1
+      });
+    }
+
+    return successResponse(res, statusCodes.OK, 'Document uploaded successfully', {
+      member_id,
+      group_id,
+      document_type,
+      document_url,
+      documents: docRecord.documents
+    });
+  } catch (error) {
+    console.error('Error in uploadMemberDocumentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const verifyMemberDocumentService = async (res, payload) => {
   try {
-    const { group_id, member_id, document_type, status } = payload;
+    const { group_id, member_id, document_type, status, rejection_reason } = payload;
 
     const docRecord = await MemberDocument.findOne({
       where: { group_id, member_id }
@@ -5316,10 +5391,13 @@ const verifyMemberDocumentService = async (res, payload) => {
     let documents = { ...docRecord.documents };
 
     if (!documents[document_type]) {
-      return errorResponse(res, statusCodes.NOT_FOUND, `Document of type ${document_type} not found`);
+      documents[document_type] = { url: null, status: parseInt(status, 10) };
+    } else {
+      documents[document_type].status = parseInt(status, 10);
+      if (rejection_reason) {
+        documents[document_type].rejection_reason = rejection_reason;
+      }
     }
-
-    documents[document_type].status = status;
 
     await docRecord.update({ documents });
 
@@ -6075,6 +6153,7 @@ module.exports = {
   sendManualNotificationService,
   getAllAuditLogsService,
   getMemberDocumentsAdminService,
+  uploadMemberDocumentService,
   verifyMemberDocumentService,
   getAllReceiptsService,
   getSystemSettingsService,

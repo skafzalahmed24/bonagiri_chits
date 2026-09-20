@@ -17,7 +17,7 @@ const getHomeRecord = async (req, res) => {
 const getAllHomeRecords = async (req, res) => {
   try {
     const { subscriber_id, type, auction_type, min, max } = req.body || {};
-    return await userService.getAllHomeRecordsService(res, req.user, type, min, max, auction_type);
+    return await userService.getAllHomeRecordsService(res, req.user, type, min, max, auction_type, subscriber_id);
   } catch (error) {
     console.error('Error in getAllHomeRecords:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

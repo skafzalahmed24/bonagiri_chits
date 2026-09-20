@@ -1431,9 +1431,7 @@ const getMemberDocumentsAdmin = async (req, res) => {
 
 const verifyMemberDocument = async (req, res) => {
   try {
-    const { document_id, status, notes } = req.body;
-    const verifiedBy = req.user.id;
-    return await adminService.verifyMemberDocumentService(res, document_id, status, notes, verifiedBy);
+    return await adminService.verifyMemberDocumentService(res, { ...req.body, verifiedBy: req.user?.id });
   } catch (error) {
     console.error('Error in verifyMemberDocument:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

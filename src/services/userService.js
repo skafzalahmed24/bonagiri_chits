@@ -156,8 +156,19 @@ const getHomeRecordService = async (res, userPayload) => {
     }
 };
 
-const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max = 10, auction_type = null) => {
-    const subscriber_id = userPayload ? userPayload.id : null;
+const resolveChitGroupAuctionType = (group) => {
+    if (!group) return 1;
+    if (group.scheme_configuration_id) {
+        return 2; // Fixed Chit
+    }
+    if (Number(group.auction_type) === 1 || Number(group.auction_type) === 2) {
+        return Number(group.auction_type);
+    }
+    return 1; // Default to Open Auction (1) for legacy/unconfigured values like 35
+};
+
+const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max = 10, auction_type = null, reqSubscriberId = null) => {
+    const subscriber_id = reqSubscriberId || (userPayload ? userPayload.id : null);
     try {
         const enrollments = await Enrollment.findAll({
             where: {
@@ -169,7 +180,10 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
         });
 
         if (!enrollments || enrollments.length === 0) {
-            return errorResponse(res, statusCodes.NOT_FOUND, 'No enrollment records found for this subscriber');
+            return successResponse(res, statusCodes.OK, 'All home records retrieved successfully', {
+                count: 0,
+                rows: []
+            });
         }
 
         const uniqueGroupIds = new Set();
@@ -216,6 +230,8 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 completed_percentage = Math.round((totalAuctionsCount / group.no_of_installments) * 100);
             }
 
+            const resolvedAuctionType = resolveChitGroupAuctionType(group);
+
             return {
                 id: enrollment.id,
                 group_id: enrollment.group_id,
@@ -224,7 +240,8 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 chit_amount: group ? (parseFloat(group.chit_amount) || 0) : null,
                 no_of_installments: group ? group.no_of_installments : null,
                 total_positions: group ? (group.no_of_installments || 0) : 0,
-                auction_type: group ? group.auction_type : null,
+                auction_type: resolvedAuctionType,
+                auction_type_label: resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard'),
                 scheme_type: schemeType,
                 completed_installments_count: totalAuctionsCount,
                 completed_percentage,
@@ -856,8 +873,10 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             return errorResponse(res, statusCodes.NOT_FOUND, 'Chit group not found');
         }
 
+        const resolvedAuctionType = resolveChitGroupAuctionType(group);
+
         if (auction_type !== undefined && auction_type !== null && auction_type !== '') {
-            if (Number(group.auction_type) !== Number(auction_type)) {
+            if (resolvedAuctionType !== Number(auction_type)) {
                 return errorResponse(res, statusCodes.NOT_FOUND, `Chit group does not match the requested auction type (${Number(auction_type) === 1 ? 'Open Auction' : 'Fixed Chit'})`);
             }
         }
@@ -1425,16 +1444,16 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 total_installments: totalMonthsCount,
                 members_count: totalMembersCount,
                 total_members: `${totalMembersCount} Members`,
-                auction_type: group.auction_type,
-                auction_type_label: group.auction_type === 1 ? 'Open Auction' : (group.auction_type === 2 ? 'Fixed Chit' : 'Standard'),
+                auction_type: resolvedAuctionType,
+                auction_type_label: resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard'),
                 running_status_label: group.chits_group_status === 1 ? 'Active chit' : (group.chits_group_status === 2 ? 'Completed' : 'Upcoming'),
                 badge_label: group.chits_group_status,
                 ticket_member_number: positionNumbersFormatted,
                 collection_agent_name: collectionAgentName,
                 business_agent_name: agentName
             },
-            auction_type: group.auction_type,
-            auction_type_label: group.auction_type === 1 ? 'Open Auction' : (group.auction_type === 2 ? 'Fixed Chit' : 'Standard'),
+            auction_type: resolvedAuctionType,
+            auction_type_label: resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard'),
             my_chit_overview: {
                 monthly_bid_amount: parseFloat((parseFloat(group.installment_amount) || (singleChitAmount / totalMonthsCount) || 0.00).toFixed(2)),
                 total_paid_amount: parseFloat(totalPaidAmount.toFixed(2)),
@@ -2980,12 +2999,33 @@ const getMemberDocumentsService = async (res, userPayload, group_id, member_id) 
 
         let documents = docRecord && docRecord.documents ? docRecord.documents : {};
 
-        const types = ['aadhar', 'bank_id', 'upi_details', 'certificates'];
-        const result = types.map(type => {
-            const doc = documents[type] || { url: null, status: 0 };
+        const documentDefinitions = [
+            { key: 'aadhar', title: 'Aadhaar Card _ (Both sides)', aliases: ['aadhaar', 'aadhaar_card'] },
+            { key: 'pan_card', title: 'PAN Card', aliases: ['pan'] },
+            { key: 'bank_statement', title: 'Bank Statement', aliases: ['bank_id'] },
+            { key: 'photos', title: "Photo's", aliases: ['photo'] },
+            { key: 'bond_paper_100', title: '100 ruppees Bond Paper', aliases: ['bond_paper'] },
+            { key: 'pay_slips', title: 'Pay Slips', aliases: ['pay_slip', 'salary_slips'] },
+            { key: 'id_cards', title: 'ID Cards (Employee Card)', aliases: ['id_card', 'employee_card'] },
+            { key: 'property_documents', title: 'Property Dcoments Zerox', aliases: ['property_documents_xerox'] },
+            { key: 'cheques', title: "Cheque's", aliases: ['cheque'] }
+        ];
+
+        const result = documentDefinitions.map(def => {
+            let doc = documents[def.key];
+            if (!doc && def.aliases) {
+                for (const alias of def.aliases) {
+                    if (documents[alias]) {
+                        doc = documents[alias];
+                        break;
+                    }
+                }
+            }
+            doc = doc || { url: null, status: 0 };
             return {
-                document_type: type,
-                document_url: doc.url,
+                document_type: def.key,
+                document_title: def.title,
+                document_url: doc.url || null,
                 status: doc.status !== undefined && doc.status !== null ? doc.status : 0
             };
         });
@@ -3001,9 +3041,17 @@ const uploadMemberDocumentService = async (res, body, userPayload) => {
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
-        const { group_id, member_id, document_type, status, document_url: body_doc_url } = body;
+        const { group_id, member_id, document_type, status = 1, document_url: body_doc_url } = body;
 
         let document_url = body_doc_url || null;
+
+        let uploaded_by = null;
+        if (userPayload && userPayload.id) {
+            const memberExists = await Member.findByPk(userPayload.id);
+            if (memberExists) {
+                uploaded_by = userPayload.id;
+            }
+        }
 
         let docRecord = await MemberDocument.findOne({
             where: { group_id, member_id }
@@ -3014,12 +3062,13 @@ const uploadMemberDocumentService = async (res, body, userPayload) => {
                 group_id,
                 member_id,
                 documents: {},
-                uploaded_by: userPayload.id
+                uploaded_by,
+                status: 1
             });
         }
 
-        let documents = { ...docRecord.documents };
-        let existingDoc = documents[document_type] || { url: null, status: 0 };
+        let documents = docRecord.documents ? { ...docRecord.documents } : {};
+        let existingDoc = documents[document_type] || { url: null, status: 1 };
 
         if (document_url !== null) {
             existingDoc.url = document_url;
@@ -3028,14 +3077,23 @@ const uploadMemberDocumentService = async (res, body, userPayload) => {
         if (status !== undefined && status !== null && status !== '') {
             existingDoc.status = parseInt(status, 10);
         }
+        existingDoc.uploaded_at = new Date().toISOString();
 
         documents[document_type] = existingDoc;
 
-        await docRecord.update({ documents, uploaded_by: userPayload.id });
+        await docRecord.update({
+            documents,
+            uploaded_by: uploaded_by || docRecord.uploaded_by,
+            status: 1
+        });
 
-        return successResponse(res, statusCodes.OK, 'Amount collected successfully', {
+        return successResponse(res, statusCodes.OK, 'Document uploaded successfully', {
+            member_id,
+            group_id,
+            document_type,
             document_url: existingDoc.url,
-            status: existingDoc.status
+            status: existingDoc.status,
+            documents: docRecord.documents
         });
     } catch (error) {
         console.error('Error in uploadMemberDocumentService:', error);

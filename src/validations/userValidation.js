@@ -228,9 +228,21 @@ const getMemberDocumentsSchema = Joi.object({
 const uploadMemberDocumentSchema = Joi.object({
   group_id: Joi.string().uuid().required(),
   member_id: Joi.number().integer().required(),
-  document_type: Joi.string().valid('aadhar', 'bank_id', 'upi_details', 'certificates').required(),
+  document_type: Joi.string().valid(
+    'aadhar', 'aadhaar', 'aadhaar_card',
+    'pan_card', 'pan',
+    'bank_statement', 'bank_id',
+    'photos', 'photo',
+    'bond_paper_100', 'bond_paper',
+    'pay_slips', 'pay_slip', 'salary_slips',
+    'id_cards', 'id_card', 'employee_card',
+    'property_documents', 'property_documents_xerox',
+    'cheques', 'cheque',
+    'upi_details',
+    'certificates'
+  ).required(),
   document_url: Joi.string().allow('', null).optional(),
-  status: Joi.number().integer().valid(0, 1).optional()
+  status: Joi.number().integer().valid(0, 1, 2).optional()
 });
 
 

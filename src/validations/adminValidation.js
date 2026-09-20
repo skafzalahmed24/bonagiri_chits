@@ -1010,7 +1010,19 @@ module.exports = {
   verifyMemberDocumentSchema: Joi.object({
     member_id: Joi.number().integer().required(),
     group_id: Joi.string().uuid().required(),
-    document_type: Joi.string().valid('aadhar', 'bank_id', 'upi_details', 'certificates').required(),
+    document_type: Joi.string().valid(
+      'aadhar', 'aadhaar', 'aadhaar_card',
+      'pan_card', 'pan',
+      'bank_statement', 'bank_id',
+      'photos', 'photo',
+      'bond_paper_100', 'bond_paper',
+      'pay_slips', 'pay_slip', 'salary_slips',
+      'id_cards', 'id_card', 'employee_card',
+      'property_documents', 'property_documents_xerox',
+      'cheques', 'cheque',
+      'upi_details',
+      'certificates'
+    ).required(),
     status: Joi.number().integer().valid(1, 2).required(),
     rejection_reason: Joi.string().allow('', null).when('status', {
       is: 2,
@@ -1161,7 +1173,19 @@ module.exports = {
   verifyMemberDocumentSchema: Joi.object({
     member_id: Joi.number().integer().required(),
     group_id: Joi.string().uuid().required(),
-    document_type: Joi.string().valid('aadhar', 'bank_id', 'upi_details', 'certificates').required(),
+    document_type: Joi.string().valid(
+      'aadhar', 'aadhaar', 'aadhaar_card',
+      'pan_card', 'pan',
+      'bank_statement', 'bank_id',
+      'photos', 'photo',
+      'bond_paper_100', 'bond_paper',
+      'pay_slips', 'pay_slip', 'salary_slips',
+      'id_cards', 'id_card', 'employee_card',
+      'property_documents', 'property_documents_xerox',
+      'cheques', 'cheque',
+      'upi_details',
+      'certificates'
+    ).required(),
     status: Joi.number().integer().valid(0, 1, 2).required()
   }),
   getAllReceiptsSchema: Joi.object({
