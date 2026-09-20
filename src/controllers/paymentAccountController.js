@@ -16,7 +16,7 @@ const storeOrUpdatePaymentAccount = async (req, res) => {
 const getAllPaymentAccounts = async (req, res) => {
   try {
     const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
-    return await paymentAccountService.getAllPaymentAccountsService(res, comp_id, req.body);
+    return await paymentAccountService.getAllPaymentAccountsService(res, comp_id, req.body, req.user);
   } catch (error) {
     console.error('Error in getAllPaymentAccounts:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

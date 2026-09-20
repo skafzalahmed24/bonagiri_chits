@@ -525,6 +525,102 @@ class ReportService {
       rows: transactions
     };
   }
+
+  /**
+   * Agent float — money collected by agents that the office has not received yet.
+   *
+   * A submission is money the member has already handed over, so the company owns
+   * it from the collection date, but it only reaches a payment account when the
+   * office verifies it (decision D1). Between those two moments it sits with the
+   * agent and appears nowhere else in the books. This report is that gap.
+   *
+   * Cash is physically with the agent; UPI/cheque/bank collections are in transit
+   * to a company account, so they are reported separately — the operational risk
+   * is different. Ageing is measured from the collection date.
+   */
+  async getAgentFloatReport({ as_on_date, agent_id, company_id }) {
+    const asOn = as_on_date || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const endOfDay = new Date(`${asOn}T23:59:59.999+05:30`);
+
+    const submissions = await CollectionAgentAmount.findAll({
+      // 0 and 1 are both "submitted, not yet verified"; 2 verified, 3 rejected.
+      where: {
+        status: { [Op.in]: [0, 1] },
+        createdAt: { [Op.lte]: endOfDay },
+        ...(agent_id && { collection_agent_id: agent_id }),
+      },
+      include: [
+        { model: Member, as: 'collection_agent', attributes: ['id', 'name'], where: { company_id }, required: true },
+        { model: Member, as: 'member', attributes: ['id', 'name'], required: false },
+      ],
+      order: [['createdAt', 'ASC']],
+    });
+
+    const dayMs = 24 * 60 * 60 * 1000;
+    const asOnEnd = endOfDay.getTime();
+    const agents = new Map();
+    const summary = { cash_total: 0, in_transit_total: 0, grand_total: 0, submission_count: 0, agent_count: 0, oldest_days: 0 };
+
+    for (const sub of submissions) {
+      const agent = sub.collection_agent;
+      const amount = parseFloat(sub.received_amount || 0);
+      if (!amount) continue;
+
+      const collectedAt = sub.paid_date || sub.createdAt;
+      const ageDays = Math.max(0, Math.floor((asOnEnd - new Date(collectedAt).getTime()) / dayMs));
+      const isCash = sub.payment_type === 1;
+
+      if (!agents.has(agent.id)) {
+        agents.set(agent.id, {
+          agent_id: agent.id,
+          agent_name: agent.name,
+          cash_amount: 0,
+          in_transit_amount: 0,
+          total_amount: 0,
+          submission_count: 0,
+          oldest_days: 0,
+          items: [],
+        });
+      }
+      const row = agents.get(agent.id);
+      if (isCash) { row.cash_amount += amount; summary.cash_total += amount; }
+      else { row.in_transit_amount += amount; summary.in_transit_total += amount; }
+      row.total_amount += amount;
+      row.submission_count += 1;
+      row.oldest_days = Math.max(row.oldest_days, ageDays);
+      row.items.push({
+        id: sub.id,
+        collection_id: sub.id ? `COL${String(sub.id).substring(0, 8).toUpperCase()}` : null,
+        member_name: sub.member ? sub.member.name : 'Unknown',
+        amount,
+        payment_type: sub.payment_type,
+        is_cash: isCash,
+        collected_on: collectedAt,
+        age_days: ageDays,
+      });
+
+      summary.grand_total += amount;
+      summary.submission_count += 1;
+      summary.oldest_days = Math.max(summary.oldest_days, ageDays);
+    }
+
+    const round2 = (n) => parseFloat(Number(n).toFixed(2));
+    const rows = [...agents.values()]
+      .map((r) => ({
+        ...r,
+        cash_amount: round2(r.cash_amount),
+        in_transit_amount: round2(r.in_transit_amount),
+        total_amount: round2(r.total_amount),
+      }))
+      .sort((a, b) => b.total_amount - a.total_amount);
+
+    summary.agent_count = rows.length;
+    summary.cash_total = round2(summary.cash_total);
+    summary.in_transit_total = round2(summary.in_transit_total);
+    summary.grand_total = round2(summary.grand_total);
+
+    return { as_on_date: asOn, summary, rows };
+  }
 }
 
 module.exports = new ReportService();

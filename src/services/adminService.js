@@ -2785,7 +2785,7 @@ const storeOrUpdateAccountCreationDetailService = async (res, comp_id, login_use
     if (comp_id) restData.company_id = comp_id;
     if (id) {
       if (login_user_id) restData.updated_by = String(login_user_id);
-      const existing = await AccountCreationDetail.findOne({ where: { id, company_id: companyId } });
+      const existing = await AccountCreationDetail.findOne({ where: { id, company_id: comp_id } });
       if (!existing) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
       }
@@ -2952,7 +2952,7 @@ const bulkEditAccountCreationDetailsService = async (res, comp_id, login_user_id
       if (!id) continue;
       if (comp_id) restData.company_id = comp_id;
       if (login_user_id) restData.updated_by = String(login_user_id);
-      const existing = await AccountCreationDetail.findOne({ where: { id, company_id: companyId } });
+      const existing = await AccountCreationDetail.findOne({ where: { id, company_id: comp_id } });
       if (existing) {
         await existing.update(restData);
         results.push(existing);
@@ -3599,6 +3599,13 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
       return errorResponse(res, statusCodes.NOT_FOUND, 'Submission not found');
     }
 
+    // Lock the submission row and re-read its status: without this, two
+    // concurrent verifications can both read "pending" and both credit the
+    // account. Locked with a separate query because Postgres cannot apply
+    // FOR UPDATE to the joined query above.
+    const lockedSubmission = await CollectionAgentAmount.findByPk(id, { transaction, lock: true });
+    if (lockedSubmission) submission.status = lockedSubmission.status;
+
     if (submission.status !== 0 && submission.status !== 1) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Only pending submissions can be verified or rejected');
@@ -3637,7 +3644,8 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
         targetAccount = await PaymentAccount.findOne({
           where: { company_id: companyId, account_type: 'CASH', is_active: true },
           order: [['id', 'ASC']],
-          transaction
+          transaction,
+          lock: true
         });
       } else {
         if (!account_id) {
@@ -3646,7 +3654,8 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
         }
         targetAccount = await PaymentAccount.findOne({
           where: { id: account_id, company_id: companyId, is_active: true },
-          transaction
+          transaction,
+          lock: true
         });
         if (!targetAccount) {
           await transaction.rollback();
@@ -3820,7 +3829,7 @@ const storeDirectPaymentService = async (res, user, data) => {
     }
 
     // Generate gapless receipt number
-    const newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId);
+    const newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId, transaction);
 
     let recorded_by_name = 'Unknown';
     if (user.role === 'company') {
@@ -3864,7 +3873,7 @@ const storeDirectPaymentService = async (res, user, data) => {
 
     // Update balances of the referenced payment accounts
     if (upi > 0 && upi_account_id) {
-      const upiAccount = await PaymentAccount.findByPk(upi_account_id, { transaction });
+      const upiAccount = await PaymentAccount.findByPk(upi_account_id, { transaction, lock: true });
       if (upiAccount) {
         await upiAccount.update({
           current_balance: Number(upiAccount.current_balance) + upi
@@ -3873,7 +3882,7 @@ const storeDirectPaymentService = async (res, user, data) => {
     }
 
     if (bank > 0 && bank_account_id) {
-      const bankAccount = await PaymentAccount.findByPk(bank_account_id, { transaction });
+      const bankAccount = await PaymentAccount.findByPk(bank_account_id, { transaction, lock: true });
       if (bankAccount) {
         await bankAccount.update({
           current_balance: Number(bankAccount.current_balance) + bank
@@ -3887,7 +3896,8 @@ const storeDirectPaymentService = async (res, user, data) => {
       const cashAccount = await PaymentAccount.findOne({
         where: { company_id: companyId, account_type: 'CASH', is_active: true },
         order: [['id', 'ASC']],
-        transaction
+        transaction,
+        lock: true
       });
       if (cashAccount) {
         await cashAccount.update({
@@ -5848,9 +5858,12 @@ const applyAdvanceService = async (res, member_advance_id, chits_installment_id,
   const transaction = await sequelize.transaction();
   try {
     const companyId = await resolveCompanyIdForAuth(userToken);
+    // Lock the advance row: without it two concurrent applications both read the
+    // same balance, both pass the check, and the member is credited twice.
     const advance = await MemberAdvance.findOne({
       where: { id: member_advance_id, company_id: companyId },
-      transaction
+      transaction,
+      lock: true
     });
 
     if (!advance || advance.balance < amount) {

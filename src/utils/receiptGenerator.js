@@ -1,13 +1,30 @@
-const { CustomerPayment } = require('../models');
+const { CustomerPayment, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 /**
  * Generates a unique, gapless receipt number.
  * Format: RCT-{YEAR}-{6-DIGIT-SEQUENCE}
+ *
+ * Numbering is global per year (not per company) — kept as shipped; `companyId`
+ * is accepted for call-site clarity but does not scope the sequence.
+ *
+ * Concurrency: two callers reading max+1 at the same time both get the same
+ * number, and the collision check below cannot see the other's uncommitted row.
+ * A transaction-scoped advisory lock serialises allocation, so callers MUST pass
+ * their transaction — without one, duplicate receipt numbers are possible.
  */
 const generateReceiptNumber = async (companyId = null, transaction = null) => {
   const year = new Date().getFullYear();
-  
+
+  if (transaction) {
+    await sequelize.query('SELECT pg_advisory_xact_lock(hashtext(:key))', {
+      replacements: { key: `receipt-number-${year}` },
+      transaction,
+    });
+  } else {
+    console.warn('[receiptGenerator] called without a transaction — receipt numbers are not collision-safe.');
+  }
+
   // Find the latest receipt number globally for this year
   const latestPayment = await CustomerPayment.findOne({
     where: {
