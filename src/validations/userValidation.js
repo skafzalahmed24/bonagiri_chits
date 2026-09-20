@@ -287,7 +287,13 @@ const getChitTypesSchema = Joi.object({
   max: Joi.number().integer().min(1).optional()
 });
 
+const getUserValidOffersSchema = Joi.object({
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
 module.exports = {
+  getUserValidOffersSchema,
   getChitTypesSchema,
   getHomeRecordSchema,
   getAllHomeRecordsSchema,

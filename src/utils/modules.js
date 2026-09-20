@@ -51,6 +51,7 @@ module.exports = {
   U_CONTACT_US: 'U_CONTACT_US',
   U_FAQ: 'U_FAQ',
   U_TERMS_PRIVACY: 'U_TERMS_PRIVACY',
+  U_BANNERS: 'U_BANNERS',
 
   // System
   S_ROLES: 'S_ROLES',

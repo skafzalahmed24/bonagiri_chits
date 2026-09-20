@@ -7,6 +7,7 @@ const authMiddleware = require('../middlewares/authMiddleware');
 const userValidation = require('../validations/userValidation');
 const adminValidation = require('../validations/adminValidation');
 const platformSupportController = require('../controllers/platformSupportController');
+const bannerController = require('../controllers/bannerController');
 const { authRateLimiter } = require('../middlewares/rateLimiter');
 
 // get home record based on subscriber_id
@@ -61,6 +62,9 @@ router.post('/collection-agent/customer-visit', authMiddleware.authenticateToken
 
 // gallery routes
 router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(userValidation.getAllGallerySchema), userController.getAllGallery);
+
+// valid offers / banner routes (authenticated)
+router.post('/valid-offers', authMiddleware.authenticateToken, validate(userValidation.getUserValidOffersSchema), bannerController.getUserValidOffers);
 
 // Fixed Scheme Chits Routes (Public / No Authorization)
 router.post('/fixed-scheme-details', fixedSchemeController.getFixedSchemeByType);

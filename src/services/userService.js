@@ -438,6 +438,26 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
         }
 
         const enrollmentIds = enrollments.map(e => e.id);
+        const groupIds = [...new Set(enrollments.map(e => e.group_id))];
+
+        const allAuctions = await Auction.findAll({
+            where: { group_id: { [Op.in]: groupIds } }
+        });
+
+        const schemeConfigIds = enrollments.map(e => e.group?.scheme_configuration_id).filter(Boolean);
+        const schemeConfigs = schemeConfigIds.length > 0
+            ? await FixedSchemeChitsConfiguration.findAll({ where: { id: { [Op.in]: schemeConfigIds } } })
+            : [];
+
+        const groupEnrollmentCounts = await Enrollment.findAll({
+            where: { group_id: { [Op.in]: groupIds }, delete_status: 0 },
+            attributes: ['group_id', [sequelize.fn('COUNT', sequelize.col('id')), 'total_count']],
+            group: ['group_id']
+        });
+        const groupCountMap = {};
+        groupEnrollmentCounts.forEach(ge => {
+            groupCountMap[ge.group_id] = parseInt(ge.get('total_count'), 10) || 20;
+        });
 
         // Fetch all unpaid installments for these enrollments (no due_date filter yet)
         const allUnpaidInstallments = await ChitsInstallment.findAll({
@@ -497,9 +517,32 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
         const formattedRows = unpaidInstallments.map((installment) => {
             const group = installment.enrollment?.group;
             const groupName = group ? group.group_name : 'Unknown Chit';
+            const schemeConfig = group && group.scheme_configuration_id
+                ? schemeConfigs.find(sc => sc.id === group.scheme_configuration_id)
+                : null;
+            const auction = allAuctions.find(a => a.group_id === group.id && a.auction_number === installment.installment_no);
+            const totalMembersCount = (group && groupCountMap[group.id]) || parseInt(group?.no_of_installments, 10) || 20;
 
-            const dueAmount = parseFloat(installment.payable_amount) || 0.00;
-            const grossAmount = group ? (parseFloat(group.installment_amount) || 0.00) : dueAmount;
+            const fallbackInstallment = parseFloat(group?.installment_amount) || (parseFloat(group?.chit_amount) / (parseInt(group?.no_of_installments, 10) || 12)) || parseFloat(installment.payable_amount) || 0.00;
+            const originalAmount = (auction || schemeConfig ? getSchemeOriginalAmount(schemeConfig, auction) : fallbackInstallment) || fallbackInstallment;
+            
+            let profitAmount = 0.00;
+            if (auction) {
+                if (auction.dividend && parseFloat(auction.dividend) > 0) {
+                    const divVal = parseFloat(auction.dividend);
+                    profitAmount = divVal < originalAmount ? divVal : divVal / (totalMembersCount || 20);
+                } else if (installment.payable_amount && parseFloat(installment.payable_amount) < originalAmount) {
+                    const payableVal = parseFloat(installment.payable_amount) || 0.00;
+                    profitAmount = Math.max(0, originalAmount - payableVal);
+                }
+            } else if (installment.payable_amount && parseFloat(installment.payable_amount) < originalAmount) {
+                const payableVal = parseFloat(installment.payable_amount) || 0.00;
+                profitAmount = Math.max(0, originalAmount - payableVal);
+            }
+
+            const netPayable = Math.max(0, originalAmount - profitAmount);
+            const dueAmount = parseFloat((netPayable > 0 ? netPayable : (parseFloat(installment.payable_amount) || originalAmount)).toFixed(2));
+            const grossAmount = parseFloat(originalAmount.toFixed(2));
 
             // Calculate dynamic over_due_days_count based on simulated date
             const simulatedNow = new Date(globalSimulatedNow);
@@ -550,8 +593,9 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
                 ? parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2))
                 : 0.00;
 
+            const dailyPenaltyAmount = parseFloat(penaltyAmountPerDay.toFixed(2));
             const penaltyText = isOverdue
-                ? `${displayPercentage}% per day x ${overDueDaysCount} days`
+                ? `${displayPercentage}% per day ${dailyPenaltyAmount} × ${overDueDaysCount} days`
                 : null;
 
             const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
@@ -1027,8 +1071,9 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 ? parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2))
                 : 0.00;
 
+            const dailyPenaltyAmount = parseFloat(penaltyAmountPerDay.toFixed(2));
             const penaltyText = isOverdue
-                ? `${displayPercentage}% per day x ${overDueDaysCount} days`
+                ? `${displayPercentage}% per day ${dailyPenaltyAmount} × ${overDueDaysCount} days`
                 : null;
 
             const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
@@ -1272,8 +1317,9 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                                     penaltyAmountPerDay = 0.02 * ticketPending;
                                 }
 
+                                const dailyPenaltyAmount = parseFloat(penaltyAmountPerDay.toFixed(2));
                                 ticketPenaltyAmount = parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2));
-                                ticketPenaltyText = `${displayPercentage}% per day x ${overDueDaysCount} days`;
+                                ticketPenaltyText = `${displayPercentage}% per day ${dailyPenaltyAmount} × ${overDueDaysCount} days`;
                             }
                         }
                     }
@@ -1299,11 +1345,8 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     subscriber_id: ge.subscriber_id,
                     subscriber_name: ge.subscriber ? ge.subscriber.name : 'Unknown Subscriber',
                     original_amount: parseFloat(ticketOriginal.toFixed(2)),
-                    installment_amount: parseFloat(ticketOriginal.toFixed(2)),
                     profit_amount: parseFloat(ticketProfit.toFixed(2)),
-                    bonus: parseFloat(ticketProfit.toFixed(2)),
-                    payable_amount: parseFloat(ticketPayable.toFixed(2)),
-                    net_payable: parseFloat(ticketPayable.toFixed(2)),
+                    payable: parseFloat(ticketPayable.toFixed(2)),
                     paid_amount: parseFloat(ticketPaidAmount.toFixed(2)),
                     pending_amount: parseFloat(ticketPending.toFixed(2)),
                     advance_payment: parseFloat(ticketAdvance.toFixed(2)),
@@ -1339,11 +1382,8 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
 
                 // Amounts (supports all UI cards & screens)
                 original_amount: parseFloat(monthOriginalTotal.toFixed(2)),
-                installment_amount: parseFloat(monthOriginalTotal.toFixed(2)),
                 profit_amount: parseFloat(monthProfitTotal.toFixed(2)),
-                bonus: parseFloat(monthProfitTotal.toFixed(2)),
-                payable_amount: parseFloat(monthPayableTotal.toFixed(2)),
-                net_payable: parseFloat(monthPayableTotal.toFixed(2)),
+                payable: parseFloat(monthPayableTotal.toFixed(2)),
                 paid_amount: parseFloat(monthPaidTotal.toFixed(2)),
                 pending_amount: parseFloat(monthPendingTotal.toFixed(2)),
                 advance_payment: parseFloat(monthAdvanceTotal.toFixed(2)),
@@ -1355,11 +1395,8 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 // Per-ticket breakdown and summary for Screen 5
                 member_breakdown: memberBreakdown,
                 breakdown_summary: {
-                    total_installment: parseFloat(monthOriginalTotal.toFixed(2)),
                     total_original: parseFloat(monthOriginalTotal.toFixed(2)),
-                    bonus: parseFloat(monthProfitTotal.toFixed(2)),
                     total_profit: parseFloat(monthProfitTotal.toFixed(2)),
-                    total_net_payable: parseFloat(monthPayableTotal.toFixed(2)),
                     total_payable: parseFloat(monthPayableTotal.toFixed(2)),
                     total_paid: parseFloat(monthPaidTotal.toFixed(2)),
                     total_paid_amount: parseFloat(monthPaidTotal.toFixed(2)),
@@ -2438,8 +2475,9 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
                     penaltyAmountPerDay = 0.02 * dueAmount;
                 }
 
+                const dailyPenaltyAmount = parseFloat(penaltyAmountPerDay.toFixed(2));
                 penalty_amount = parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2));
-                penalty_text = `Penalty ${displayPercentage}% per day × ${overDueDaysCount} days`;
+                penalty_text = `Penalty ${displayPercentage}% per day ${dailyPenaltyAmount} × ${overDueDaysCount} days`;
             }
         }
 
@@ -4312,7 +4350,7 @@ const getChitTypesService = async (res, reqBody) => {
     try {
         const { min, max } = reqBody || {};
 
-        const whereClause = { is_deleted_status: 0 };
+        const whereClause = { is_deleted_status: 0, status: 1 };
 
         const queryOptions = {
             where: whereClause,

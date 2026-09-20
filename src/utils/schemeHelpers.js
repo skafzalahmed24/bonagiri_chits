@@ -20,7 +20,7 @@ function getSchemeWinningAmount(schemeConfig, auctionNumber) {
 
 function getSchemeOriginalAmount(schemeConfig, auction) {
   if (!schemeConfig) {
-    return parseFloat(auction.subscription_amount) || 0.00;
+    return parseFloat(auction?.subscription_amount) || 0.00;
   }
 
   const prices = typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices;
@@ -29,10 +29,10 @@ function getSchemeOriginalAmount(schemeConfig, auction) {
     return parseFloat(schemeConfig.installment) || 0.00;
   }
   if (schemeConfig.scheme_type === 62) {
-    const row = prices?.[auction.auction_number - 1];
+    const row = prices?.[(auction?.auction_number || 1) - 1];
     return parseFloat(row?.not_withdrawn) || 0.00;
   }
-  const row = prices?.[auction.auction_number - 1];
+  const row = prices?.[(auction?.auction_number || 1) - 1];
   return parseFloat(row?.installment) || 0.00;
 }
 

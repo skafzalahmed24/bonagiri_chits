@@ -10,6 +10,7 @@ const outgoingPaymentController = require('../controllers/outgoingPaymentControl
 const expenditureController = require('../controllers/expenditureController');
 const reportController = require('../controllers/reportController');
 const platformSupportController = require('../controllers/platformSupportController');
+const bannerController = require('../controllers/bannerController');
 const validate = require('../middlewares/validate');
 const MODULES = require('../utils/modules');
 
@@ -72,6 +73,13 @@ router.post('/faq/delete', authMiddleware.authenticateToken, authMiddleware.requ
 // Terms & Privacy routes
 router.post('/terms-privacy/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_TERMS_PRIVACY), validate(adminValidation.storeOrUpdateTermsPrivacySchema), adminController.storeOrUpdateTermsPrivacy);
 router.post('/terms-privacy/get', authMiddleware.authenticateToken, validate(adminValidation.getTermsPrivacySchema), adminController.getTermsPrivacy);
+
+// Banner / Valid Offers routes
+router.post('/banner/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_BANNERS), uploadMiddleware.single('banner_image'), validate(adminValidation.storeOrUpdateBannerSchema), bannerController.storeOrUpdateBanner);
+router.post('/banner/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllBannersSchema), bannerController.getAllBanners);
+router.post('/banner/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getBannerByIdSchema), bannerController.getBannerById);
+router.post('/banner/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_BANNERS), validate(adminValidation.deleteBannerSchema), bannerController.deleteBanner);
+router.post('/banner/status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_BANNERS), validate(adminValidation.changeBannerStatusSchema), bannerController.changeBannerStatus);
 
 // Logout route
 router.post('/logout', authMiddleware.authenticateToken, adminController.logout);
