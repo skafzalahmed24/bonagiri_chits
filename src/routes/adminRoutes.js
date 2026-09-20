@@ -27,6 +27,11 @@ const PAYMENT_ACCOUNT_READERS = [
   MODULES.T_SELF_TRANSFER, MODULES.T_BORROW_REPAY, MODULES.T_PAYMENTS, MODULES.T_EXPENDITURE,
   MODULES.T_DAY_REPORT, MODULES.R_BALANCE_SUMMARY, MODULES.R_CASH_BOOK, MODULES.R_BANK_BOOK, MODULES.R_DAY_BOOK,
 ];
+// Voucher forms need the ledger-account picker; reading the list is not managing accounts.
+const LEDGER_ACCOUNT_READERS = [
+  MODULES.M_ACCOUNTS, MODULES.M_ACC_GROUPS, MODULES.M_ACC_TREE, MODULES.M_OPENING_BAL,
+  ...Object.values(VOUCHER_MODULES), MODULES.R_LEDGER,
+];
 const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
 const userController = require('../controllers/userController');
@@ -193,7 +198,7 @@ router.post('/group-under-static-list/delete', authMiddleware.authenticateToken,
 router.post('/group-under-static-list/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getGroupUnderStaticListById);
 
 router.post('/account-creation-details/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ACCOUNTS), validate(adminValidation.storeOrUpdateAccountCreationDetailSchema), adminController.storeOrUpdateAccountCreationDetail);
-router.post('/account-creation-details/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ACCOUNTS), validate(adminValidation.getAllGroupUnderStaticListsSchema), adminController.getAllAccountCreationDetails);
+router.post('/account-creation-details/get-all', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(LEDGER_ACCOUNT_READERS), validate(adminValidation.getAllGroupUnderStaticListsSchema), adminController.getAllAccountCreationDetails);
 router.post('/account-creation-details/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ACCOUNTS), validate(adminValidation.getByIdSchema), adminController.getAccountCreationDetailById);
 router.post('/account-creation-details/bulk-edit', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ACCOUNTS), validate(adminValidation.bulkEditAccountCreationDetailsSchema), adminController.bulkEditAccountCreationDetails);
 router.post('/account-creation-details/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ACCOUNTS), validate(adminValidation.deleteAccountCreationDetailSchema), adminController.deleteAccountCreationDetail);
@@ -218,14 +223,14 @@ router.post('/configure-business-agent-commission/get-by-id', authMiddleware.aut
 router.post('/configure-business-agent-commission/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.deleteConfigureBusinessAgentCommissionSchema), adminController.deleteConfigureBusinessAgentCommission);
 
 // history-business-agent routes
-router.post('/history-business-agent/store-or-update', authMiddleware.authenticateToken, validate(adminValidation.historyBusinessAgentValidator), adminController.storeOrUpdateHistoryBusinessAgent);
-router.post('/history-business-agent/get-all', authMiddleware.authenticateToken, validate(adminValidation.getAllHistoryBusinessAgentSchema), adminController.getAllHistoryBusinessAgents);
-router.post('/history-business-agent/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getHistoryBusinessAgentById);
-router.post('/history-business-agent/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteHistoryBusinessAgentSchema), adminController.deleteHistoryBusinessAgent);
+router.post('/history-business-agent/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.historyBusinessAgentValidator), adminController.storeOrUpdateHistoryBusinessAgent);
+router.post('/history-business-agent/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getAllHistoryBusinessAgentSchema), adminController.getAllHistoryBusinessAgents);
+router.post('/history-business-agent/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getByIdSchema), adminController.getHistoryBusinessAgentById);
+router.post('/history-business-agent/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.deleteHistoryBusinessAgentSchema), adminController.deleteHistoryBusinessAgent);
 
 // business-agent summary route
 router.post('/configure-business-agent-commission/summary-by-agent', authMiddleware.authenticateToken, validate(adminValidation.getBusinessAgentCommissionSummarySchema), adminController.getBusinessAgentCommissionSummary);
-router.post('/history-business-agent/history-by-group-id', authMiddleware.authenticateToken, validate(adminValidation.getHistoryByGroupIdSchema), adminController.getHistoryByGroupId);
+router.post('/history-business-agent/history-by-group-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getHistoryByGroupIdSchema), adminController.getHistoryByGroupId);
 
 // collection-agent submissions update
 router.post('/collection-agent/submissions/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.updateCollectionSubmissionStatusSchema), adminController.updateCollectionSubmissionStatus);
@@ -237,7 +242,7 @@ router.post('/member/documents/verify', authMiddleware.authenticateToken, valida
 
 // admin direct payment route
 router.post('/customer-payment/store-direct', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.storeDirectPaymentSchema), adminController.storeDirectPayment);
-router.post('/customer-payment/get-all-receipts', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.getAllReceiptsSchema), adminController.getAllReceipts);
+router.post('/customer-payment/get-all-receipts', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_ALL_RECEIPTS), validate(adminValidation.getAllReceiptsSchema), adminController.getAllReceipts);
 
 // member advances
 router.post('/member-advance/get-by-member', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.getAdvancesByMemberSchema), adminController.getAdvancesByMember);
@@ -295,8 +300,8 @@ router.post('/customer-visit/details', authMiddleware.authenticateToken, validat
 router.post('/customer-visit/status', authMiddleware.authenticateToken, validate(adminValidation.updateCustomerVisitStatusSchema), adminController.updateCustomerVisitStatus);
 
 // reports routes
-router.post('/reports/ledger', authMiddleware.authenticateToken, adminController.getLedgerReport);
-router.post('/reports/statutory', authMiddleware.authenticateToken, adminController.getStatutoryReport);
+router.post('/reports/ledger', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_LEDGER), adminController.getLedgerReport);
+router.post('/reports/statutory', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_GROUPS_LIST), adminController.getStatutoryReport);
 
 // enquiry route
 router.post('/enquiry/search', authMiddleware.authenticateToken, adminController.searchEnquiry);
@@ -361,5 +366,6 @@ router.post('/reports/day-report', authMiddleware.authenticateToken, authMiddlew
 router.post('/reports/cb-inflow', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_CB_INFLOW), reportController.getCbInflowReport);
 router.post('/reports/account-book', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_CASH_BOOK, MODULES.R_BANK_BOOK]), reportController.getAccountBookReport);
 router.post('/reports/day-book', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_DAY_BOOK), reportController.getDayBookReport);
+router.post('/reports/agent-float', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_AGENT_FLOAT, MODULES.T_COLLECTION_VERIFY]), reportController.getAgentFloatReport);
 
 module.exports = router;

@@ -53,7 +53,7 @@ const storeOrUpdatePaymentAccountService = async (res, comp_id, body) => {
   }
 };
 
-const getAllPaymentAccountsService = async (res, comp_id, body) => {
+const getAllPaymentAccountsService = async (res, comp_id, body, user) => {
   try {
     const { account_type, is_active, min, max, search } = body;
     
@@ -81,9 +81,25 @@ const getAllPaymentAccountsService = async (res, comp_id, body) => {
       order: [['id', 'DESC']]
     });
 
+    let returnRows = rows;
+    if (user && user.role === 'staff') {
+      // Self Transfer needs balances: it moves money between accounts and warns on shortfalls.
+      const hasPermission = user.permissions?.M_PAYMENT_ACCOUNTS?.view
+        || user.permissions?.R_BALANCE_SUMMARY?.view
+        || user.permissions?.T_SELF_TRANSFER?.view;
+      if (!hasPermission) {
+        returnRows = rows.map(r => {
+          const acc = r.toJSON();
+          delete acc.opening_balance;
+          delete acc.current_balance;
+          return acc;
+        });
+      }
+    }
+
     return successResponse(res, statusCodes.OK, 'Payment accounts fetched successfully', {
       total: count,
-      rows
+      rows: returnRows
     });
   } catch (error) {
     console.error('Error in getAllPaymentAccountsService:', error);

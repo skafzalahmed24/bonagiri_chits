@@ -2076,12 +2076,13 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
             }
 
             groupMap[group.id].membersMap[subscriber.id].amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].amount || 0) + received).toFixed(2));
-            groupMap[group.id].membersMap[subscriber.id].collected_amount = groupMap[group.id].membersMap[subscriber.id].amount;
             groupMap[group.id].membersMap[subscriber.id].penalty_amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].penalty_amount || 0) + penalty).toFixed(2));
             groupMap[group.id].membersMap[subscriber.id].total_amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].total_amount || 0) + totalPaid).toFixed(2));
+            groupMap[group.id].membersMap[subscriber.id].collected_amount = groupMap[group.id].membersMap[subscriber.id].total_amount;
 
             groupMap[group.id].collected_amount = parseFloat(((groupMap[group.id].collected_amount || 0) + totalPaid).toFixed(2));
             groupMap[group.id].total_amount = groupMap[group.id].collected_amount;
+            groupMap[group.id].penalty_amount = parseFloat(((groupMap[group.id].penalty_amount || 0) + penalty).toFixed(2));
             overallCollectedAmount = parseFloat((overallCollectedAmount + totalPaid).toFixed(2));
             overallCollectedMembersSet.add(subscriber.id);
         });
