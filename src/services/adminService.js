@@ -22,21 +22,32 @@ const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
 const resolveCompanyIdForAuth = async (userPayload) => {
   if (!userPayload) return null;
 
+  if (userPayload.company_id) {
+    return userPayload.company_id;
+  }
   if (userPayload.role === 'company') {
     return userPayload.id;
   }
   if (userPayload.role === 'staff') {
-    return userPayload.company_id; // already embedded in the JWT, no DB lookup needed
-  }
-  if (userPayload.role === 'member') {
-    const mem = await Member.findByPk(userPayload.id);
-    return mem ? mem.company_id : null;
-  }
-
-  if (userPayload.company_id) {
     return userPayload.company_id;
   }
-  if (userPayload.user_id && userPayload.user_id.length > 20) {
+  if (userPayload.role === 'member' || userPayload.role === 'subscriber') {
+    const userEnrollment = await Enrollment.findOne({
+      where: {
+        [Op.or]: [
+          { subscriber_id: userPayload.id },
+          { collection_agent_id: userPayload.id },
+          { business_agent_id: userPayload.id }
+        ],
+        delete_status: 0
+      },
+      attributes: ['company_id'],
+      order: [['createdAt', 'DESC']]
+    });
+    return userEnrollment ? userEnrollment.company_id : null;
+  }
+
+  if (userPayload.user_id && typeof userPayload.user_id === 'string' && userPayload.user_id.length > 20) {
     return userPayload.user_id;
   }
   return null;
@@ -3408,23 +3419,45 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
-    const whereClause = { group_id, is_deleted_status: 0 };
+    // 1. Fetch enrollments for this group (optionally filtered by business_agent_id)
+    const enrollmentWhere = { group_id, delete_status: 0 };
     if (business_agent_id) {
-      whereClause.business_agent_id = business_agent_id;
+      enrollmentWhere.business_agent_id = business_agent_id;
     }
 
-    const records = await ConfigureBusinessAgentCommission.findAndCountAll({
-      where: whereClause,
+    const enrollments = await Enrollment.findAndCountAll({
+      where: enrollmentWhere,
       include: [
-        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status', 'createdAt'] },
-        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }
+        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status', 'createdAt'] },
+        { 
+          model: Member, 
+          as: 'subscriber', 
+          attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code', 'createdAt'],
+          include: [
+            { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
+          ]
+        }
       ],
       order: [['createdAt', 'DESC']],
       limit,
       offset
     });
 
-    const configIds = records.rows.map(r => r.id);
+    // 2. Fetch configured commissions for this group
+    const configWhere = { group_id, is_deleted_status: 0 };
+    if (business_agent_id) {
+      configWhere.business_agent_id = business_agent_id;
+    }
+
+    const configs = await ConfigureBusinessAgentCommission.findAll({
+      where: configWhere,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status', 'createdAt'] },
+        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }
+      ]
+    });
+
+    const configIds = configs.map(r => r.id);
 
     let historyRecords = [];
     if (configIds.length > 0) {
@@ -3435,40 +3468,115 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
       });
     }
 
-    const configurations = records.rows.map(config => {
-      const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
+    let recordsList = [];
 
-      let total_paid = 0;
-      histories.forEach(h => {
-        total_paid += parseFloat(h.paid_amount) || 0;
+    if (enrollments.count > 0) {
+      recordsList = enrollments.rows.map(enrollment => {
+        const eData = enrollment.toJSON();
+        const group = eData.group || {};
+        const member = eData.subscriber || {};
+        const config = configs.find(c => c.member_id === member.id && c.group_id === eData.group_id);
+
+        let total_paid = 0;
+        let upload_document = null;
+        let commission_amount = 0;
+        let configId = null;
+        let configStatus = 0;
+
+        if (config) {
+          configId = config.id;
+          commission_amount = parseFloat(config.commission_amount) || 0;
+          configStatus = config.status !== undefined ? config.status : 1;
+
+          const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
+          histories.forEach(h => {
+            total_paid += parseFloat(h.paid_amount) || 0;
+          });
+
+          const latestHistoryWithDoc = histories.find(h => h.upload_document);
+          upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
+        }
+
+        const total_pending = Math.max(0, commission_amount - total_paid);
+
+        return {
+          id: configId || null,
+          group_name: group.group_name || null,
+          chit_amount: parseFloat(group.chit_amount) || 0,
+          group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
+          commission_amount: parseFloat(commission_amount.toFixed(2)),
+          total_paid: parseFloat(total_paid.toFixed(2)),
+          total_pending: parseFloat(total_pending.toFixed(2)),
+          upload_document: upload_document,
+          member_id: member.id || null,
+          member_name: member.name || null,
+          status: configStatus
+        };
       });
 
-      const commission_amount = parseFloat(config.commission_amount) || 0;
-      const group = config.group || {};
-      const member = config.member || {};
+      // Also include any configs that might exist without an enrollment row
+      configs.forEach(config => {
+        const alreadyIncluded = recordsList.some(r => r.id === config.id);
+        if (!alreadyIncluded) {
+          const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
+          let total_paid = 0;
+          histories.forEach(h => {
+            total_paid += parseFloat(h.paid_amount) || 0;
+          });
+          const commission_amount = parseFloat(config.commission_amount) || 0;
+          const group = config.group || {};
+          const member = config.member || {};
+          const latestHistoryWithDoc = histories.find(h => h.upload_document);
+          const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
 
-      const latestHistoryWithDoc = histories.find(h => h.upload_document);
-      const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
+          recordsList.push({
+            id: config.id,
+            group_name: group.group_name || null,
+            chit_amount: parseFloat(group.chit_amount) || 0,
+            group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
+            commission_amount: parseFloat(commission_amount.toFixed(2)),
+            total_paid: parseFloat(total_paid.toFixed(2)),
+            total_pending: parseFloat((commission_amount - total_paid).toFixed(2)),
+            upload_document: upload_document,
+            member_id: config.member_id,
+            member_name: member.name || null,
+            status: config.status
+          });
+        }
+      });
+    } else {
+      // If no enrollments found, fallback to configs if any
+      recordsList = configs.map(config => {
+        const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
+        let total_paid = 0;
+        histories.forEach(h => {
+          total_paid += parseFloat(h.paid_amount) || 0;
+        });
+        const commission_amount = parseFloat(config.commission_amount) || 0;
+        const group = config.group || {};
+        const member = config.member || {};
+        const latestHistoryWithDoc = histories.find(h => h.upload_document);
+        const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
 
-      return {
-        id: config.id,
-        group_name: group.group_name || null,
-        chit_amount: parseFloat(group.chit_amount) || 0,
-        group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
-        group_created_date: group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null,
-        commission_amount: commission_amount,
-        total_paid: total_paid,
-        total_pending: commission_amount - total_paid,
-        upload_document: upload_document,
-        member_id: config.member_id,
-        member_name: member.name || null,
-        status: config.status
-      };
-    });
+        return {
+          id: config.id,
+          group_name: group.group_name || null,
+          chit_amount: parseFloat(group.chit_amount) || 0,
+          group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
+          commission_amount: parseFloat(commission_amount.toFixed(2)),
+          total_paid: parseFloat(total_paid.toFixed(2)),
+          total_pending: parseFloat((commission_amount - total_paid).toFixed(2)),
+          upload_document: upload_document,
+          member_id: config.member_id,
+          member_name: member.name || null,
+          status: config.status
+        };
+      });
+    }
 
     return successResponse(res, statusCodes.OK, 'Records retrieved successfully', {
-      count: records.count,
-      records: configurations
+      count: Math.max(enrollments.count, recordsList.length),
+      records: recordsList
     });
 
   } catch (error) {
@@ -4554,13 +4662,13 @@ const getGalleryByIdService = async (res, id, userOrCompanyId) => {
       companyId = userOrCompanyId;
     }
 
-    const whereClause = { id };
-    if (companyId) {
-      whereClause.company_id = companyId;
+    const gallery = await Gallery.findByPk(id);
+    if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+    if (companyId && gallery.company_id && gallery.company_id !== companyId) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized to view this gallery');
     }
 
-    const gallery = await Gallery.findOne({ where: whereClause });
-    if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
     return successResponse(res, statusCodes.OK, 'Gallery retrieved successfully', gallery);
   } catch (error) {
     console.error('Error in getGalleryByIdService:', error);
@@ -4577,13 +4685,12 @@ const deleteGalleryService = async (res, id, userOrCompanyId) => {
       companyId = userOrCompanyId;
     }
 
-    const whereClause = { id };
-    if (companyId) {
-      whereClause.company_id = companyId;
-    }
-
-    const gallery = await Gallery.findOne({ where: whereClause });
+    const gallery = await Gallery.findByPk(id);
     if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+    if (companyId && gallery.company_id && gallery.company_id !== companyId) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized to delete this gallery');
+    }
 
     // Delete image from uploads folder if exists on disk
     if (gallery.gallery_image) {

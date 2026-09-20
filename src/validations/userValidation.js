@@ -5,8 +5,9 @@ const getHomeRecordSchema = Joi.object({
 });
 
 const getAllHomeRecordsSchema = Joi.object({
-  subscriber_id: Joi.string().required(),
+  subscriber_id: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
   type: Joi.number().valid(0, 1, 2).optional().default(0),
+  auction_type: Joi.number().valid(1, 2).optional(),
   min: Joi.number().min(0).optional().default(0),
   max: Joi.number().min(1).optional().default(10)
 });
@@ -53,7 +54,8 @@ const getChitDetailsSchema = Joi.object({
   group_id: Joi.string().uuid().required().messages({
     'any.required': 'Group ID is required',
     'string.uuid': 'Invalid Group ID format'
-  })
+  }),
+  auction_type: Joi.number().valid(1, 2).optional()
 });
 
 const getPaymentHistorySchema = Joi.object({
@@ -75,6 +77,38 @@ const getBusinessListUnderMembersSchema = Joi.object({
   max: Joi.number().integer().min(1).optional()
 });
 
+const getBusinessAgentTotalCommissionSchema = Joi.object({
+  business_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10),
+  search: Joi.string().allow('', null).optional()
+});
+
+const getBusinessAgentPaidCommissionSchema = Joi.object({
+  business_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10),
+  search: Joi.string().allow('', null).optional(),
+  from_date: Joi.date().iso().allow('', null).optional(),
+  to_date: Joi.date().iso().allow('', null).optional()
+});
+
+const getBusinessAgentPendingCommissionSchema = Joi.object({
+  business_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10),
+  search: Joi.string().allow('', null).optional(),
+  from_date: Joi.date().iso().allow('', null).optional(),
+  to_date: Joi.date().iso().allow('', null).optional()
+});
+
+const getBusinessAgentMemberJoinedSchema = Joi.object({
+  business_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10),
+  search: Joi.string().allow('', null).optional()
+});
+
 const getCollectionAgentDashboardSchema = Joi.object({
   collection_agent_id: Joi.number().integer().optional(),
   from_date: Joi.date().iso().optional(),
@@ -82,7 +116,10 @@ const getCollectionAgentDashboardSchema = Joi.object({
 });
 
 const getCollectionAgentGroupDashboardSchema = Joi.object({
-  group_id: Joi.string().uuid().required()
+  group_id: Joi.string().uuid().required(),
+  collection_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
 });
 
 const getPendingMembersSchema = Joi.object({
@@ -95,6 +132,22 @@ const getCollectionAgentActiveGroupsSchema = Joi.object({
   collection_agent_id: Joi.number().integer().optional(),
   min: Joi.number().integer().min(0).optional(),
   max: Joi.number().integer().min(1).optional()
+});
+
+const getTotalPendingCollectionSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10),
+  from_date: Joi.date().iso().allow('', null).optional(),
+  to_date: Joi.date().iso().allow('', null).optional()
+});
+
+const getTodayCollectionSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional().default(0),
+  max: Joi.number().integer().min(1).optional().default(10),
+  from_date: Joi.date().iso().allow('', null).optional(),
+  to_date: Joi.date().iso().allow('', null).optional()
 });
 
 const getGroupsByCollectionAgentIdSchema = Joi.object({
@@ -229,7 +282,13 @@ const getMyReferralsSchema = Joi.object({
   search: Joi.string().allow('', null).optional()
 });
 
+const getChitTypesSchema = Joi.object({
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
 module.exports = {
+  getChitTypesSchema,
   getHomeRecordSchema,
   getAllHomeRecordsSchema,
   getUpcomingChitsSchema,
@@ -264,5 +323,11 @@ module.exports = {
   markNotificationReadSchema,
   deleteNotificationSchema,
   referMemberSchema,
-  getMyReferralsSchema
+  getMyReferralsSchema,
+  getTotalPendingCollectionSchema,
+  getTodayCollectionSchema,
+  getBusinessAgentTotalCommissionSchema,
+  getBusinessAgentPaidCommissionSchema,
+  getBusinessAgentPendingCommissionSchema,
+  getBusinessAgentMemberJoinedSchema
 };

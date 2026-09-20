@@ -6,6 +6,7 @@ const {
     UpcomingChit, UpcomingChitInterest, CustomerPayment, GroupUnderStaticList,
     Auction, CollectionAgentAmount, FixedSchemeChitsConfiguration,
     NotificationHistory, MemberDocument, CustomerVisit, Gallery, MemberReferral,
+    ConfigureBusinessAgentCommission, HistoryBusinessAgent, ChitType,
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
@@ -96,7 +97,7 @@ const getHomeRecordService = async (res, userPayload) => {
             const member = await Member.findByPk(subscriber_id);
             const company_id = member ? member.company_id : null;
 
-            const whereClause = { status: 0 };
+            const whereClause = { status: 1 };
             if (company_id) {
                 whereClause.company_id = company_id;
             }
@@ -155,7 +156,7 @@ const getHomeRecordService = async (res, userPayload) => {
     }
 };
 
-const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max = 10) => {
+const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max = 10, auction_type = null) => {
     const subscriber_id = userPayload ? userPayload.id : null;
     try {
         const enrollments = await Enrollment.findAll({
@@ -181,7 +182,7 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
         const resolvedData = await Promise.all(uniqueEnrollments.map(async (enrollment) => {
             const group = await ChitsGroup.findOne({
                 where: { id: enrollment.group_id },
-                attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'scheme_configuration_id']
+                attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'scheme_configuration_id', 'auction_type']
             });
 
             let schemeType = null;
@@ -222,6 +223,8 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 group_name: group ? group.group_name : null,
                 chit_amount: group ? (parseFloat(group.chit_amount) || 0) : null,
                 no_of_installments: group ? group.no_of_installments : null,
+                total_positions: group ? (group.no_of_installments || 0) : 0,
+                auction_type: group ? group.auction_type : null,
                 scheme_type: schemeType,
                 completed_installments_count: totalAuctionsCount,
                 completed_percentage,
@@ -237,14 +240,19 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
             };
         }));
 
-        // Apply Filter logic dynamically based on group capacity
+        // Apply Filter logic dynamically based on auction_type and group capacity
         let filteredData = resolvedData;
-        const typeInt = Number(type);
 
+        if (auction_type !== undefined && auction_type !== null && auction_type !== '') {
+            const auctionTypeNum = Number(auction_type);
+            filteredData = filteredData.filter(item => Number(item.auction_type) === auctionTypeNum);
+        }
+
+        const typeInt = Number(type);
         if (typeInt === 1) { // Only fetch perfectly complete groups
-            filteredData = resolvedData.filter(item => item.positions_occupied_count >= item.total_positions);
+            filteredData = filteredData.filter(item => item.positions_occupied_count >= item.total_positions);
         } else if (typeInt === 2) { // Fetch explicitly incomplete active groups
-            filteredData = resolvedData.filter(item => item.positions_occupied_count < item.total_positions);
+            filteredData = filteredData.filter(item => item.positions_occupied_count < item.total_positions);
         }
 
         // Process numerical pagination offsets cleanly enforcing boundaries
@@ -276,7 +284,7 @@ const getUpcomingChitsService = async (res, userPayload, min = 0, max = 10) => {
         const offset = parseInt(min, 10) || 0;
 
         const whereClause = {
-            status: 0
+            status: 1
         };
         if (company_id) {
             whereClause.company_id = company_id;
@@ -791,7 +799,7 @@ const getBidDetailsService = async (res, group_id, userPayload) => {
     }
 };
 
-const getChitDetailsService = async (res, userPayload, group_id) => {
+const getChitDetailsService = async (res, userPayload, group_id, auction_type = null) => {
     try {
         if (!userPayload) {
             return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
@@ -802,6 +810,12 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
         const group = await ChitsGroup.findByPk(group_id);
         if (!group) {
             return errorResponse(res, statusCodes.NOT_FOUND, 'Chit group not found');
+        }
+
+        if (auction_type !== undefined && auction_type !== null && auction_type !== '') {
+            if (Number(group.auction_type) !== Number(auction_type)) {
+                return errorResponse(res, statusCodes.NOT_FOUND, `Chit group does not match the requested auction type (${Number(auction_type) === 1 ? 'Open Auction' : 'Fixed Chit'})`);
+            }
         }
 
         const schemeConfig = group.scheme_configuration_id
@@ -839,6 +853,55 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
             return errorResponse(res, statusCodes.NOT_FOUND, 'No enrollment found for this subscriber in this group');
         }
 
+        // Helper date formatting functions
+        const formatDateDMY = (dateStr) => {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            if (isNaN(date.getTime())) return String(dateStr);
+            const d = String(date.getDate()).padStart(2, '0');
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const y = date.getFullYear();
+            return `${d}/${m}/${y}`;
+        };
+
+        const formatDateShortDMY = (dateStr) => {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            if (isNaN(date.getTime())) return String(dateStr);
+            const d = String(date.getDate()).padStart(2, '0');
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const shortYear = String(date.getFullYear()).slice(-2);
+            return `${d}/${m}/${shortYear}`;
+        };
+
+        const formatDateToOrdinal = (dateStr) => {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            if (isNaN(date.getTime())) return String(dateStr);
+            const day = date.getDate();
+            const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+            const month = months[date.getMonth()];
+            const year = date.getFullYear();
+
+            let suffix = 'th';
+            if (day === 1 || day === 21 || day === 31) suffix = 'st';
+            else if (day === 2 || day === 22) suffix = 'nd';
+            else if (day === 3 || day === 23) suffix = 'rd';
+
+            return `${day}${suffix} ${month} ${year}`;
+        };
+
+        const getPaymentModeLabel = (mode) => {
+            switch (Number(mode)) {
+                case 1: return 'Cash';
+                case 2: return 'UPI';
+                case 3: return 'Cheque';
+                case 4: return 'Bank Transfer';
+                case 5: return 'Others';
+                default: return 'Online';
+            }
+        };
+
         // Combine formatted ticket position numbers (e.g. "#08, #07")
         const positionNumbersFormatted = userEnrollments.map(e => {
             const pos = e.group_position_number;
@@ -861,10 +924,50 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
             where: { group_id, delete_status: 0 }
         });
 
-        // 5. Calculate Next Payment Due card details
+        // 5. Calculate Dates, Installments & Counts
+        const totalMonthsCount = parseInt(group.no_of_installments, 10) || 12;
+
+        let startDateVal = group.chit_start_date || group.commencement_date || (group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null);
+        let endDateVal = group.chit_end_date || group.term_date || group.maturity_date;
+
+        if (!endDateVal && startDateVal) {
+            const sDate = new Date(startDateVal);
+            if (!isNaN(sDate.getTime())) {
+                const eDate = new Date(sDate);
+                eDate.setMonth(eDate.getMonth() + totalMonthsCount);
+                endDateVal = eDate.toISOString().split('T')[0];
+            }
+        }
+
+        const startDateFormatted = formatDateDMY(startDateVal);
+        const endDateFormatted = formatDateDMY(endDateVal);
+
         const enrollmentIds = userEnrollments.map(e => e.id);
 
-        // Fetch the earliest unpaid installment across these enrollments
+        // Fetch subscriber's own installments in this group
+        const allUserInstallments = await ChitsInstallment.findAll({
+            where: {
+                enrollment_id: { [Op.in]: enrollmentIds }
+            }
+        });
+        const userInstallmentIds = allUserInstallments.map(i => i.id);
+
+        // Fetch all customer payments made by this subscriber for this group's installments
+        const userPayments = await CustomerPayment.findAll({
+            where: {
+                chits_installment_id: { [Op.in]: userInstallmentIds },
+                payment_status: 1
+            },
+            order: [['payment_date', 'ASC'], ['createdAt', 'ASC']]
+        });
+
+        const totalPaidAmount = userPayments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0);
+        const singleChitAmount = parseFloat(group.chit_amount) || 0.00;
+        const totalChitAmountForUser = singleChitAmount * userEnrollments.length;
+        const groupPendingAmount = Math.max(0, totalChitAmountForUser - totalPaidAmount);
+        const groupAdvanceAmount = Math.max(0, totalPaidAmount - totalChitAmountForUser);
+
+        // Calculate Next Payment Due card details
         const upcomingInstallment = await ChitsInstallment.findOne({
             where: {
                 enrollment_id: { [Op.in]: enrollmentIds },
@@ -872,42 +975,14 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                     [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
                 }
             },
-            order: [['due_date', 'ASC']]
+            order: [['due_date', 'ASC'], ['installment_no', 'ASC']]
         });
-
-        const formatDateToOrdinal = (dateStr) => {
-            if (!dateStr) return '';
-            const date = new Date(dateStr);
-            if (isNaN(date.getTime())) return dateStr;
-            const day = date.getDate();
-            const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-            const month = months[date.getMonth()];
-            const year = date.getFullYear();
-
-            let suffix = 'th';
-            if (day === 1 || day === 21 || day === 31) suffix = 'st';
-            else if (day === 2 || day === 22) suffix = 'nd';
-            else if (day === 3 || day === 23) suffix = 'rd';
-
-            return `${day}${suffix} ${month} ${year}`;
-        };
-
-        const paidInstallments = await ChitsInstallment.findAll({
-            where: {
-                enrollment_id: { [Op.in]: enrollmentIds },
-                id: {
-                    [Op.in]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
-                }
-            }
-        });
-        const totalPaidAmount = paidInstallments.reduce((sum, inst) => sum + (parseFloat(inst.payable_amount) || 0), 0);
 
         let nextPaymentDue = null;
         if (upcomingInstallment) {
             const dueAmount = parseFloat(upcomingInstallment.payable_amount) || 0.00;
-            const grossAmount = parseFloat(group.installment_amount) || 0.00;
+            const grossAmount = parseFloat(group.installment_amount) || (singleChitAmount / totalMonthsCount) || 0.00;
 
-            // To do penalty logic, we need to know if the user is a winner in this group
             const wonAuctions = await Auction.findAll({
                 where: {
                     group_id,
@@ -972,23 +1047,23 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                 installment_no: upcomingInstallment.installment_no,
                 due_date: upcomingInstallment.due_date,
                 due_date_formatted: formatDateToOrdinal(upcomingInstallment.due_date),
-                due_amount: dueAmount,
-                gross_installment_amount: grossAmount,
-                penalty_amount: penaltyAmount,
+                due_amount: parseFloat(dueAmount.toFixed(2)),
+                gross_installment_amount: parseFloat(grossAmount.toFixed(2)),
+                penalty_amount: parseFloat(penaltyAmount.toFixed(2)),
                 over_due_days_count: overDueDaysCount,
                 penalty_text: penaltyText,
-                final_payable_amount: finalPayableAmount,
+                final_payable_amount: parseFloat(finalPayableAmount.toFixed(2)),
                 is_overdue: isOverdue,
                 days_left: days_left,
                 days_left_text: `${days_left} days left`,
-                paid_amount: 0.00 // Adjust if partial payments logic is added
+                paid_amount: 0.00
             };
         }
 
-        // 6. Fetch all completed auctions for this group
+        // 6. Fetch all completed auctions for this group in ascending order (oldest first, recent last)
         const auctions = await Auction.findAll({
             where: { group_id },
-            order: [['auction_number', 'DESC']],
+            order: [['auction_number', 'ASC']],
             include: [
                 {
                     model: Member,
@@ -997,6 +1072,17 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                 }
             ]
         });
+
+        // Determine current month count (latest auction number)
+        let currentMonthCount = 1;
+        if (auctions && auctions.length > 0) {
+            currentMonthCount = auctions[auctions.length - 1].auction_number;
+        } else if (group.chits_group_status === 1) {
+            currentMonthCount = 1;
+        } else {
+            currentMonthCount = 0;
+        }
+        currentMonthCount = Math.min(totalMonthsCount, Math.max(1, currentMonthCount));
 
         // 7. Get ALL active enrollments in the group to build member-wise breakdown list
         const allGroupEnrollments = await Enrollment.findAll({
@@ -1013,21 +1099,7 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
             ],
             order: [['group_position_number', 'ASC']]
         });
-
-        // Fetch subscriber's own installments in this group to extract exact monthly math
-        const allUserInstallments = await ChitsInstallment.findAll({
-            where: {
-                enrollment_id: { [Op.in]: enrollmentIds }
-            }
-        });
-
-        const userInstallmentIds = allUserInstallments.map(i => i.id);
-        const userPayments = await CustomerPayment.findAll({
-            where: {
-                chits_installment_id: { [Op.in]: userInstallmentIds },
-                payment_status: 1
-            }
-        });
+        const groupEnrollmentIds = allGroupEnrollments.map(e => e.id);
 
         const monthlyActivity = [];
         const monthsList = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -1042,49 +1114,57 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
                 }
             }
 
-            // Format auction date (DD/MM/YYYY)
-            let auctionDateFormatted = '';
-            if (auction.auction_date) {
-                const ad = new Date(auction.auction_date);
-                if (!isNaN(ad.getTime())) {
-                    const d = String(ad.getDate()).padStart(2, '0');
-                    const m = String(ad.getMonth() + 1).padStart(2, '0');
-                    const y = ad.getFullYear();
-                    auctionDateFormatted = `${d}/${m}/${y}`;
-                }
-            }
+            const auctionDateFormatted = formatDateDMY(auction.auction_date);
 
-            // Find the winner ticket number formatted (e.g. "#12")
+            // Winner Ticket & Position formatting
             const winnerTicketFormatted = auction.ticket_number
                 ? "#" + String(auction.ticket_number).padStart(2, '0')
                 : (auction.bidder && auction.bidder.member_id ? `#${auction.bidder.member_id}` : 'N/A');
 
-            // Math card stats
-            const originalAmountVal = getSchemeOriginalAmount(schemeConfig, auction);
-            let profitAmountVal = 0.00;
+            let winnerPositionLabel = 'P1';
+            if (auction.ticket_number) {
+                winnerPositionLabel = `P${auction.ticket_number}`;
+            } else if (auction.bidder && auction.bidder.member_id) {
+                winnerPositionLabel = `P${auction.bidder.member_id}`;
+            }
+
+            const rawBidAmount = parseFloat(auction.bid_amount) || 0.00;
+            const bidWinningAmount = getSchemeWinningAmount(schemeConfig, auction.auction_number) ?? rawBidAmount;
+            const isWinnerStatus = auction.bidder_id === subscriber_id;
+
+            const winnerInfo = auction.bidder ? {
+                winner_name: auction.bidder.name || 'N/A',
+                winner_member_id: winnerTicketFormatted,
+                ticket_number: auction.ticket_number || null,
+                position_label: winnerPositionLabel,
+                is_self_winner: isWinnerStatus,
+                bid_winning_amount: parseFloat(bidWinningAmount.toFixed(2))
+            } : null;
+
+            // Math card stats per ticket
+            const originalAmountPerTicket = getSchemeOriginalAmount(schemeConfig, auction);
+            let profitAmountPerTicket = 0.00;
 
             const matchingInstallment = allUserInstallments.find(inst => inst.installment_no === auction.auction_number);
 
             // Calculate profit primarily from auction dividend if available
             if (auction.dividend && parseFloat(auction.dividend) > 0) {
                 const divVal = parseFloat(auction.dividend);
-                if (divVal < originalAmountVal) {
-                    profitAmountVal = divVal;
+                if (divVal < originalAmountPerTicket) {
+                    profitAmountPerTicket = divVal;
                 } else {
-                    profitAmountVal = divVal / (totalMembersCount || 20);
+                    profitAmountPerTicket = divVal / (totalMembersCount || 20);
                 }
             } else {
                 if (matchingInstallment) {
                     const payableVal = parseFloat(matchingInstallment.payable_amount) || 0.00;
-                    profitAmountVal = originalAmountVal - payableVal;
+                    profitAmountPerTicket = Math.max(0, originalAmountPerTicket - payableVal);
                 }
             }
 
-            const payableAmountVal = originalAmountVal - profitAmountVal;
+            const payableAmountPerTicket = Math.max(0, originalAmountPerTicket - profitAmountPerTicket);
 
-            // 8. Build member-wise breakdown list for this specific auction/installment number
-            // Query installments for all group enrollments for this installment no
-            const groupEnrollmentIds = allGroupEnrollments.map(e => e.id);
+            // 8. Build member-wise breakdown list for subscriber's enrolled tickets for this specific auction
             const allInstallmentsForAuction = await ChitsInstallment.findAll({
                 where: {
                     enrollment_id: { [Op.in]: groupEnrollmentIds },
@@ -1093,132 +1173,237 @@ const getChitDetailsService = async (res, userPayload, group_id) => {
             });
 
             const memberBreakdown = [];
-            let totalOriginal = 0.00;
-            let totalProfit = 0.00;
-            let totalPayable = 0.00;
-            let totalPaidAmountForAuction = 0.00;
+            let monthOriginalTotal = 0.00;
+            let monthProfitTotal = 0.00;
+            let monthPayableTotal = 0.00;
+            let monthPaidTotal = 0.00;
+            let monthPendingTotal = 0.00;
+            let monthAdvanceTotal = 0.00;
+            let monthPenaltyTotal = 0.00;
+            let monthTotalAmountSum = 0.00;
 
             for (const ge of userEnrollments) {
-                const memberOriginal = originalAmountVal;
-                let memberPayable = memberOriginal;
-                let memberProfit = 0.00;
-                let memberPaidAmount = 0.00;
+                const ticketOriginal = originalAmountPerTicket;
+                const ticketProfit = profitAmountPerTicket;
+                const ticketPayable = payableAmountPerTicket;
 
-                const geInstallment = allInstallmentsForAuction.find(inst => inst.enrollment_id === ge.id);
+                const geInstallment = allInstallmentsForAuction.find(inst => inst.enrollment_id === ge.id) ||
+                    allUserInstallments.find(inst => inst.enrollment_id === ge.id && inst.installment_no === auction.auction_number);
+
+                let ticketPaidAmount = 0.00;
+                let ticketPenaltyPaid = 0.00;
+                let ticketPaymentHistory = [];
+
                 if (geInstallment) {
-                    const gePayment = userPayments.find(p => p.chits_installment_id === geInstallment.id);
-                    if (gePayment) {
-                        memberPaidAmount = parseFloat(gePayment.received_amount) || 0.00;
-                    }
+                    const paymentsForInst = userPayments.filter(p => p.chits_installment_id === geInstallment.id);
+
+                    ticketPaymentHistory = paymentsForInst.map(p => {
+                        const pReceived = parseFloat(p.received_amount) || 0.00;
+                        const pPenalty = parseFloat(p.penalty_paid) || 0.00;
+                        const pDate = p.payment_date || (p.createdAt ? new Date(p.createdAt).toISOString().split('T')[0] : null);
+                        const pDateFormatted = formatDateDMY(pDate);
+                        const pDateShort = formatDateShortDMY(pDate);
+                        const pMode = p.payment_mode || 1;
+                        const pModeLabel = getPaymentModeLabel(pMode);
+
+                        return {
+                            id: p.id,
+                            payment_id: p.id,
+                            receipt_number: p.receipt_number || null,
+                            transaction_reference: p.transaction_reference || null,
+                            paid_date: pDate,
+                            paid_date_formatted: pDateFormatted,
+                            paid_date_short: pDateShort,
+                            payment_text: pDateShort ? `Paid - ${pDateShort}` : 'Paid',
+                            payment_mode: pMode,
+                            payment_mode_label: pModeLabel,
+                            received_amount: parseFloat(pReceived.toFixed(2)),
+                            penalty_paid: parseFloat(pPenalty.toFixed(2))
+                        };
+                    });
+
+                    ticketPaidAmount = ticketPaymentHistory.reduce((sum, p) => sum + p.received_amount, 0);
+                    ticketPenaltyPaid = ticketPaymentHistory.reduce((sum, p) => sum + p.penalty_paid, 0);
                 }
 
-                // Use calculated profitAmountVal to guarantee accuracy even if DB installments aren't fully updated yet
-                memberProfit = profitAmountVal;
-                memberPayable = memberOriginal - memberProfit;
+                let ticketPending = 0.00;
+                let ticketAdvance = 0.00;
+                if (ticketPaidAmount >= ticketPayable) {
+                    ticketPending = 0.00;
+                    ticketAdvance = parseFloat((ticketPaidAmount - ticketPayable).toFixed(2));
+                } else {
+                    ticketPending = parseFloat((ticketPayable - ticketPaidAmount).toFixed(2));
+                    ticketAdvance = 0.00;
+                }
 
-                totalOriginal += memberOriginal;
-                totalProfit += memberProfit;
-                totalPayable += memberPayable;
-                totalPaidAmountForAuction += memberPaidAmount;
+                let ticketPenaltyAmount = 0.00;
+                let ticketPenaltyText = null;
 
-                memberBreakdown.push({
-                    position_label: `Member #${ge.group_position_number}`,
-                    name: ge.subscriber ? ge.subscriber.name : 'Unknown Subscriber',
-                    payable_amount: parseFloat(memberPayable.toFixed(2)),
-                    profit_amount: parseFloat(memberProfit.toFixed(2)),
-                    original_amount: parseFloat(memberOriginal.toFixed(2)),
-                    paid_amount: parseFloat(memberPaidAmount.toFixed(2))
-                });
-            }
+                if (geInstallment && ticketPending > 0) {
+                    const dueDate = geInstallment.due_date ? new Date(geInstallment.due_date) : null;
+                    if (dueDate) {
+                        const simulatedNow = await getSimulatedNow();
+                        simulatedNow.setHours(0, 0, 0, 0);
+                        dueDate.setHours(0, 0, 0, 0);
 
-            const rawBidAmount = parseFloat(auction.bid_amount) || 0.00;
-            const bidWinningAmount = getSchemeWinningAmount(schemeConfig, auction.auction_number) ?? rawBidAmount;
-            const isWinnerStatus = auction.bidder_id === subscriber_id;
+                        if (dueDate < simulatedNow) {
+                            const diffTime = simulatedNow.getTime() - dueDate.getTime();
+                            const overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
-            let instPenaltyAmount = 0.00;
-            let instPenaltyText = null;
+                            if (overDueDaysCount > 0) {
+                                const isSubscriberWinner = auctions.some(a => a.bidder_id === subscriber_id);
+                                const penaltyRate = isSubscriberWinner
+                                    ? (parseFloat(group.penality_for_ps) || 0.00)
+                                    : (parseFloat(group.penality_for_nps) || 0.00);
 
-            if (matchingInstallment) {
-                const pendingForInst = payableAmountVal - totalPaidAmountForAuction;
-                const dueDate = matchingInstallment.due_date ? new Date(matchingInstallment.due_date) : null;
+                                let penaltyAmountPerDay = 0.00;
+                                let displayPercentage = 2.0;
 
-                if (dueDate && pendingForInst > 0) {
-                    const simulatedNow = await getSimulatedNow();
-                    simulatedNow.setHours(0, 0, 0, 0);
-                    dueDate.setHours(0, 0, 0, 0);
-
-                    if (dueDate < simulatedNow) {
-                        const diffTime = simulatedNow.getTime() - dueDate.getTime();
-                        const overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-
-                        if (overDueDaysCount > 0) {
-                            const isSubscriberWinner = auctions.some(a => a.bidder_id === subscriber_id);
-                            const penaltyRate = isSubscriberWinner
-                                ? (parseFloat(group.penality_for_ps) || 0.00)
-                                : (parseFloat(group.penality_for_nps) || 0.00);
-
-                            let penaltyAmountPerDay = 0.00;
-                            let displayPercentage = 2.0;
-
-                            if (penaltyRate > 0) {
-                                if (penaltyRate <= 20) {
-                                    displayPercentage = penaltyRate;
-                                    penaltyAmountPerDay = (penaltyRate / 100) * pendingForInst;
+                                if (penaltyRate > 0) {
+                                    if (penaltyRate <= 20) {
+                                        displayPercentage = penaltyRate;
+                                        penaltyAmountPerDay = (penaltyRate / 100) * ticketPending;
+                                    } else {
+                                        penaltyAmountPerDay = penaltyRate;
+                                        displayPercentage = ticketPending > 0 ? parseFloat(((penaltyAmountPerDay / ticketPending) * 100).toFixed(1)) : 2.0;
+                                    }
                                 } else {
-                                    penaltyAmountPerDay = penaltyRate;
-                                    displayPercentage = pendingForInst > 0 ? parseFloat(((penaltyAmountPerDay / pendingForInst) * 100).toFixed(1)) : 2.0;
+                                    displayPercentage = 2.0;
+                                    penaltyAmountPerDay = 0.02 * ticketPending;
                                 }
-                            } else {
-                                displayPercentage = 2.0;
-                                penaltyAmountPerDay = 0.02 * pendingForInst;
-                            }
 
-                            instPenaltyAmount = parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2));
-                            instPenaltyText = `${displayPercentage}% per day x ${overDueDaysCount} days`;
+                                ticketPenaltyAmount = parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2));
+                                ticketPenaltyText = `${displayPercentage}% per day x ${overDueDaysCount} days`;
+                            }
                         }
                     }
                 }
+
+                const ticketTotalAmount = parseFloat((ticketPending + ticketPenaltyAmount).toFixed(2));
+
+                monthOriginalTotal += ticketOriginal;
+                monthProfitTotal += ticketProfit;
+                monthPayableTotal += ticketPayable;
+                monthPaidTotal += ticketPaidAmount;
+                monthPendingTotal += ticketPending;
+                monthAdvanceTotal += ticketAdvance;
+                monthPenaltyTotal += ticketPenaltyAmount;
+                monthTotalAmountSum += ticketTotalAmount;
+
+                memberBreakdown.push({
+                    enrollment_id: ge.id,
+                    name: ge.subscriber ? ge.subscriber.name : 'Unknown Subscriber',
+                    position_label: `Member #${ge.group_position_number}`,
+                    group_position_number: ge.group_position_number,
+                    ticket_number: `#${String(ge.group_position_number).padStart(2, '0')}`,
+                    subscriber_id: ge.subscriber_id,
+                    subscriber_name: ge.subscriber ? ge.subscriber.name : 'Unknown Subscriber',
+                    original_amount: parseFloat(ticketOriginal.toFixed(2)),
+                    installment_amount: parseFloat(ticketOriginal.toFixed(2)),
+                    profit_amount: parseFloat(ticketProfit.toFixed(2)),
+                    bonus: parseFloat(ticketProfit.toFixed(2)),
+                    payable_amount: parseFloat(ticketPayable.toFixed(2)),
+                    net_payable: parseFloat(ticketPayable.toFixed(2)),
+                    paid_amount: parseFloat(ticketPaidAmount.toFixed(2)),
+                    pending_amount: parseFloat(ticketPending.toFixed(2)),
+                    advance_payment: parseFloat(ticketAdvance.toFixed(2)),
+                    advance_amount_status: ticketAdvance > 0,
+                    penalty_amount: parseFloat(ticketPenaltyAmount.toFixed(2)),
+                    penalty_text: ticketPenaltyText,
+                    total_amount: parseFloat(ticketTotalAmount.toFixed(2)),
+                    payment_history: ticketPaymentHistory
+                });
+            }
+
+            let monthPenaltyText = null;
+            const itemWithPenalty = memberBreakdown.find(m => m.penalty_text);
+            if (itemWithPenalty) {
+                monthPenaltyText = itemWithPenalty.penalty_text;
             }
 
             monthlyActivity.push({
                 id: auction.id,
                 auction_number: auction.auction_number,
+                month_count: auction.auction_number,
+                total_months_count: totalMonthsCount,
+                month_badge: `${auction.auction_number}/${totalMonthsCount}`,
                 month_name: monthName,
+                auction_date: auction.auction_date,
                 auction_date_formatted: auctionDateFormatted,
+                bid_amount: parseFloat((parseFloat(auction.bid_amount) || 0.00).toFixed(2)),
                 bid_winning_amount: parseFloat(bidWinningAmount.toFixed(2)),
                 winner_name: auction.bidder ? auction.bidder.name : 'N/A',
-                winner_member_id: winnerTicketFormatted,
+                winner_member_id: winnerInfo ? winnerInfo.winner_member_id : 'N/A',
+                winner_info: winnerInfo,
                 is_winner_status: isWinnerStatus,
-                payable_amount: parseFloat(payableAmountVal.toFixed(2)),
-                profit_amount: parseFloat(profitAmountVal.toFixed(2)),
-                original_amount: parseFloat(originalAmountVal.toFixed(2)),
-                paid_amount: parseFloat(totalPaidAmountForAuction.toFixed(2)),
-                penalty_amount: instPenaltyAmount,
-                penalty_text: instPenaltyText,
+
+                // Amounts (supports all UI cards & screens)
+                original_amount: parseFloat(monthOriginalTotal.toFixed(2)),
+                installment_amount: parseFloat(monthOriginalTotal.toFixed(2)),
+                profit_amount: parseFloat(monthProfitTotal.toFixed(2)),
+                bonus: parseFloat(monthProfitTotal.toFixed(2)),
+                payable_amount: parseFloat(monthPayableTotal.toFixed(2)),
+                net_payable: parseFloat(monthPayableTotal.toFixed(2)),
+                paid_amount: parseFloat(monthPaidTotal.toFixed(2)),
+                pending_amount: parseFloat(monthPendingTotal.toFixed(2)),
+                advance_payment: parseFloat(monthAdvanceTotal.toFixed(2)),
+                advance_amount_status: monthAdvanceTotal > 0,
+                penalty_amount: parseFloat(monthPenaltyTotal.toFixed(2)),
+                penalty_text: monthPenaltyText,
+                total_amount: parseFloat(monthTotalAmountSum.toFixed(2)),
+
+                // Per-ticket breakdown and summary for Screen 5
                 member_breakdown: memberBreakdown,
                 breakdown_summary: {
-                    total_payable: parseFloat(totalPayable.toFixed(2)),
-                    total_profit: parseFloat(totalProfit.toFixed(2)),
-                    total_original: parseFloat(totalOriginal.toFixed(2))
+                    total_installment: parseFloat(monthOriginalTotal.toFixed(2)),
+                    total_original: parseFloat(monthOriginalTotal.toFixed(2)),
+                    bonus: parseFloat(monthProfitTotal.toFixed(2)),
+                    total_profit: parseFloat(monthProfitTotal.toFixed(2)),
+                    total_net_payable: parseFloat(monthPayableTotal.toFixed(2)),
+                    total_payable: parseFloat(monthPayableTotal.toFixed(2)),
+                    total_paid: parseFloat(monthPaidTotal.toFixed(2)),
+                    total_paid_amount: parseFloat(monthPaidTotal.toFixed(2)),
+                    total_pending: parseFloat(monthPendingTotal.toFixed(2)),
+                    total_advance: parseFloat(monthAdvanceTotal.toFixed(2)),
+                    advance_amount_status: monthAdvanceTotal > 0,
+                    total_amount: parseFloat(monthTotalAmountSum.toFixed(2)),
+                    total_penalty: parseFloat(monthPenaltyTotal.toFixed(2))
                 }
             });
         }
 
-        // Assemble final beautiful structured response matching Left and Right screens
+        // Assemble final beautiful structured response matching all 5 screens
         const responsePayload = {
             chit_group_details: {
                 group_id: group.id,
                 group_name: group.group_name || 'Unknown Chit',
-                total_amount: parseFloat(group.chit_amount) || 0.00,
+                start_date: startDateFormatted,
+                end_date: endDateFormatted,
+                total_amount: parseInt(singleChitAmount, 10) || 0,
+                pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
+                advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
+                advance_amount_status: groupAdvanceAmount > 0,
+                total_months: totalMonthsCount,
+                current_month: currentMonthCount,
+                total_installments: totalMonthsCount,
+                members_count: totalMembersCount,
+                total_members: `${totalMembersCount} Members`,
+                auction_type: group.auction_type,
+                auction_type_label: group.auction_type === 1 ? 'Open Auction' : (group.auction_type === 2 ? 'Fixed Chit' : 'Standard'),
                 running_status_label: group.chits_group_status === 1 ? 'Active chit' : (group.chits_group_status === 2 ? 'Completed' : 'Upcoming'),
+                badge_label: group.chits_group_status,
                 ticket_member_number: positionNumbersFormatted,
                 collection_agent_name: collectionAgentName,
-                business_agent_name: agentName,
-                total_members: `${totalMembersCount} Members`
+                business_agent_name: agentName
             },
+            auction_type: group.auction_type,
+            auction_type_label: group.auction_type === 1 ? 'Open Auction' : (group.auction_type === 2 ? 'Fixed Chit' : 'Standard'),
             my_chit_overview: {
-                monthly_bid_amount: parseFloat(group.installment_amount) || (parseFloat(group.chit_amount) / parseFloat(group.no_of_installments)) || 0.00,
+                monthly_bid_amount: parseFloat((parseFloat(group.installment_amount) || (singleChitAmount / totalMonthsCount) || 0.00).toFixed(2)),
                 total_paid_amount: parseFloat(totalPaidAmount.toFixed(2)),
+                total_pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
+                total_advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
+                advance_amount_status: groupAdvanceAmount > 0,
                 next_payment_due: nextPaymentDue
             },
             scheme: schemeConfig ? {
@@ -1502,18 +1687,388 @@ const getCollectionAgentActiveGroupsService = async (res, collection_agent_id, m
     }
 };
 
-const getCollectionAgentGroupDashboardService = async (res, group_id) => {
+const getTotalPendingCollectionService = async (res, collection_agent_id, min, max, from_date, to_date) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const enrollments = await Enrollment.findAll({
+            where: {
+                collection_agent_id,
+                delete_status: 0
+            },
+            include: [
+                {
+                    model: Member,
+                    as: 'subscriber',
+                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender']
+                },
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    where: { is_deleted_status: 0 },
+                    required: true
+                }
+            ]
+        });
+
+        if (!enrollments || enrollments.length === 0) {
+            return successResponse(res, statusCodes.OK, 'Total pending collection retrieved successfully', {
+                total_pending_amount: 0,
+                total_pending_members: 0,
+                from_groups_count: 0,
+                count: 0,
+                rows: []
+            });
+        }
+
+        const enrollmentIds = enrollments.map(e => e.id);
+
+        const installmentWhere = {
+            enrollment_id: { [Op.in]: enrollmentIds },
+            payable_amount: { [Op.gt]: 0 }
+        };
+
+        if (from_date && to_date) {
+            const startDate = new Date(from_date).toISOString().split('T')[0];
+            const endDate = new Date(to_date).toISOString().split('T')[0];
+            installmentWhere.due_date = {
+                [Op.between]: [startDate, endDate]
+            };
+        } else if (from_date) {
+            const startDate = new Date(from_date).toISOString().split('T')[0];
+            installmentWhere.due_date = { [Op.gte]: startDate };
+        } else if (to_date) {
+            const endDate = new Date(to_date).toISOString().split('T')[0];
+            installmentWhere.due_date = { [Op.lte]: endDate };
+        }
+
+        const installments = await ChitsInstallment.findAll({
+            where: installmentWhere,
+            order: [['due_date', 'ASC']]
+        });
+
+        const installmentIds = installments.map(i => i.id);
+
+        const payments = await CustomerPayment.findAll({
+            where: {
+                chits_installment_id: { [Op.in]: installmentIds },
+                payment_status: 1
+            }
+        });
+
+        // Group by group_id and member
+        const groupMap = {};
+        const overallPendingMembersSet = new Set();
+        let overallPendingAmount = 0;
+
+        installments.forEach(inst => {
+            const payable = parseFloat(inst.payable_amount) || 0;
+            const relatedPayments = payments.filter(p => p.chits_installment_id === inst.id);
+            const paid = relatedPayments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0);
+            const pending = Math.max(0, payable - paid);
+
+            if (pending <= 0) return;
+
+            const e = enrollments.find(en => en.id === inst.enrollment_id);
+            if (!e || !e.group || !e.subscriber) return;
+
+            const group = e.group;
+            const subscriber = e.subscriber;
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    pending_amount: 0,
+                    pending_members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            if (!groupMap[group.id].membersMap[subscriber.id]) {
+                groupMap[group.id].membersMap[subscriber.id] = {
+                    id: subscriber.id,
+                    name: subscriber.name || 'Unknown',
+                    member_id: subscriber.member_id || `#${subscriber.id}`,
+                    profile_image: subscriber.upload_image || null,
+                    mobile_number: subscriber.mobile_number || null,
+                    gender: subscriber.gender || null,
+                    pending_amount: 0
+                };
+            }
+
+            const memberPending = parseFloat(((groupMap[group.id].membersMap[subscriber.id].pending_amount || 0) + pending).toFixed(2));
+            groupMap[group.id].membersMap[subscriber.id].pending_amount = memberPending;
+
+            groupMap[group.id].pending_amount = parseFloat(((groupMap[group.id].pending_amount || 0) + pending).toFixed(2));
+            overallPendingAmount = parseFloat((overallPendingAmount + pending).toFixed(2));
+            overallPendingMembersSet.add(subscriber.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                pending_amount: parseFloat(g.pending_amount) || 0,
+                pending_members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Total pending collection retrieved successfully', {
+            total_pending_amount: overallPendingAmount,
+            total_pending_members: overallPendingMembersSet.size,
+            from_groups_count: totalGroupsCount,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getTotalPendingCollectionService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getTodayCollectionService = async (res, collection_agent_id, min, max, from_date, to_date) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const enrollments = await Enrollment.findAll({
+            where: {
+                collection_agent_id,
+                delete_status: 0
+            },
+            include: [
+                {
+                    model: Member,
+                    as: 'subscriber',
+                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender']
+                },
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    where: { is_deleted_status: 0 },
+                    required: true
+                }
+            ]
+        });
+
+        if (!enrollments || enrollments.length === 0) {
+            return successResponse(res, statusCodes.OK, 'Today collection retrieved successfully', {
+                today_collection: 0,
+                total_today_collection: 0,
+                from_collection_group_count: 0,
+                from_members_count: 0,
+                count: 0,
+                rows: []
+            });
+        }
+
+        const enrollmentIds = enrollments.map(e => e.id);
+
+        let startOfPeriod, endOfPeriod, dateStrFrom, dateStrTo;
+
+        if (from_date && to_date) {
+            startOfPeriod = new Date(from_date);
+            startOfPeriod.setHours(0, 0, 0, 0);
+            endOfPeriod = new Date(to_date);
+            endOfPeriod.setHours(23, 59, 59, 999);
+            dateStrFrom = new Date(from_date).toISOString().split('T')[0];
+            dateStrTo = new Date(to_date).toISOString().split('T')[0];
+        } else if (from_date) {
+            startOfPeriod = new Date(from_date);
+            startOfPeriod.setHours(0, 0, 0, 0);
+            endOfPeriod = new Date(from_date);
+            endOfPeriod.setHours(23, 59, 59, 999);
+            dateStrFrom = new Date(from_date).toISOString().split('T')[0];
+            dateStrTo = dateStrFrom;
+        } else {
+            const simulatedNow = await getSimulatedNow();
+            startOfPeriod = new Date(simulatedNow);
+            startOfPeriod.setHours(0, 0, 0, 0);
+            endOfPeriod = new Date(simulatedNow);
+            endOfPeriod.setHours(23, 59, 59, 999);
+            dateStrFrom = startOfPeriod.toISOString().split('T')[0];
+            dateStrTo = endOfPeriod.toISOString().split('T')[0];
+        }
+
+        const payments = await CustomerPayment.findAll({
+            where: {
+                payment_status: 1,
+                [Op.or]: [
+                    {
+                        payment_date: {
+                            [Op.between]: [dateStrFrom, dateStrTo]
+                        }
+                    },
+                    {
+                        createdAt: {
+                            [Op.between]: [startOfPeriod, endOfPeriod]
+                        }
+                    }
+                ]
+            },
+            include: [
+                {
+                    model: ChitsInstallment,
+                    as: 'installment',
+                    required: true,
+                    where: {
+                        enrollment_id: { [Op.in]: enrollmentIds }
+                    }
+                }
+            ],
+            order: [
+                ['payment_date', 'DESC'],
+                ['createdAt', 'DESC']
+            ]
+        });
+
+        const getPaymentModeLabel = (mode) => {
+            switch (Number(mode)) {
+                case 1: return 'Cash';
+                case 2: return 'UPI';
+                case 3: return 'Cheque';
+                case 4: return 'Bank';
+                case 5: return 'Others';
+                default: return 'Cash';
+            }
+        };
+
+        const formatDateDMY = (dateInput) => {
+            if (!dateInput) return '';
+            const d = new Date(dateInput);
+            if (isNaN(d.getTime())) return String(dateInput);
+            const day = d.getDate();
+            const month = d.getMonth() + 1;
+            const year = String(d.getFullYear()).slice(-2);
+            return `${day}/${month}/${year}`;
+        };
+
+        const groupMap = {};
+        const overallCollectedMembersSet = new Set();
+        let overallCollectedAmount = 0;
+
+        payments.forEach(payment => {
+            const inst = payment.installment;
+            if (!inst) return;
+
+            const e = enrollments.find(en => en.id === inst.enrollment_id);
+            if (!e || !e.group || !e.subscriber) return;
+
+            const group = e.group;
+            const subscriber = e.subscriber;
+
+            const received = parseFloat(payment.received_amount) || 0;
+            const penalty = parseFloat(payment.penalty_paid) || 0;
+            const totalPaid = received + penalty;
+
+            if (totalPaid <= 0) return;
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    collected_amount: 0,
+                    collected_members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            const rawDate = payment.payment_date || (payment.createdAt ? new Date(payment.createdAt).toISOString().split('T')[0] : '');
+            const mode = payment.payment_mode || 1;
+
+            if (!groupMap[group.id].membersMap[subscriber.id]) {
+                groupMap[group.id].membersMap[subscriber.id] = {
+                    id: subscriber.id,
+                    name: subscriber.name || 'Unknown',
+                    member_id: subscriber.member_id || `#${subscriber.id}`,
+                    profile_image: subscriber.upload_image || null,
+                    amount: 0,
+                    penalty_amount: 0,
+                    total_amount: 0,
+                    payment_date: rawDate,
+                    formatted_date: formatDateDMY(rawDate),
+                    payment_mode: mode,
+                    payment_mode_label: getPaymentModeLabel(mode)
+                };
+            }
+
+            groupMap[group.id].membersMap[subscriber.id].amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].amount || 0) + received).toFixed(2));
+            groupMap[group.id].membersMap[subscriber.id].penalty_amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].penalty_amount || 0) + penalty).toFixed(2));
+            groupMap[group.id].membersMap[subscriber.id].total_amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].total_amount || 0) + totalPaid).toFixed(2));
+
+            groupMap[group.id].collected_amount = parseFloat(((groupMap[group.id].collected_amount || 0) + totalPaid).toFixed(2));
+            overallCollectedAmount = parseFloat((overallCollectedAmount + totalPaid).toFixed(2));
+            overallCollectedMembersSet.add(subscriber.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                collected_amount: parseFloat(g.collected_amount) || 0,
+                collected_members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Today collection retrieved successfully', {
+            today_collection: overallCollectedAmount,
+            total_today_collection: overallCollectedAmount,
+            from_collection_group_count: totalGroupsCount,
+            from_members_count: overallCollectedMembersSet.size,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getTodayCollectionService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getCollectionAgentGroupDashboardService = async (res, group_id, collection_agent_id, min, max) => {
     try {
         const group = await ChitsGroup.findByPk(group_id);
         if (!group) {
             return errorResponse(res, statusCodes.NOT_FOUND, 'Group not found');
         }
 
+        const whereClause = { group_id, delete_status: 0 };
+        if (collection_agent_id) {
+            whereClause.collection_agent_id = collection_agent_id;
+        }
+
         const enrollments = await Enrollment.findAll({
-            where: { group_id, delete_status: 0 },
+            where: whereClause,
             include: [{ model: Member, as: 'subscriber' }]
         });
         const enrollmentIds = enrollments.map(e => e.id);
+
+        if (!enrollments || enrollments.length === 0) {
+            return successResponse(res, statusCodes.OK, 'Group dashboard', {
+                today_group_value_price: parseFloat(group.chit_amount) || 0,
+                total_collected: 0,
+                pending_amount: 0,
+                overdue_members: 0,
+                overall_collection_process_percentage: 0,
+                current_date: new Date().toISOString().split('T')[0],
+                pending_members: []
+            });
+        }
 
         const allInstallments = await ChitsInstallment.findAll({
             where: { enrollment_id: { [Op.in]: enrollmentIds } }
@@ -1581,7 +2136,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
                         memberMap[sub.id].pending_months += 1;
                         memberMap[sub.id].balance += pending;
                         memberMap[sub.id].penalty_amount += (parseFloat(inst.penalty_amount) || 0);
-                        memberMap[sub.id].penalty_text = `Penalty - ₹ ${memberMap[sub.id].penalty_amount}`;
+                        memberMap[sub.id].penalty_text = `Penalty - ₹ ${parseFloat(memberMap[sub.id].penalty_amount.toFixed(2))}`;
 
                         if (new Date(inst.due_date) < new Date(memberMap[sub.id].oldest_due_date)) {
                             memberMap[sub.id].oldest_due_date = inst.due_date;
@@ -1600,25 +2155,33 @@ const getCollectionAgentGroupDashboardService = async (res, group_id) => {
         const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         let pending_members_list = Object.values(memberMap);
         pending_members_list.sort((a, b) => new Date(a.oldest_due_date) - new Date(b.oldest_due_date));
-        pending_members_list = pending_members_list.slice(0, 3);
+
+        if (max !== undefined && max !== null) {
+            const offset = parseInt(min, 10) || 0;
+            const limit = parseInt(max, 10);
+            pending_members_list = pending_members_list.slice(offset, offset + limit);
+        }
+
         pending_members_list = pending_members_list.map(row => {
             const d = new Date(row.oldest_due_date);
             row.oldest_due = `${months[d.getMonth()]} ${d.getFullYear()}`;
+            row.balance = parseFloat(row.balance.toFixed(2));
+            row.penalty_amount = parseFloat(row.penalty_amount.toFixed(2));
             delete row.oldest_due_date;
             return row;
         });
 
         return successResponse(res, statusCodes.OK, 'Group dashboard', {
             today_group_value_price: parseFloat(group.chit_amount) || 0,
-            total_collected,
-            pending_amount: total_pending,
+            total_collected: parseFloat(total_collected.toFixed(2)),
+            pending_amount: parseFloat(total_pending.toFixed(2)),
             overdue_members: overdue_members_set.size,
             overall_collection_process_percentage: parseFloat(percentage),
             current_date: new Date().toISOString().split('T')[0],
             pending_members: pending_members_list
         });
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error in getCollectionAgentGroupDashboardService:', error);
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
     }
 };
@@ -2092,14 +2655,46 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
     }
 };
 
-const getAllGalleryService = async (res, reqBody) => {
+const getAllGalleryService = async (res, reqBody, userPayload) => {
     try {
-        const { company_id, min = 0, max = 10 } = reqBody;
-        const limit = parseInt(max, 10);
-        const offset = parseInt(min, 10);
+        const { min = 0, max = 10 } = reqBody || {};
+        let company_id = reqBody ? reqBody.company_id : null;
 
-        const whereClause = { status: 0 }; // Only fetch active galleries for users
-        if (company_id) whereClause.company_id = company_id;
+        // If company_id not explicitly passed in body, resolve it from authenticated user
+        if (!company_id && userPayload) {
+            if (userPayload.company_id) {
+                company_id = userPayload.company_id;
+            } else if (userPayload.role === 'company') {
+                company_id = userPayload.id;
+            } else if (userPayload.role === 'staff' && userPayload.company_id) {
+                company_id = userPayload.company_id;
+            } else if (userPayload.id) {
+                // Find company_id from user's active enrollment
+                const userEnrollment = await Enrollment.findOne({
+                    where: {
+                        [Op.or]: [
+                            { subscriber_id: userPayload.id },
+                            { collection_agent_id: userPayload.id },
+                            { business_agent_id: userPayload.id }
+                        ],
+                        delete_status: 0
+                    },
+                    attributes: ['company_id'],
+                    order: [['createdAt', 'DESC']]
+                });
+                if (userEnrollment && userEnrollment.company_id) {
+                    company_id = userEnrollment.company_id;
+                }
+            }
+        }
+
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const whereClause = { status: 0 }; // Only fetch active galleries (status: 0)
+        if (company_id) {
+            whereClause.company_id = company_id;
+        }
 
         const galleries = await Gallery.findAndCountAll({
             where: whereClause,
@@ -3206,6 +3801,514 @@ const getMyReferralsService = async (res, userPayload, min = 0, max = 10, search
     }
 };
 
+const getBusinessAgentTotalCommissionService = async (res, business_agent_id, min, max, search) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const configRecords = await ConfigureBusinessAgentCommission.findAll({
+            where: { business_agent_id, is_deleted_status: 0 },
+            include: [
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    where: { is_deleted_status: 0 },
+                    required: true
+                },
+                {
+                    model: Member,
+                    as: 'member',
+                    where: { is_deleted_status: 0 },
+                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code'],
+                    required: true
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        let filteredConfigs = configRecords;
+        if (search && search.trim() !== '') {
+            const term = search.trim().toLowerCase();
+            filteredConfigs = configRecords.filter(c => {
+                const gName = (c.group && c.group.group_name) ? c.group.group_name.toLowerCase() : '';
+                const mName = (c.member && c.member.name) ? c.member.name.toLowerCase() : '';
+                const mCode = (c.member && c.member.member_id) ? c.member.member_id.toLowerCase() : '';
+                const mPhone = (c.member && c.member.mobile_number) ? c.member.mobile_number.toLowerCase() : '';
+                return gName.includes(term) || mName.includes(term) || mCode.includes(term) || mPhone.includes(term);
+            });
+        }
+
+        const groupMap = {};
+        let overallTotalCommission = 0;
+        const overallMembersSet = new Set();
+
+        filteredConfigs.forEach(c => {
+            const group = c.group;
+            const member = c.member;
+            const commissionAmt = parseFloat(c.commission_amount) || 0;
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    total_commission_amount: 0,
+                    members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            if (!groupMap[group.id].membersMap[member.id]) {
+                groupMap[group.id].membersMap[member.id] = {
+                    id: member.id,
+                    name: member.name || 'Unknown',
+                    member_id: member.member_id || (member.other_info_user_code ? `MEM-${member.other_info_user_code}` : `#${member.id}`),
+                    profile_image: member.upload_image || null,
+                    mobile_number: member.mobile_number || null,
+                    gender: member.gender || null,
+                    commission_amount: 0
+                };
+            }
+
+            groupMap[group.id].membersMap[member.id].commission_amount = parseFloat(((groupMap[group.id].membersMap[member.id].commission_amount || 0) + commissionAmt).toFixed(2));
+            groupMap[group.id].total_commission_amount = parseFloat(((groupMap[group.id].total_commission_amount || 0) + commissionAmt).toFixed(2));
+            overallTotalCommission = parseFloat((overallTotalCommission + commissionAmt).toFixed(2));
+            overallMembersSet.add(member.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                total_commission_amount: parseFloat(g.total_commission_amount) || 0,
+                members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Total commission retrieved successfully', {
+            total_commission_amount: overallTotalCommission,
+            from_groups_count: totalGroupsCount,
+            from_members_count: overallMembersSet.size,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getBusinessAgentTotalCommissionService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getBusinessAgentPaidCommissionService = async (res, business_agent_id, min, max, search, from_date, to_date) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const configRecords = await ConfigureBusinessAgentCommission.findAll({
+            where: { business_agent_id, is_deleted_status: 0 },
+            include: [
+                { model: ChitsGroup, as: 'group', where: { is_deleted_status: 0 }, required: true },
+                { model: Member, as: 'member', where: { is_deleted_status: 0 }, attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code'], required: true }
+            ]
+        });
+
+        const configIds = configRecords.map(c => c.id);
+
+        if (configIds.length === 0) {
+            return successResponse(res, statusCodes.OK, 'Paid commission retrieved successfully', {
+                total_paid_commission: 0,
+                from_groups_count: 0,
+                from_members_count: 0,
+                count: 0,
+                rows: []
+            });
+        }
+
+        const historyWhere = {
+            configure_business_agent_id: { [Op.in]: configIds },
+            is_deleted_status: 0,
+            paid_amount: { [Op.gt]: 0 }
+        };
+
+        if (from_date && to_date) {
+            const start = new Date(from_date);
+            start.setHours(0, 0, 0, 0);
+            const end = new Date(to_date);
+            end.setHours(23, 59, 59, 999);
+            historyWhere.createdAt = { [Op.between]: [start, end] };
+        } else if (from_date) {
+            const start = new Date(from_date);
+            start.setHours(0, 0, 0, 0);
+            historyWhere.createdAt = { [Op.gte]: start };
+        } else if (to_date) {
+            const end = new Date(to_date);
+            end.setHours(23, 59, 59, 999);
+            historyWhere.createdAt = { [Op.lte]: end };
+        }
+
+        const histories = await HistoryBusinessAgent.findAll({
+            where: historyWhere,
+            order: [['createdAt', 'DESC']]
+        });
+
+        const formatDateDMY = (dateInput) => {
+            if (!dateInput) return '';
+            const d = new Date(dateInput);
+            if (isNaN(d.getTime())) return String(dateInput);
+            const day = d.getDate();
+            const month = d.getMonth() + 1;
+            const year = String(d.getFullYear()).slice(-2);
+            return `${day}/${month}/${year}`;
+        };
+
+        const groupMap = {};
+        let overallTotalPaid = 0;
+        const overallMembersSet = new Set();
+
+        histories.forEach(h => {
+            const config = configRecords.find(c => c.id === h.configure_business_agent_id);
+            if (!config || !config.group || !config.member) return;
+
+            const group = config.group;
+            const member = config.member;
+            const paid = parseFloat(h.paid_amount) || 0;
+            if (paid <= 0) return;
+
+            if (search && search.trim() !== '') {
+                const term = search.trim().toLowerCase();
+                const gName = (group.group_name || '').toLowerCase();
+                const mName = (member.name || '').toLowerCase();
+                const mCode = (member.member_id || '').toLowerCase();
+                const mPhone = (member.mobile_number || '').toLowerCase();
+                if (!gName.includes(term) && !mName.includes(term) && !mCode.includes(term) && !mPhone.includes(term)) {
+                    return;
+                }
+            }
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    paid_commission_amount: 0,
+                    members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            const rawDate = h.createdAt ? new Date(h.createdAt).toISOString().split('T')[0] : '';
+
+            if (!groupMap[group.id].membersMap[member.id]) {
+                groupMap[group.id].membersMap[member.id] = {
+                    id: member.id,
+                    name: member.name || 'Unknown',
+                    member_id: member.member_id || (member.other_info_user_code ? `MEM-${member.other_info_user_code}` : `#${member.id}`),
+                    profile_image: member.upload_image || null,
+                    mobile_number: member.mobile_number || null,
+                    paid_amount: 0,
+                    payment_date: rawDate,
+                    formatted_date: formatDateDMY(rawDate),
+                    payment_mode_label: 'Cash',
+                    upload_document: h.upload_document || null
+                };
+            }
+
+            groupMap[group.id].membersMap[member.id].paid_amount = parseFloat(((groupMap[group.id].membersMap[member.id].paid_amount || 0) + paid).toFixed(2));
+            groupMap[group.id].paid_commission_amount = parseFloat(((groupMap[group.id].paid_commission_amount || 0) + paid).toFixed(2));
+            overallTotalPaid = parseFloat((overallTotalPaid + paid).toFixed(2));
+            overallMembersSet.add(member.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                paid_commission_amount: parseFloat(g.paid_commission_amount) || 0,
+                members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Paid commission retrieved successfully', {
+            total_paid_commission: overallTotalPaid,
+            from_groups_count: totalGroupsCount,
+            from_members_count: overallMembersSet.size,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getBusinessAgentPaidCommissionService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getBusinessAgentPendingCommissionService = async (res, business_agent_id, min, max, search, from_date, to_date) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const configWhere = {
+            business_agent_id,
+            is_deleted_status: 0
+        };
+
+        if (from_date && to_date) {
+            const start = new Date(from_date);
+            start.setHours(0, 0, 0, 0);
+            const end = new Date(to_date);
+            end.setHours(23, 59, 59, 999);
+            configWhere.createdAt = { [Op.between]: [start, end] };
+        } else if (from_date) {
+            const start = new Date(from_date);
+            start.setHours(0, 0, 0, 0);
+            configWhere.createdAt = { [Op.gte]: start };
+        } else if (to_date) {
+            const end = new Date(to_date);
+            end.setHours(23, 59, 59, 999);
+            configWhere.createdAt = { [Op.lte]: end };
+        }
+
+        const configRecords = await ConfigureBusinessAgentCommission.findAll({
+            where: configWhere,
+            include: [
+                { model: ChitsGroup, as: 'group', where: { is_deleted_status: 0 }, required: true },
+                { model: Member, as: 'member', where: { is_deleted_status: 0 }, attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code'], required: true }
+            ]
+        });
+
+        const configIds = configRecords.map(c => c.id);
+
+        let allHistories = [];
+        if (configIds.length > 0) {
+            allHistories = await HistoryBusinessAgent.findAll({
+                where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+                raw: true
+            });
+        }
+
+        const groupMap = {};
+        let overallTotalPending = 0;
+        const overallMembersSet = new Set();
+
+        configRecords.forEach(c => {
+            const group = c.group;
+            const member = c.member;
+            const commission = parseFloat(c.commission_amount) || 0;
+
+            const paid = allHistories
+                .filter(h => h.configure_business_agent_id === c.id)
+                .reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+
+            const pending = Math.max(0, commission - paid);
+            if (pending <= 0) return;
+
+            if (search && search.trim() !== '') {
+                const term = search.trim().toLowerCase();
+                const gName = (group.group_name || '').toLowerCase();
+                const mName = (member.name || '').toLowerCase();
+                const mCode = (member.member_id || '').toLowerCase();
+                const mPhone = (member.mobile_number || '').toLowerCase();
+                if (!gName.includes(term) && !mName.includes(term) && !mCode.includes(term) && !mPhone.includes(term)) {
+                    return;
+                }
+            }
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    pending_commission_amount: 0,
+                    pending_members_count: 0,
+                    membersMap: {}
+                };
+            }
+
+            if (!groupMap[group.id].membersMap[member.id]) {
+                groupMap[group.id].membersMap[member.id] = {
+                    id: member.id,
+                    name: member.name || 'Unknown',
+                    member_id: member.member_id || (member.other_info_user_code ? `MEM-${member.other_info_user_code}` : `#${member.id}`),
+                    profile_image: member.upload_image || null,
+                    mobile_number: member.mobile_number || null,
+                    gender: member.gender || null,
+                    pending_commission_amount: 0
+                };
+            }
+
+            groupMap[group.id].membersMap[member.id].pending_commission_amount = parseFloat(((groupMap[group.id].membersMap[member.id].pending_commission_amount || 0) + pending).toFixed(2));
+            groupMap[group.id].pending_commission_amount = parseFloat(((groupMap[group.id].pending_commission_amount || 0) + pending).toFixed(2));
+            overallTotalPending = parseFloat((overallTotalPending + pending).toFixed(2));
+            overallMembersSet.add(member.id);
+        });
+
+        const allGroupRows = Object.values(groupMap).map(g => {
+            const members = Object.values(g.membersMap);
+            return {
+                group_id: g.group_id,
+                group_name: g.group_name,
+                chit_amount: parseFloat(g.chit_amount) || 0,
+                pending_commission_amount: parseFloat(g.pending_commission_amount) || 0,
+                pending_members_count: members.length,
+                members
+            };
+        });
+
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Pending commission retrieved successfully', {
+            total_pending_commission: overallTotalPending,
+            from_groups_count: totalGroupsCount,
+            from_members_count: overallMembersSet.size,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getBusinessAgentPendingCommissionService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getBusinessAgentMemberJoinedService = async (res, business_agent_id, min, max, search) => {
+    try {
+        const limit = parseInt(max, 10) || 10;
+        const offset = parseInt(min, 10) || 0;
+
+        const enrollments = await Enrollment.findAll({
+            where: {
+                business_agent_id,
+                delete_status: 0
+            },
+            include: [
+                {
+                    model: Member,
+                    as: 'subscriber',
+                    where: { is_deleted_status: 0 },
+                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code', 'registration_date', 'createdAt'],
+                    required: true
+                },
+                {
+                    model: ChitsGroup,
+                    as: 'group',
+                    where: { is_deleted_status: 0 },
+                    required: true
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        const formatDateDMY = (dateInput) => {
+            if (!dateInput) return '';
+            const d = new Date(dateInput);
+            if (isNaN(d.getTime())) return String(dateInput);
+            const day = d.getDate();
+            const month = d.getMonth() + 1;
+            const year = String(d.getFullYear()).slice(-2);
+            return `${day}/${month}/${year}`;
+        };
+
+        const groupMap = {};
+        let overallTotalMembers = 0;
+        const overallMembersSet = new Set();
+
+        enrollments.forEach(e => {
+            const group = e.group;
+            const subscriber = e.subscriber;
+            if (!group || !subscriber) return;
+
+            if (search && search.trim() !== '') {
+                const term = search.trim().toLowerCase();
+                const gName = (group.group_name || '').toLowerCase();
+                const mName = (subscriber.name || '').toLowerCase();
+                const mCode = (subscriber.member_id || '').toLowerCase();
+                const mPhone = (subscriber.mobile_number || '').toLowerCase();
+                if (!gName.includes(term) && !mName.includes(term) && !mCode.includes(term) && !mPhone.includes(term)) {
+                    return;
+                }
+            }
+
+            if (!groupMap[group.id]) {
+                groupMap[group.id] = {
+                    group_id: group.id,
+                    group_name: group.group_name || 'Unknown Chit',
+                    chit_amount: parseFloat(group.chit_amount) || 0,
+                    members_count: 0,
+                    members: []
+                };
+            }
+
+            const rawJoinedDate = e.enrollment_date || (e.createdAt ? new Date(e.createdAt).toISOString().split('T')[0] : '');
+
+            groupMap[group.id].members.push({
+                id: subscriber.id,
+                name: subscriber.name || 'Unknown',
+                member_id: subscriber.member_id || (subscriber.other_info_user_code ? `MEM-${subscriber.other_info_user_code}` : `#${subscriber.id}`),
+                profile_image: subscriber.upload_image || null,
+                mobile_number: subscriber.mobile_number || null,
+                gender: subscriber.gender || null,
+                joined_date: rawJoinedDate,
+                formatted_joined_date: formatDateDMY(rawJoinedDate)
+            });
+
+            groupMap[group.id].members_count += 1;
+            overallTotalMembers += 1;
+            overallMembersSet.add(subscriber.id);
+        });
+
+        const allGroupRows = Object.values(groupMap);
+        const totalGroupsCount = allGroupRows.length;
+        const paginatedRows = allGroupRows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Members joined retrieved successfully', {
+            total_members_joined: overallTotalMembers,
+            total_unique_members: overallMembersSet.size,
+            from_groups_count: totalGroupsCount,
+            count: totalGroupsCount,
+            rows: paginatedRows
+        });
+    } catch (error) {
+        console.error('Error in getBusinessAgentMemberJoinedService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
+const getChitTypesService = async (res, reqBody) => {
+    try {
+        const { min, max } = reqBody || {};
+
+        const whereClause = { is_deleted_status: 0 };
+
+        const queryOptions = {
+            where: whereClause,
+            attributes: ['id', 'name', 'description', 'bg_color', 'image', 'auction_type', 'status', 'display_order'],
+            order: [['display_order', 'ASC'], ['id', 'ASC']]
+        };
+
+        if (max) {
+            queryOptions.limit = parseInt(max, 10);
+            queryOptions.offset = parseInt(min, 10) || 0;
+        }
+
+        const chitTypes = await ChitType.findAndCountAll(queryOptions);
+
+        return successResponse(res, statusCodes.OK, 'Chit types retrieved successfully', chitTypes);
+    } catch (error) {
+        console.error('Error in getChitTypesService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
 module.exports = {
     getPaymentHistoryService,
     getPaymentReceiptService,
@@ -3217,6 +4320,7 @@ module.exports = {
     getBidsService,
     getBidDetailsService,
     getChitDetailsService,
+    getChitTypesService,
     getCollectionAgentDashboardService,
     getCollectionAgentActiveGroupsService,
     getCollectionAgentGroupDashboardService,
@@ -3242,5 +4346,11 @@ module.exports = {
     storeCustomerVisitService,
     getMemberLedgerService,
     referMemberService,
-    getMyReferralsService
+    getMyReferralsService,
+    getTotalPendingCollectionService,
+    getTodayCollectionService,
+    getBusinessAgentTotalCommissionService,
+    getBusinessAgentPaidCommissionService,
+    getBusinessAgentPendingCommissionService,
+    getBusinessAgentMemberJoinedService
 };

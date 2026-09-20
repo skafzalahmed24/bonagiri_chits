@@ -24,6 +24,7 @@ router.post('/pending-payments', authMiddleware.authenticateToken, validate(user
 router.post('/bids', authMiddleware.authenticateToken, validate(userValidation.getBidsSchema), userController.getBids);
 router.post('/bid-details', authMiddleware.authenticateToken, validate(userValidation.getBidDetailsSchema), userController.getBidDetails);
 router.post('/chit-details', authMiddleware.authenticateToken, validate(userValidation.getChitDetailsSchema), userController.getChitDetails);
+router.post('/chit-types', authMiddleware.authenticateToken, validate(userValidation.getChitTypesSchema), userController.getChitTypes);
 
 // payment history & receipt routes (authenticated)
 router.post('/payment-history', authMiddleware.authenticateToken, validate(userValidation.getPaymentHistorySchema), userController.getPaymentHistory);
@@ -32,11 +33,17 @@ router.post('/payment-receipt', authMiddleware.authenticateToken, validate(userV
 // business-agent routes (authenticated)
 router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(userValidation.getBusinessListUnderMembersSchema), userController.getBusinessListUnderMembers);
 router.post('/member/ledger', authMiddleware.authenticateToken, validate(userValidation.getMemberLedgerSchema), userController.getMemberLedger);
+router.post('/business-agent/total-commission', authMiddleware.authenticateToken, validate(userValidation.getBusinessAgentTotalCommissionSchema), userController.getBusinessAgentTotalCommission);
+router.post('/business-agent/paid-commission', authMiddleware.authenticateToken, validate(userValidation.getBusinessAgentPaidCommissionSchema), userController.getBusinessAgentPaidCommission);
+router.post('/business-agent/pending-commission', authMiddleware.authenticateToken, validate(userValidation.getBusinessAgentPendingCommissionSchema), userController.getBusinessAgentPendingCommission);
+router.post('/business-agent/member-joined', authMiddleware.authenticateToken, validate(userValidation.getBusinessAgentMemberJoinedSchema), userController.getBusinessAgentMemberJoined);
 
 // collection-agent routes (authenticated)
 router.post('/collection-agent/dashboard', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentDashboardSchema), userController.getCollectionAgentDashboard);
 router.post('/collection-agent/group-dashboard', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentGroupDashboardSchema), userController.getCollectionAgentGroupDashboard);
 router.post('/collection-agent/active-groups', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentActiveGroupsSchema), userController.getCollectionAgentActiveGroups);
+router.post('/collection-agent/total-pending-collection', authMiddleware.authenticateToken, validate(userValidation.getTotalPendingCollectionSchema), userController.getTotalPendingCollection);
+router.post('/collection-agent/today-collection', authMiddleware.authenticateToken, validate(userValidation.getTodayCollectionSchema), userController.getTodayCollection);
 router.post('/collection-agent/pending-members', authMiddleware.authenticateToken, validate(userValidation.getPendingMembersSchema), userController.getPendingMembers);
 router.post('/collection-agent/member-dues', authMiddleware.authenticateToken, validate(userValidation.getMemberDuesSchema), userController.getMemberDues);
 router.post('/collection-agent/submissions', authMiddleware.authenticateToken, validate(userValidation.getSubmissionsSchema), userController.getSubmissions);

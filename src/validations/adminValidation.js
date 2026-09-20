@@ -961,6 +961,7 @@ module.exports = {
   getHistoryByGroupIdSchema: Joi.object({
     company_id: Joi.string().uuid().allow('', null).optional(),
     group_id: Joi.string().uuid().required(),
+    business_agent_id: Joi.number().integer().optional(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional()
   }),

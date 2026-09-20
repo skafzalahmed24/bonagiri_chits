@@ -42,9 +42,11 @@ app.use('/api', auditLogger); // Applies globally to all /api and /api/user rout
 app.use('/api', adminRoutes);
 app.use('/api/user', userRoutes);
 
-// Static file routing for global uploaded documents
+// Static file routing for global uploaded documents & public assets
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 app.use('/api/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use('/public', express.static(path.join(__dirname, 'utils/public')));
+app.use('/api/public', express.static(path.join(__dirname, 'utils/public')));
 
 // Basic health check route
 app.get('/', (req, res) => {

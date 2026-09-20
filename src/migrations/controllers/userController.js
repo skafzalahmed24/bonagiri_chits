@@ -16,8 +16,8 @@ const getHomeRecord = async (req, res) => {
 
 const getAllHomeRecords = async (req, res) => {
   try {
-    const { subscriber_id, type, min, max } = req.body;
-    return await userService.getAllHomeRecordsService(res, req.user, type, min, max);
+    const { subscriber_id, type, auction_type, min, max } = req.body || {};
+    return await userService.getAllHomeRecordsService(res, req.user, type, min, max, auction_type);
   } catch (error) {
     console.error('Error in getAllHomeRecords:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -76,8 +76,8 @@ const getBidDetails = async (req, res) => {
 
 const getChitDetails = async (req, res) => {
   try {
-    const { group_id } = req.body;
-    return await userService.getChitDetailsService(res, req.user, group_id);
+    const { group_id, auction_type } = req.body || {};
+    return await userService.getChitDetailsService(res, req.user, group_id, auction_type);
   } catch (error) {
     console.error('Error in getChitDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -169,8 +169,9 @@ const getCollectionAgentDashboard = async (req, res) => {
 
 const getCollectionAgentGroupDashboard = async (req, res) => {
   try {
-    const { group_id } = req.body;
-    return await userService.getCollectionAgentGroupDashboardService(res, group_id);
+    const { group_id, collection_agent_id, min, max } = req.body;
+    const agentId = collection_agent_id || req.user.id;
+    return await userService.getCollectionAgentGroupDashboardService(res, group_id, agentId, min, max);
   } catch (error) {
     console.error('Error in getCollectionAgentGroupDashboard:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -180,7 +181,8 @@ const getCollectionAgentGroupDashboard = async (req, res) => {
 const getCollectionAgentActiveGroups = async (req, res) => {
   try {
     const { collection_agent_id, min, max } = req.body;
-    return await userService.getCollectionAgentActiveGroupsService(res, req.user.id, min, max);
+    const agentId = collection_agent_id || req.user.id;
+    return await userService.getCollectionAgentActiveGroupsService(res, agentId, min, max);
   } catch (error) {
     console.error('Error in getCollectionAgentActiveGroups:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -190,7 +192,8 @@ const getCollectionAgentActiveGroups = async (req, res) => {
 const getPendingMembers = async (req, res) => {
   try {
     const { collection_agent_id, group_id, min, max } = req.body;
-    return await userService.getPendingMembersService(res, req.user.id, group_id, min, max);
+    const agentId = collection_agent_id || req.user.id;
+    return await userService.getPendingMembersService(res, agentId, group_id, min, max);
   } catch (error) {
     console.error('Error in getPendingMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -227,7 +230,12 @@ const submitCollectionPayment = async (req, res) => {
 };
 
 const getAllGallery = async (req, res) => {
-  return await userService.getAllGalleryService(res, req.body);
+  try {
+    return await userService.getAllGalleryService(res, req.body, req.user);
+  } catch (error) {
+    console.error('Error in getAllGallery:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
 };
 
 const registerDeviceToken = async (req, res) => {
