@@ -1780,8 +1780,11 @@ const getTotalPendingCollectionService = async (res, collection_agent_id, min, m
                 groupMap[group.id] = {
                     group_id: group.id,
                     group_name: group.group_name || 'Unknown Chit',
-                    chit_amount: parseFloat(group.chit_amount) || 0,
-                    pending_amount: 0,
+                    chit_amount: parseFloat((parseFloat(group.chit_amount) || 0).toFixed(2)),
+                    pending_amount: 0.00,
+                    collected_amount: 0.00,
+                    penalty_amount: 0.00,
+                    total_amount: 0.00,
                     pending_members_count: 0,
                     membersMap: {}
                 };
@@ -1795,14 +1798,19 @@ const getTotalPendingCollectionService = async (res, collection_agent_id, min, m
                     profile_image: subscriber.upload_image || null,
                     mobile_number: subscriber.mobile_number || null,
                     gender: subscriber.gender || null,
-                    pending_amount: 0
+                    pending_amount: 0.00,
+                    collected_amount: 0.00,
+                    penalty_amount: 0.00,
+                    total_amount: 0.00
                 };
             }
 
             const memberPending = parseFloat(((groupMap[group.id].membersMap[subscriber.id].pending_amount || 0) + pending).toFixed(2));
             groupMap[group.id].membersMap[subscriber.id].pending_amount = memberPending;
+            groupMap[group.id].membersMap[subscriber.id].total_amount = memberPending;
 
             groupMap[group.id].pending_amount = parseFloat(((groupMap[group.id].pending_amount || 0) + pending).toFixed(2));
+            groupMap[group.id].total_amount = groupMap[group.id].pending_amount;
             overallPendingAmount = parseFloat((overallPendingAmount + pending).toFixed(2));
             overallPendingMembersSet.add(subscriber.id);
         });
@@ -1812,8 +1820,11 @@ const getTotalPendingCollectionService = async (res, collection_agent_id, min, m
             return {
                 group_id: g.group_id,
                 group_name: g.group_name,
-                chit_amount: parseFloat(g.chit_amount) || 0,
-                pending_amount: parseFloat(g.pending_amount) || 0,
+                chit_amount: parseFloat((parseFloat(g.chit_amount) || 0).toFixed(2)),
+                pending_amount: parseFloat((parseFloat(g.pending_amount) || 0).toFixed(2)),
+                collected_amount: 0.00,
+                penalty_amount: 0.00,
+                total_amount: parseFloat((parseFloat(g.pending_amount) || 0).toFixed(2)),
                 pending_members_count: members.length,
                 members
             };
@@ -1823,7 +1834,8 @@ const getTotalPendingCollectionService = async (res, collection_agent_id, min, m
         const paginatedRows = allGroupRows.slice(offset, offset + limit);
 
         return successResponse(res, statusCodes.OK, 'Total pending collection retrieved successfully', {
-            total_pending_amount: overallPendingAmount,
+            total_pending_amount: parseFloat(overallPendingAmount.toFixed(2)),
+            pending_amount: parseFloat(overallPendingAmount.toFixed(2)),
             total_pending_members: overallPendingMembersSet.size,
             from_groups_count: totalGroupsCount,
             count: totalGroupsCount,
@@ -1976,8 +1988,11 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
                 groupMap[group.id] = {
                     group_id: group.id,
                     group_name: group.group_name || 'Unknown Chit',
-                    chit_amount: parseFloat(group.chit_amount) || 0,
-                    collected_amount: 0,
+                    chit_amount: parseFloat((parseFloat(group.chit_amount) || 0).toFixed(2)),
+                    collected_amount: 0.00,
+                    pending_amount: 0.00,
+                    penalty_amount: 0.00,
+                    total_amount: 0.00,
                     collected_members_count: 0,
                     membersMap: {}
                 };
@@ -1992,9 +2007,11 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
                     name: subscriber.name || 'Unknown',
                     member_id: subscriber.member_id || `#${subscriber.id}`,
                     profile_image: subscriber.upload_image || null,
-                    amount: 0,
-                    penalty_amount: 0,
-                    total_amount: 0,
+                    amount: 0.00,
+                    collected_amount: 0.00,
+                    pending_amount: 0.00,
+                    penalty_amount: 0.00,
+                    total_amount: 0.00,
                     payment_date: rawDate,
                     formatted_date: formatDateDMY(rawDate),
                     payment_mode: mode,
@@ -2003,10 +2020,12 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
             }
 
             groupMap[group.id].membersMap[subscriber.id].amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].amount || 0) + received).toFixed(2));
+            groupMap[group.id].membersMap[subscriber.id].collected_amount = groupMap[group.id].membersMap[subscriber.id].amount;
             groupMap[group.id].membersMap[subscriber.id].penalty_amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].penalty_amount || 0) + penalty).toFixed(2));
             groupMap[group.id].membersMap[subscriber.id].total_amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].total_amount || 0) + totalPaid).toFixed(2));
 
             groupMap[group.id].collected_amount = parseFloat(((groupMap[group.id].collected_amount || 0) + totalPaid).toFixed(2));
+            groupMap[group.id].total_amount = groupMap[group.id].collected_amount;
             overallCollectedAmount = parseFloat((overallCollectedAmount + totalPaid).toFixed(2));
             overallCollectedMembersSet.add(subscriber.id);
         });
@@ -2016,8 +2035,11 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
             return {
                 group_id: g.group_id,
                 group_name: g.group_name,
-                chit_amount: parseFloat(g.chit_amount) || 0,
-                collected_amount: parseFloat(g.collected_amount) || 0,
+                chit_amount: parseFloat((parseFloat(g.chit_amount) || 0).toFixed(2)),
+                collected_amount: parseFloat((parseFloat(g.collected_amount) || 0).toFixed(2)),
+                pending_amount: 0.00,
+                penalty_amount: parseFloat((parseFloat(g.penalty_amount) || 0).toFixed(2)),
+                total_amount: parseFloat((parseFloat(g.collected_amount) || 0).toFixed(2)),
                 collected_members_count: members.length,
                 members
             };
@@ -2027,8 +2049,10 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
         const paginatedRows = allGroupRows.slice(offset, offset + limit);
 
         return successResponse(res, statusCodes.OK, 'Today collection retrieved successfully', {
-            today_collection: overallCollectedAmount,
-            total_today_collection: overallCollectedAmount,
+            today_collection: parseFloat(overallCollectedAmount.toFixed(2)),
+            total_today_collection: parseFloat(overallCollectedAmount.toFixed(2)),
+            collected_amount: parseFloat(overallCollectedAmount.toFixed(2)),
+            total_collected_amount: parseFloat(overallCollectedAmount.toFixed(2)),
             from_collection_group_count: totalGroupsCount,
             from_members_count: overallCollectedMembersSet.size,
             count: totalGroupsCount,
