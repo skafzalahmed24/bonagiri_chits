@@ -1261,5 +1261,45 @@ module.exports = {
       'any.required': 'OTP is required',
       'string.empty': 'OTP cannot be empty'
     })
-  }).or('user_id', 'mobile', 'user_code')
+  }).or('user_id', 'mobile', 'user_code'),
+  storeOrUpdateBannerSchema: Joi.object({
+    id: Joi.number().integer().optional(),
+    banner_type: Joi.number().integer().valid(1, 2).optional(),
+    banner_image: Joi.string().allow('', null).optional(),
+    banner_start_date: Joi.string().allow('', null).optional(),
+    banner_end_date: Joi.string().allow('', null).optional(),
+    status: Joi.number().integer().valid(0, 1).optional(),
+    subscriber_ids: Joi.alternatives().try(
+      Joi.array().items(Joi.alternatives().try(Joi.number().integer(), Joi.string())),
+      Joi.string().allow('', null),
+      Joi.number().integer()
+    ).optional()
+  }),
+  getAllBannersSchema: Joi.object({
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).optional(),
+    banner_type: Joi.number().integer().valid(1, 2).optional(),
+    status: Joi.number().integer().valid(0, 1).optional(),
+    from_date: Joi.string().allow('', null).optional(),
+    to_date: Joi.string().allow('', null).optional(),
+    search: Joi.string().allow('', null).optional()
+  }),
+  getBannerByIdSchema: Joi.object({
+    id: Joi.number().integer().required().messages({
+      'any.required': 'Banner ID is required'
+    })
+  }),
+  deleteBannerSchema: Joi.object({
+    id: Joi.number().integer().required().messages({
+      'any.required': 'Banner ID is required'
+    })
+  }),
+  changeBannerStatusSchema: Joi.object({
+    id: Joi.number().integer().required().messages({
+      'any.required': 'Banner ID is required'
+    }),
+    status: Joi.number().integer().valid(0, 1).required().messages({
+      'any.required': 'Status is required'
+    })
+  })
 };

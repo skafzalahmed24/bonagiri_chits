@@ -163,8 +163,15 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
     }
 
     let memberRating = null;
+    let validOffers = [];
     if (type === 2 && role === 'member') {
       memberRating = await calculateMemberRating(user.id, user);
+      try {
+        const { getValidOffersForSubscriberHelper } = require('./bannerService');
+        validOffers = await getValidOffersForSubscriberHelper(user.id, user.company_id);
+      } catch (bannerErr) {
+        console.error('Error fetching valid_offers in loginCompanyService:', bannerErr);
+      }
     }
 
     const payload = {
@@ -188,7 +195,8 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       gender: user.gender || null,
       profile_image: user.upload_image || null,
       is_favorites: user.is_favorites || [],
-      introduced_as: introduced_as_details
+      introduced_as: introduced_as_details,
+      ...(type === 2 && role === 'member' ? { valid_offers: validOffers } : {})
     };
 
     if (memberRating) {
