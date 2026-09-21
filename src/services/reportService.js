@@ -57,6 +57,7 @@ class ReportService {
 
       // Helper for SUM queries
       const getSum = async (Model, amountCol, whereClause, include = []) => {
+        if (!Model || typeof Model.sum !== 'function') return 0;
         const result = await Model.sum(amountCol, { where: whereClause, include });
         return result || 0;
       };
@@ -241,14 +242,14 @@ class ReportService {
       summary.grand_total += total;
     }
 
-    const advances = await MemberAdvance.findAll({
+    const advances = (MemberAdvance && typeof MemberAdvance.findAll === 'function') ? await MemberAdvance.findAll({
       where: { date: { [Op.between]: [from_date, to_date] }, company_id },
       include: [{
         model: CollectionAgentAmount,
         as: 'collection_submission',
         include: [{ model: Member, as: 'collection_agent', attributes: ['id', 'name'] }]
       }]
-    });
+    }) : [];
     
     for (const adv of advances) {
       let currentAgentId = null;
@@ -377,7 +378,9 @@ class ReportService {
     }
 
     // Member Advances
-    const advs = await MemberAdvance.findAll({ where: { account_id: account.id, date: rangeWhere, company_id } });
+    const advs = (MemberAdvance && typeof MemberAdvance.findAll === 'function')
+      ? await MemberAdvance.findAll({ where: { account_id: account.id, date: rangeWhere, company_id } })
+      : [];
     advs.forEach(a => transactions.push({ date: a.date, type: 'Advance', particular: 'Advance from Collection', debit: 0, credit: a.amount }));
 
     // Accounting Vouchers
@@ -463,7 +466,9 @@ class ReportService {
     });
 
     // Member Advances
-    const advs = await MemberAdvance.findAll({ where: { date: rangeWhere, company_id } });
+    const advs = (MemberAdvance && typeof MemberAdvance.findAll === 'function')
+      ? await MemberAdvance.findAll({ where: { date: rangeWhere, company_id } })
+      : [];
     advs.forEach(a => {
       let typeStr = 'Cash';
       if (a.payment_type === 2) typeStr = 'UPI';

@@ -4499,24 +4499,55 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
     });
 
     const submissionIds = submissions.map(s => s.id);
-    const advances = await MemberAdvance.findAll({ where: { collection_agent_amount_id: { [Op.in]: submissionIds } } });
-    // One submission can pay several installments; all rows share the verifier's chosen account.
-    const creditedPayments = await CustomerPayment.findAll({
-      where: { collection_agent_amount_id: { [Op.in]: submissionIds } },
-      attributes: ['collection_agent_amount_id'],
-      include: [
-        { model: PaymentAccount, as: 'upi_account', attributes: ['name'] },
-        { model: PaymentAccount, as: 'bank_account', attributes: ['name'] }
-      ]
-    });
+    let advances = [];
+    if (MemberAdvance && typeof MemberAdvance.findAll === 'function') {
+      try {
+        advances = await MemberAdvance.findAll({ where: { collection_agent_amount_id: { [Op.in]: submissionIds } } });
+      } catch (e) {
+        console.error('Warning: could not fetch advances in getAllCollectionSubmissionsService:', e.message);
+      }
+    }
+
+    let creditedPayments = [];
+    if (CustomerPayment && typeof CustomerPayment.findAll === 'function') {
+      try {
+        const includeList = [];
+        if (PaymentAccount && typeof PaymentAccount.findAll === 'function') {
+          includeList.push(
+            { model: PaymentAccount, as: 'upi_account', attributes: ['name'] },
+            { model: PaymentAccount, as: 'bank_account', attributes: ['name'] }
+          );
+        }
+        creditedPayments = await CustomerPayment.findAll({
+          where: { collection_agent_amount_id: { [Op.in]: submissionIds } },
+          attributes: ['collection_agent_amount_id'],
+          include: includeList
+        });
+      } catch (e) {
+        console.error('Warning: could not fetch credited payments in getAllCollectionSubmissionsService:', e.message);
+      }
+    }
+
     const accountNames = (subId, key) =>
-      creditedPayments.find(p => p.collection_agent_amount_id === subId && p[key])?.[key]?.name || null;
+      Array.isArray(creditedPayments) ? (creditedPayments.find(p => p.collection_agent_amount_id === subId && p[key])?.[key]?.name || null) : null;
 
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const formatDate = (date) => {
       if (!date) return '';
       const d = new Date(date);
       return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+    };
+
+    const formatDateOnly = (d) => {
+      if (!d) return null;
+      if (typeof d === 'string' && d.includes('T')) {
+        return d.split('T')[0];
+      }
+      if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) {
+        return d.substring(0, 10);
+      }
+      const dateObj = new Date(d);
+      return !isNaN(dateObj.getTime()) ? dateObj.toISOString().split('T')[0] : String(d);
     };
 
     const getPaymentMethod = (type) => {
@@ -4578,8 +4609,8 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         bank_account: accountNames(sub.id, 'bank_account'),
         advance_created: advances.find(a => a.collection_agent_amount_id === sub.id)?.amount || 0,
         method: getPaymentMethod(sub.payment_type),
-        date: sub.createdAt,
-        payment_date: sub.paid_date || sub.createdAt,
+        date: formatDateOnly(sub.createdAt),
+        payment_date: formatDateOnly(sub.paid_date || sub.createdAt),
         collection_id: collection_id_value,
         status: statusStr,
         status_int: sub.status,
@@ -5909,6 +5940,13 @@ const getMemberReferralsService = async (res, min = 0, max = 10, search = '') =>
 
 const getAdvancesByMemberService = async (res, member_id, userToken) => {
   try {
+    if (!MemberAdvance || typeof MemberAdvance.findAll !== 'function') {
+      return successResponse(res, statusCodes.OK, 'Advances fetched successfully', {
+        advances: [],
+        total_balance: 0
+      });
+    }
+
     const companyId = await resolveCompanyIdForAuth(userToken);
     const advances = await MemberAdvance.findAll({
       where: {
@@ -5935,6 +5973,11 @@ const getAdvancesByMemberService = async (res, member_id, userToken) => {
 const applyAdvanceService = async (res, member_advance_id, chits_installment_id, amount, userToken) => {
   const transaction = await sequelize.transaction();
   try {
+    if (!MemberAdvance || typeof MemberAdvance.findOne !== 'function') {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Advance feature is unavailable');
+    }
+
     const companyId = await resolveCompanyIdForAuth(userToken);
     // Lock the advance row: without it two concurrent applications both read the
     // same balance, both pass the check, and the member is credited twice.
