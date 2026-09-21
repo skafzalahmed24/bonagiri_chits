@@ -66,8 +66,8 @@ const getBids = async (req, res) => {
 
 const getBidDetails = async (req, res) => {
   try {
-    const { group_id } = req.body;
-    return await userService.getBidDetailsService(res, group_id, req.user);
+    const { group_id, subscriber_id } = req.body || {};
+    return await userService.getBidDetailsService(res, group_id, req.user, subscriber_id);
   } catch (error) {
     console.error('Error in getBidDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

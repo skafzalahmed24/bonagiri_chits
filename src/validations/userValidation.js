@@ -47,7 +47,8 @@ const getBidDetailsSchema = Joi.object({
   group_id: Joi.string().uuid().required().messages({
     'any.required': 'Group ID is required',
     'string.uuid': 'Invalid Group ID format'
-  })
+  }),
+  subscriber_id: Joi.alternatives().try(Joi.number().integer(), Joi.string()).optional()
 });
 
 const getChitDetailsSchema = Joi.object({

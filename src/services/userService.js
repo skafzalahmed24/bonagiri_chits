@@ -781,7 +781,7 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
 
 const { getSchemeWinningAmount, getSchemeOriginalAmount } = require('../utils/schemeHelpers');
 
-const getBidDetailsService = async (res, group_id, userPayload) => {
+const getBidDetailsService = async (res, group_id, userPayload, bodySubscriberId = null) => {
     try {
         const group = await ChitsGroup.findByPk(group_id);
         if (!group) {
@@ -806,13 +806,32 @@ const getBidDetailsService = async (res, group_id, userPayload) => {
         });
         const latestAuction = pastAuctions.length > 0 ? pastAuctions[0] : null;
 
-        // 2. Count active members/enrollments in this group
-        const membersCount = await Enrollment.count({
-            where: { group_id, delete_status: 0 }
+        // 2. Fetch all active enrollments for this group (with subscriber details for wheel)
+        const allEnrollments = await Enrollment.findAll({
+            where: { group_id, delete_status: 0 },
+            include: [{
+                model: Member,
+                as: 'subscriber',
+                attributes: ['id', 'name', 'rep_by_first_name', 'upload_image', 'member_id']
+            }],
+            order: [['group_position_number', 'ASC']]
         });
 
-        // 3. Current month / installment fraction (e.g. "10/15")
-        const totalAuctionsCount = await Auction.count({ where: { group_id } });
+        const membersCount = allEnrollments.length;
+
+        // 3. User's enrolled member numbers in this group (e.g. ["#08", "#07"])
+        const currentMemberId = bodySubscriberId || userPayload?.id;
+        const userEnrollments = currentMemberId
+            ? allEnrollments.filter(e => e.subscriber_id == currentMemberId)
+            : [];
+
+        const memberNumbersList = userEnrollments
+            .map(e => e.group_position_number)
+            .filter(n => n !== null && n !== undefined)
+            .map(n => `#${String(n).padStart(2, '0')}`);
+
+        // 4. Current month / installment fraction (e.g. "10/15")
+        const totalAuctionsCount = pastAuctions.length;
         const currentInstallmentNo = Math.max(1, totalAuctionsCount);
         const totalInstallments = group.no_of_installments || 1;
         const currentMonthFormatted = `${currentInstallmentNo}/${totalInstallments}`;
@@ -820,18 +839,49 @@ const getBidDetailsService = async (res, group_id, userPayload) => {
         const rawBidAmount = latestAuction ? (parseFloat(latestAuction.bid_amount) || 0.00) : 0.00;
         const bidWinningAmount = latestAuction
             ? (getSchemeWinningAmount(schemeConfig, latestAuction.auction_number) ?? rawBidAmount)
-            : 0.00;
+            : (schemeConfig ? (getSchemeWinningAmount(schemeConfig, currentInstallmentNo) ?? 0.00) : 0.00);
 
         // Status label mapping: 0 = Upcoming, 1 = Live Now, 2 = Completed
         const groupStatus = Number(group.chits_group_status);
+        let badgeText = 'Upcoming';
+        if (groupStatus === 1) badgeText = 'Live Now';
+        else if (groupStatus === 2) badgeText = 'Completed';
 
-        const isWinnerStatus = latestAuction && userPayload
-            ? latestAuction.bidder_id === userPayload.id
+        // 5. Winner information & check if self is winner
+        let winnerTicketNo = latestAuction ? (latestAuction.ticket_number || null) : null;
+        if (!winnerTicketNo && latestAuction && latestAuction.bidder_id) {
+            const winnerEnr = allEnrollments.find(e => e.subscriber_id === latestAuction.bidder_id);
+            if (winnerEnr && winnerEnr.group_position_number) {
+                winnerTicketNo = winnerEnr.group_position_number;
+            }
+        }
+
+        const isWinnerStatus = (latestAuction && currentMemberId)
+            ? (latestAuction.bidder_id == currentMemberId)
             : false;
 
+        const winnerNumberFormatted = winnerTicketNo !== null && winnerTicketNo !== undefined
+            ? `Winner #${String(winnerTicketNo).padStart(2, '0')}`
+            : (latestAuction && latestAuction.bidder ? `Winner #${latestAuction.bidder.id}` : null);
+
+        const winnerTicketFormatted = winnerTicketNo !== null && winnerTicketNo !== undefined
+            ? `#${String(winnerTicketNo).padStart(2, '0')}`
+            : null;
+
+        // 6. Wheel members list
+        const wheelMembers = allEnrollments.map(e => ({
+            member_id: e.subscriber ? e.subscriber.id : null,
+            name: e.subscriber ? (e.subscriber.rep_by_first_name || e.subscriber.name || 'Member') : 'Member',
+            ticket_number: e.group_position_number ? `#${String(e.group_position_number).padStart(2, '0')}` : null,
+            position: e.group_position_number,
+            is_self: currentMemberId ? (e.subscriber_id == currentMemberId) : false
+        }));
+
         const responseData = {
-            is_winner_status: isWinnerStatus,
+            // is_winner_status: isWinnerStatus,
             bid_winning_amount: bidWinningAmount,
+            // winner_number: isWinnerStatus ? winnerNumberFormatted : null,
+            // winner_ticket_number: isWinnerStatus ? winnerTicketFormatted : null,
             chit_group_details: {
                 group_id: group.id,
                 group_name: group.group_name || 'Unknown Chit',
@@ -839,11 +889,17 @@ const getBidDetailsService = async (res, group_id, userPayload) => {
                 total_installments: totalInstallments,
                 members_count: membersCount,
                 current_month: currentMonthFormatted,
-                badge_label: groupStatus
+                badge_label: groupStatus,
+                badge_text: badgeText,
+                member_numbers: memberNumbersList.join(', ')
             },
-            winner_details: latestAuction && latestAuction.bidder ? {
+            wheel_members: wheelMembers,
+            winner_details: (latestAuction && latestAuction.bidder) ? {
                 winner_name: latestAuction.bidder.name || 'N/A',
-                winner_member_id: latestAuction.bidder.member_id || `#${latestAuction.bidder.id}`
+                winner_member_id: latestAuction.bidder.member_id || `#${latestAuction.bidder.id}`,
+                winner_ticket_number: winnerTicketFormatted,
+                winner_number: isWinnerStatus ? winnerNumberFormatted : null,
+                is_self_winner: isWinnerStatus
             } : null,
             past_auctions: pastAuctions.map(a => ({
                 auction_number: a.auction_number,
