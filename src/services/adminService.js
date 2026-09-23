@@ -3953,7 +3953,13 @@ const getCompanyByIdService = async (res, id, companyId) => {
 
 const getMemberByIdService = async (res, id, companyId) => {
   try {
-    const member = await Member.findOne({ where: { id, company_id: companyId },
+    const where = { id, is_deleted_status: 0 };
+    if (companyId) {
+      where.company_id = companyId;
+    }
+
+    const member = await Member.findOne({
+      where,
       attributes: { exclude: ['verification_otp', 'verification_otp_expires_at', 'verification_otp_attempts', 'other_info_user_password'] },
       include: [
         { model: StaticDropdownsList, as: 'title' },
@@ -4004,12 +4010,15 @@ const getMemberByIdService = async (res, id, companyId) => {
     }
 
     const ratingDetails = await calculateMemberRating(member.id, member);
-    memberData.star_rating = ratingDetails.star_rating;
-    memberData.rating_tier = ratingDetails.rating_tier;
-    memberData.rating_category = ratingDetails.rating_category;
-    memberData.rating_color = ratingDetails.rating_color;
-    memberData.rating_label = ratingDetails.rating_label;
-    memberData.rating = ratingDetails;
+    if (ratingDetails) {
+      memberData.star_rating = ratingDetails.star_rating;
+      memberData.rating_tier = ratingDetails.rating_tier;
+      memberData.rating_category = ratingDetails.rating_category;
+      memberData.rating_color = ratingDetails.rating_color;
+      memberData.rating_label = ratingDetails.rating_label;
+      memberData.trust_tier = ratingDetails.trust_tier;
+      memberData.risk_level = ratingDetails.risk_level;
+    }
 
     return successResponse(res, statusCodes.OK, 'Member retrieved successfully', memberData);
   } catch (error) {
@@ -5236,6 +5245,33 @@ const getDashboardSummaryService = async (res, companyId) => {
       else if (g.chits_group_status === 2) completed = parseInt(g.get('count'), 10);
     });
 
+    // 8. Current Month Birthday List (Company-based)
+    const currentMonth = today.getMonth() + 1;
+    const birthdayWhere = {
+      is_deleted_status: 0,
+      ...(companyId ? { company_id: companyId } : {}),
+      date_of_birth: { [Op.ne]: null },
+      [Op.and]: [
+        sequelize.where(sequelize.fn('EXTRACT', sequelize.literal('MONTH FROM "date_of_birth"')), currentMonth)
+      ]
+    };
+
+    const memberBirthdays = await Member.findAll({
+      where: birthdayWhere,
+      attributes: ['id', 'member_id', 'name', 'date_of_birth', 'mobile_number', 'upload_image'],
+      order: [[sequelize.literal('EXTRACT(DAY FROM "date_of_birth")'), 'ASC']]
+    });
+
+    const birthdayList = memberBirthdays.map(m => ({
+      id: m.id,
+      member_id: m.member_id,
+      name: m.name,
+      dob: m.date_of_birth,
+      date_of_birth: m.date_of_birth,
+      mobile_number: m.mobile_number,
+      profile_image: m.upload_image
+    }));
+
     return successResponse(res, statusCodes.OK, 'Dashboard data retrieved successfully', {
       financials: {
         collection_today: collectionToday || 0,
@@ -5248,12 +5284,14 @@ const getDashboardSummaryService = async (res, companyId) => {
         total_active_members: activeMembersCount || 0,
         active_chit_groups: activeGroupsCount || 0,
         new_enrollments_this_month: newEnrollmentsCount || 0,
+        birthdays_this_month: birthdayList.length,
         available_group_capacity: 0 // Will implement with slot_filled_count logic later if needed
       },
       alerts: {
         upcoming_auctions: upcomingAuctions.map(g => ({ group_name: g.group_name, auction_date: g.auction_date })),
         installments_due_this_week: installmentsDueThisWeek || 0,
-        defaulters_count: defaulterMembers.size
+        defaulters_count: defaulterMembers.size,
+        birthdays_this_month: birthdayList
       },
       leaderboards: {
         top_collection_agents: topAgents || [],
@@ -5266,7 +5304,8 @@ const getDashboardSummaryService = async (res, companyId) => {
           running,
           completed
         }
-      }
+      },
+      birthdays: birthdayList
     });
   } catch (error) {
     console.error('Error in getDashboardSummaryService:', error);
