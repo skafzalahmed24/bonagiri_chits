@@ -954,7 +954,7 @@ module.exports = {
   }),
   getBusinessAgentCommissionSummarySchema: Joi.object({
     company_id: Joi.string().uuid().allow('', null).optional(),
-    business_agent_id: Joi.number().integer().required(),
+    business_agent_id: Joi.number().integer().optional(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional()
   }),
@@ -964,6 +964,12 @@ module.exports = {
     business_agent_id: Joi.number().integer().optional(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional()
+  }),
+  getBusinessAgentChitDetailSchema: Joi.object({
+    configure_business_agent_id: Joi.string().uuid().optional(),
+    group_id: Joi.string().uuid().optional(),
+    member_id: Joi.number().integer().optional(),
+    business_agent_id: Joi.number().integer().optional()
   }),
   updateCollectionSubmissionStatusSchema: Joi.object({
     id: Joi.string().uuid().required(),
@@ -1067,7 +1073,8 @@ module.exports = {
     chits_group_status: Joi.number().integer().valid(0, 1, 2).optional()
   }),
   getBusinessListUnderMembersSchema: Joi.object({
-    business_agent_id: Joi.number().integer().required(),
+    business_agent_id: Joi.number().integer().optional(),
+    member_id: Joi.number().integer().optional(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional()
   }),

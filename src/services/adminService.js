@@ -12,6 +12,25 @@ const twilioService = require('./twilioService');
 const { calculateMemberRating } = require('../utils/ratingHelper');
 const { deleteUploadedFile } = require('../utils/fileHelper');
 
+const formatDateDDMMYYYY = (dateVal) => {
+  if (!dateVal) return null;
+  const d = new Date(dateVal);
+  if (isNaN(d.getTime())) return null;
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}/${month}/${year}`;
+};
+
+const getPayoutStatus = (total_paid, total_pending) => {
+  if (total_paid > 0 && total_pending === 0) {
+    return 1; // 1 FOR PAID
+  } else if (total_paid > 0 && total_pending > 0) {
+    return 2; // 2 FOR PARTIAL PAYOUT
+  }
+  return 3; // 3 FOR PENDING
+};
+
 const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
   if (reqBody && reqBody.company_id) {
     return reqBody.company_id;
@@ -2696,20 +2715,124 @@ const storeOrUpdateGroupUnderStaticListService = async (res, comp_id, data = {})
   }
 };
 
-const getBusinessListUnderMembersService = async (res, business_agent_id, min, max) => {
+const getBusinessListUnderMembersService = async (res, business_agent_id, min, max, member_id = null) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
+    if (member_id) {
+      // Screenshot 3: Member-wise Detail (Chit Groups for this Member)
+      const member = await Member.findByPk(member_id, {
+        attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt']
+      });
+      if (!member) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      }
+
+      const enrollmentWhere = { subscriber_id: member_id, delete_status: 0 };
+      if (business_agent_id) {
+        enrollmentWhere.business_agent_id = business_agent_id;
+      }
+
+      const enrollments = await Enrollment.findAll({
+        where: enrollmentWhere,
+        include: [
+          { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] }
+        ]
+      });
+
+      const configWhere = { member_id, is_deleted_status: 0 };
+      if (business_agent_id) {
+        configWhere.business_agent_id = business_agent_id;
+      }
+
+      const configs = await ConfigureBusinessAgentCommission.findAll({
+        where: configWhere,
+        include: [
+          { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] }
+        ]
+      });
+
+      const configIds = configs.map(c => c.id);
+      let allHistories = [];
+      if (configIds.length > 0) {
+        allHistories = await HistoryBusinessAgent.findAll({
+          where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+          raw: true
+        });
+      }
+
+      const groupsMap = new Map();
+
+      // Process configs
+      configs.forEach(cfg => {
+        const g = cfg.group || {};
+        const histories = allHistories.filter(h => h.configure_business_agent_id === cfg.id);
+        const total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+        const commission_amount = parseFloat(cfg.commission_amount) || 0;
+        const total_pending = Math.max(0, commission_amount - total_paid);
+
+        const payout_status = getPayoutStatus(total_paid, total_pending);
+
+        groupsMap.set(cfg.group_id, {
+          configure_business_agent_id: cfg.id,
+          group_id: cfg.group_id,
+          group_name: g.group_name || 'Chit Group',
+          chit_amount: parseFloat(g.chit_amount) || 0,
+          commission_amount: parseFloat(commission_amount.toFixed(2)),
+          total_paid: parseFloat(total_paid.toFixed(2)),
+          total_pending: parseFloat(total_pending.toFixed(2)),
+          payout_status: payout_status
+        });
+      });
+
+      // Process enrollments that might not have a commission config yet
+      enrollments.forEach(enr => {
+        if (!groupsMap.has(enr.group_id)) {
+          const g = enr.group || {};
+          groupsMap.set(enr.group_id, {
+            configure_business_agent_id: null,
+            group_id: enr.group_id,
+            group_name: g.group_name || 'Chit Group',
+            chit_amount: parseFloat(g.chit_amount) || 0,
+            commission_amount: 0,
+            total_paid: 0,
+            total_pending: 0,
+            payout_status: 3
+          });
+        }
+      });
+
+      const chit_groups = Array.from(groupsMap.values());
+
+      return successResponse(res, statusCodes.OK, 'Chit groups for member retrieved successfully', {
+        member: {
+          id: member.id,
+          name: member.name,
+          user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+          mobile_number: member.mobile_number,
+          profile_image: member.upload_image
+        },
+        chit_groups,
+        count: chit_groups.length
+      });
+    }
+
+    // Default flow: list of all members under business agent
+    const enrollmentWhere = { delete_status: 0 };
+    if (business_agent_id) {
+      enrollmentWhere.business_agent_id = business_agent_id;
+    }
+
     const enrollments = await Enrollment.findAndCountAll({
-      where: { business_agent_id, delete_status: 0 },
+      where: enrollmentWhere,
       limit,
       offset,
       include: [
         {
           model: Member,
           as: 'subscriber',
-          attributes: ['id', 'name', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt'],
+          attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt'],
           include: [
             { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
           ]
@@ -2722,15 +2845,39 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
       ]
     });
 
+    const configWhere = { is_deleted_status: 0 };
+    if (business_agent_id) {
+      configWhere.business_agent_id = business_agent_id;
+    }
+
     const configs = await ConfigureBusinessAgentCommission.findAll({
-      where: { business_agent_id },
+      where: configWhere,
       raw: true
     });
+
+    const configIds = configs.map(c => c.id);
+    let allHistories = [];
+    if (configIds.length > 0) {
+      allHistories = await HistoryBusinessAgent.findAll({
+        where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+        raw: true
+      });
+    }
 
     const rows = enrollments.rows.map(enrollment => {
       const eData = enrollment.toJSON();
       const member = eData.subscriber || {};
       const config = configs.find(c => c.member_id === member.id && c.group_id === eData.group_id);
+      
+      let total_paid = 0;
+      if (config) {
+        const histories = allHistories.filter(h => h.configure_business_agent_id === config.id);
+        total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+      }
+      const commission_amount = config ? (parseFloat(config.commission_amount) || 0) : 0;
+      const total_pending = Math.max(0, commission_amount - total_paid);
+
+      const payout_status = getPayoutStatus(total_paid, total_pending);
 
       return {
         id: eData.id,
@@ -2738,9 +2885,16 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
         group_id: eData.group_id,
         group: eData.group,
         member_id: member.id,
-        member: member,
+        member: {
+          ...member,
+          user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+          member_code: member.other_info_user_code ? `MEM-${member.other_info_user_code}` : (member.member_id || '')
+        },
         has_commission: !!config,
-        commission_amount: config ? (parseFloat(config.commission_amount) || 0) : 0,
+        commission_amount: parseFloat(commission_amount.toFixed(2)),
+        total_paid: parseFloat(total_paid.toFixed(2)),
+        total_pending: parseFloat(total_pending.toFixed(2)),
+        payout_status: payout_status,
         configure_business_agent_id: config ? config.id : null
       };
     });
@@ -3289,7 +3443,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
     const configRecords = await ConfigureBusinessAgentCommission.findAll({
       where: { business_agent_id, is_deleted_status: 0 },
       include: [
-        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
+        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
         { 
           model: Member, 
           as: 'member', 
@@ -3311,45 +3465,8 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
       });
     }
 
-    let paid_commission = 0;
-    const members = configRecords.map(config => {
-      const histories = allHistories.filter(h => h.configure_business_agent_id === config.id);
-
-      let total_paid = 0;
-      histories.forEach(h => {
-        total_paid += parseFloat(h.paid_amount) || 0;
-      });
-
-      paid_commission += total_paid;
-
-      const commission_amount = parseFloat(config.commission_amount) || 0;
-      const total_pending = commission_amount - total_paid;
-      const group = config.group || {};
-      const member = config.member || {};
-
-      const latestHistoryWithDoc = histories.find(h => h.upload_document);
-      const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
-
-      return {
-        id: config.id,
-        group_name: group.group_name || null,
-        chit_amount: parseFloat(group.chit_amount) || 0,
-        group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
-        commission_amount,
-        total_paid,
-        total_pending,
-        upload_document,
-        member_id: member.id || null,
-        member_name: member.name || null,
-        gender_dropdown: member.gender_dropdown || null,
-        profile_image: member.upload_image || null,
-        other_info_user_code: member.other_info_user_code ? `MEM-${member.other_info_user_code}` : null,
-        registered_date: member.createdAt ? new Date(member.createdAt).toISOString().split('T')[0] : null,
-        status: config.status
-      };
-    });
-
-    const pending_commission_amount = total_commission_amount - paid_commission;
+    const paid_commission = allHistories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+    const pending_commission_amount = parseFloat(Math.max(0, total_commission_amount - paid_commission).toFixed(2));
 
     const enrollments = await Enrollment.findAll({
       where: { business_agent_id, delete_status: 0 },
@@ -3358,54 +3475,149 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
     const uniqueMembers = new Set(enrollments.map(e => e.subscriber_id));
     const member_joined = uniqueMembers.size;
 
-    const historyRecords = await HistoryBusinessAgent.findAndCountAll({
-      where: { is_deleted_status: 0 },
-      include: [{
-        model: ConfigureBusinessAgentCommission,
-        as: 'configure_business_agent',
-        where: { business_agent_id, is_deleted_status: 0 },
-        include: [{
-          model: ChitsGroup,
-          as: 'group',
-          attributes: ['group_name', 'chit_amount']
-        },
-        {
-          model: Member,
-          as: 'member',
-          attributes: ['id', 'name', 'member_id']
-        }]
-      }],
-      order: [['createdAt', 'DESC']],
-      limit,
-      offset
+    // 1. Grouping Chit-wise Commission (for Screenshot 1 - Section 1)
+    const chitWiseMap = new Map();
+    configRecords.forEach(config => {
+      const gId = config.group_id;
+      const group = config.group || {};
+      const histories = allHistories.filter(h => h.configure_business_agent_id === config.id);
+      const configPaid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+      const configCommission = parseFloat(config.commission_amount) || 0;
+
+      let latestHistoryDate = null;
+      histories.forEach(h => {
+        if (h.createdAt && (!latestHistoryDate || new Date(h.createdAt) > new Date(latestHistoryDate))) {
+          latestHistoryDate = h.createdAt;
+        }
+      });
+
+      if (!chitWiseMap.has(gId)) {
+        chitWiseMap.set(gId, {
+          group_id: gId,
+          group_name: group.group_name || 'Chit Group',
+          chit_amount: parseFloat(group.chit_amount) || 0,
+          commission: 0,
+          total_received: 0,
+          latest_date_raw: null,
+          member_ids: new Set()
+        });
+      }
+
+      const item = chitWiseMap.get(gId);
+      item.commission += configCommission;
+      item.total_received += configPaid;
+      item.member_ids.add(config.member_id);
+      if (latestHistoryDate && (!item.latest_date_raw || new Date(latestHistoryDate) > new Date(item.latest_date_raw))) {
+        item.latest_date_raw = latestHistoryDate;
+      }
     });
 
-    const history = historyRecords.rows.map(h => {
-      const config = h.configure_business_agent || {};
-      const group = config.group || {};
-      const member = config.member || {};
+    const chit_wise_commission = Array.from(chitWiseMap.values()).map(item => {
+      const commission = parseFloat(item.commission.toFixed(2));
+      const total_received = parseFloat(item.total_received.toFixed(2));
+      const total_pending = parseFloat(Math.max(0, commission - total_received).toFixed(2));
+      const payout_status = getPayoutStatus(total_received, total_pending);
+
       return {
-        id: h.id,
-        group_id: config.group_id,
-        group_name: group.group_name,
-        chit_amount: parseFloat(group.chit_amount) || 0,
-        member_name: member.name || null,
-        member_id: member.id || null,
-        commission_amount: parseFloat(config.commission_amount) || 0,
-        received_date: h.createdAt ? new Date(h.createdAt).toISOString().split('T')[0] : null,
-        status: config.status,
-        paid_amount: parseFloat(h.paid_amount) || 0
+        group_id: item.group_id,
+        group_name: item.group_name,
+        chit_amount: item.chit_amount,
+        commission,
+        total_received,
+        total_pending,
+        payout_status,
+        last_received_on: item.latest_date_raw ? formatDateDDMMYYYY(item.latest_date_raw) : null,
+        members_count: item.member_ids.size
+      };
+    });
+
+    // 2. Grouping Members You Have Suggested (for Screenshot 1 - Section 2)
+    const memberWiseMap = new Map();
+    configRecords.forEach(config => {
+      const mId = config.member_id;
+      const member = config.member || {};
+      const histories = allHistories.filter(h => h.configure_business_agent_id === config.id);
+      const configPaid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+      const configCommission = parseFloat(config.commission_amount) || 0;
+
+      if (!memberWiseMap.has(mId)) {
+        memberWiseMap.set(mId, {
+          member_id: mId,
+          name: member.name || 'Unknown',
+          user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+          initial: member.name && member.name.trim().length > 0 ? member.name.trim()[0].toUpperCase() : 'M',
+          profile_image: member.upload_image || null,
+          joined_on: member.createdAt ? formatDateDDMMYYYY(member.createdAt) : null,
+          commission: 0,
+          total_received: 0,
+          groups_count: 0
+        });
+      }
+
+      const item = memberWiseMap.get(mId);
+      item.commission += configCommission;
+      item.total_received += configPaid;
+      item.groups_count += 1;
+    });
+
+    // Also include referred members from Enrollment who might not have a commission config record yet
+    const agentEnrollments = await Enrollment.findAll({
+      where: { business_agent_id, delete_status: 0 },
+      include: [{
+        model: Member,
+        as: 'subscriber',
+        attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'upload_image', 'createdAt']
+      }]
+    });
+
+    agentEnrollments.forEach(enr => {
+      const sub = enr.subscriber;
+      if (sub && !memberWiseMap.has(sub.id)) {
+        memberWiseMap.set(sub.id, {
+          member_id: sub.id,
+          name: sub.name || 'Unknown',
+          user_code: sub.other_info_user_code ? String(sub.other_info_user_code) : (sub.member_id || ''),
+          initial: sub.name && sub.name.trim().length > 0 ? sub.name.trim()[0].toUpperCase() : 'M',
+          profile_image: sub.upload_image || null,
+          joined_on: sub.createdAt ? formatDateDDMMYYYY(sub.createdAt) : null,
+          commission: 0,
+          total_received: 0,
+          groups_count: 1
+        });
+      }
+    });
+
+    const members_you_have_suggested = Array.from(memberWiseMap.values()).map(item => {
+      const commission = parseFloat(item.commission.toFixed(2));
+      const received = parseFloat(item.total_received.toFixed(2));
+      const pending = parseFloat(Math.max(0, commission - received).toFixed(2));
+
+      const payout_status = getPayoutStatus(received, pending);
+
+      return {
+        member_id: item.member_id,
+        user_code: item.user_code,
+        name: item.name,
+        initial: item.initial,
+        profile_image: item.profile_image,
+        commission,
+        received,
+        pending,
+        payout_status,
+        joined_on: item.joined_on,
+        groups_count: item.groups_count
       };
     });
 
     return successResponse(res, statusCodes.OK, 'Summary retrieved successfully', {
-      total_commission_amount,
-      paid_commission,
-      pending_commission_amount,
-      member_joined,
-      members,
-      history_count: historyRecords.count,
-      history
+      summary: {
+        total_commission: parseFloat(total_commission_amount.toFixed(2)),
+        paid_commission: parseFloat(paid_commission.toFixed(2)),
+        pending_commission: pending_commission_amount,
+        member_joined
+      },
+      chit_wise_commission,
+      members_you_have_suggested
     });
 
   } catch (error) {
@@ -3418,6 +3630,14 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
+
+    // Fetch group details
+    const group = await ChitsGroup.findByPk(group_id, {
+      attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status', 'createdAt']
+    });
+    if (!group) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+    }
 
     // 1. Fetch enrollments for this group (optionally filtered by business_agent_id)
     const enrollmentWhere = { group_id, delete_status: 0 };
@@ -3453,7 +3673,7 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
       where: configWhere,
       include: [
         { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status', 'createdAt'] },
-        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }
+        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'upload_image', 'mobile_number'] }
       ]
     });
 
@@ -3468,119 +3688,208 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
       });
     }
 
-    let recordsList = [];
+    const membersMap = new Map();
 
-    if (enrollments.count > 0) {
-      recordsList = enrollments.rows.map(enrollment => {
-        const eData = enrollment.toJSON();
-        const group = eData.group || {};
-        const member = eData.subscriber || {};
-        const config = configs.find(c => c.member_id === member.id && c.group_id === eData.group_id);
+    // Map enrollments first
+    enrollments.rows.forEach(enrollment => {
+      const eData = enrollment.toJSON();
+      const member = eData.subscriber || {};
+      const config = configs.find(c => c.member_id === member.id && c.group_id === eData.group_id);
 
-        let total_paid = 0;
-        let upload_document = null;
-        let commission_amount = 0;
-        let configId = null;
-        let configStatus = 0;
+      let total_paid = 0;
+      let upload_document = null;
+      let commission_amount = 0;
+      let configId = null;
 
-        if (config) {
-          configId = config.id;
-          commission_amount = parseFloat(config.commission_amount) || 0;
-          configStatus = config.status !== undefined ? config.status : 1;
+      if (config) {
+        configId = config.id;
+        commission_amount = parseFloat(config.commission_amount) || 0;
 
-          const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
-          histories.forEach(h => {
-            total_paid += parseFloat(h.paid_amount) || 0;
-          });
+        const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
+        total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
 
-          const latestHistoryWithDoc = histories.find(h => h.upload_document);
-          upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
-        }
+        const latestHistoryWithDoc = histories.find(h => h.upload_document);
+        upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
+      }
 
+      const total_pending = Math.max(0, commission_amount - total_paid);
+      const payout_status = getPayoutStatus(total_paid, total_pending);
+
+      membersMap.set(member.id, {
+        configure_business_agent_id: configId,
+        member_id: member.id,
+        name: member.name || 'Unknown',
+        user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+        profile_image: member.upload_image || null,
+        mobile_number: member.mobile_number || null,
+        commission_amount: parseFloat(commission_amount.toFixed(2)),
+        total_paid: parseFloat(total_paid.toFixed(2)),
+        total_pending: parseFloat(total_pending.toFixed(2)),
+        payout_status: payout_status,
+        upload_document: upload_document
+      });
+    });
+
+    // Also include configs that might exist without an enrollment row
+    configs.forEach(config => {
+      const member = config.member || {};
+      if (member.id && !membersMap.has(member.id)) {
+        const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
+        const total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+        const commission_amount = parseFloat(config.commission_amount) || 0;
         const total_pending = Math.max(0, commission_amount - total_paid);
 
-        return {
-          id: configId || null,
-          group_name: group.group_name || null,
-          chit_amount: parseFloat(group.chit_amount) || 0,
-          group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
-          commission_amount: parseFloat(commission_amount.toFixed(2)),
-          total_paid: parseFloat(total_paid.toFixed(2)),
-          total_pending: parseFloat(total_pending.toFixed(2)),
-          upload_document: upload_document,
-          member_id: member.id || null,
-          member_name: member.name || null,
-          status: configStatus
-        };
-      });
-
-      // Also include any configs that might exist without an enrollment row
-      configs.forEach(config => {
-        const alreadyIncluded = recordsList.some(r => r.id === config.id);
-        if (!alreadyIncluded) {
-          const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
-          let total_paid = 0;
-          histories.forEach(h => {
-            total_paid += parseFloat(h.paid_amount) || 0;
-          });
-          const commission_amount = parseFloat(config.commission_amount) || 0;
-          const group = config.group || {};
-          const member = config.member || {};
-          const latestHistoryWithDoc = histories.find(h => h.upload_document);
-          const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
-
-          recordsList.push({
-            id: config.id,
-            group_name: group.group_name || null,
-            chit_amount: parseFloat(group.chit_amount) || 0,
-            group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
-            commission_amount: parseFloat(commission_amount.toFixed(2)),
-            total_paid: parseFloat(total_paid.toFixed(2)),
-            total_pending: parseFloat((commission_amount - total_paid).toFixed(2)),
-            upload_document: upload_document,
-            member_id: config.member_id,
-            member_name: member.name || null,
-            status: config.status
-          });
-        }
-      });
-    } else {
-      // If no enrollments found, fallback to configs if any
-      recordsList = configs.map(config => {
-        const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
-        let total_paid = 0;
-        histories.forEach(h => {
-          total_paid += parseFloat(h.paid_amount) || 0;
-        });
-        const commission_amount = parseFloat(config.commission_amount) || 0;
-        const group = config.group || {};
-        const member = config.member || {};
         const latestHistoryWithDoc = histories.find(h => h.upload_document);
         const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
 
-        return {
-          id: config.id,
-          group_name: group.group_name || null,
-          chit_amount: parseFloat(group.chit_amount) || 0,
-          group_status: group.chits_group_status !== undefined ? group.chits_group_status : null,
+        const payout_status = getPayoutStatus(total_paid, total_pending);
+
+        membersMap.set(member.id, {
+          configure_business_agent_id: config.id,
+          member_id: member.id,
+          name: member.name || 'Unknown',
+          user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+          profile_image: member.upload_image || null,
+          mobile_number: member.mobile_number || null,
           commission_amount: parseFloat(commission_amount.toFixed(2)),
           total_paid: parseFloat(total_paid.toFixed(2)),
-          total_pending: parseFloat((commission_amount - total_paid).toFixed(2)),
-          upload_document: upload_document,
-          member_id: config.member_id,
-          member_name: member.name || null,
-          status: config.status
-        };
-      });
-    }
+          total_pending: parseFloat(total_pending.toFixed(2)),
+          payout_status: payout_status,
+          upload_document: upload_document
+        });
+      }
+    });
 
-    return successResponse(res, statusCodes.OK, 'Records retrieved successfully', {
-      count: Math.max(enrollments.count, recordsList.length),
-      records: recordsList
+    const membersList = Array.from(membersMap.values());
+
+    return successResponse(res, statusCodes.OK, 'Members in group retrieved successfully', {
+      group_id: group.id,
+      group_name: group.group_name,
+      chit_amount: parseFloat(group.chit_amount) || 0,
+      group_status: group.chits_group_status,
+      members: membersList,
+      count: membersList.length
     });
 
   } catch (error) {
     console.error('Error in getHistoryByGroupIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentChitDetailService = async (res, payload, agentId = null) => {
+  try {
+    const { configure_business_agent_id, group_id, member_id, business_agent_id } = payload || {};
+    const effectiveAgentId = business_agent_id || agentId;
+
+    let config = null;
+    if (configure_business_agent_id) {
+      config = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          id: configure_business_agent_id,
+          is_deleted_status: 0,
+          ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {})
+        },
+        include: [
+          { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
+          { model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image'] }
+        ]
+      });
+    } else if (group_id && member_id) {
+      config = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          group_id,
+          member_id,
+          is_deleted_status: 0,
+          ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {})
+        },
+        include: [
+          { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
+          { model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image'] }
+        ]
+      });
+    }
+
+    if (!config) {
+      // Fallback: If not configured in commission table, check if enrolled in group
+      if (group_id && member_id) {
+        const enrollment = await Enrollment.findOne({
+          where: { group_id, subscriber_id: member_id, delete_status: 0 },
+          include: [
+            { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount'] },
+            { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image'] }
+          ]
+        });
+        if (enrollment) {
+          const group = enrollment.group || {};
+          const member = enrollment.subscriber || {};
+          return successResponse(res, statusCodes.OK, 'Chit detail retrieved successfully', {
+            configure_business_agent_id: null,
+            group_id: group.id,
+            group_name: group.group_name,
+            chit_amount: parseFloat(group.chit_amount) || 0,
+            commission_amount: 0,
+            total_paid: 0,
+            total_pending: 0,
+            payout_status: 3,
+            member: {
+              id: member.id,
+              name: member.name,
+              user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+              mobile_number: member.mobile_number,
+              profile_image: member.upload_image
+            },
+            transaction_history: []
+          });
+        }
+      }
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent commission record not found');
+    }
+
+    const histories = await HistoryBusinessAgent.findAll({
+      where: { configure_business_agent_id: config.id, is_deleted_status: 0 },
+      order: [['createdAt', 'DESC']]
+    });
+
+    const total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+    const commission_amount = parseFloat(config.commission_amount) || 0;
+    const total_pending = Math.max(0, commission_amount - total_paid);
+    const payout_status = getPayoutStatus(total_paid, total_pending);
+
+    const group = config.group || {};
+    const member = config.member || {};
+
+    const transaction_history = histories.map(h => ({
+      id: h.id,
+      paid_amount: parseFloat(h.paid_amount) || 0,
+      payment_date: h.createdAt ? formatDateDDMMYYYY(h.createdAt) : null,
+      created_at: h.createdAt,
+      description: h.description || '',
+      upload_document: h.upload_document || null,
+      has_attached_proof: !!h.upload_document,
+      attached_proof_url: h.upload_document ? (h.upload_document.startsWith('http') ? h.upload_document : `/uploads/${h.upload_document.replace(/^uploads\//, '')}`) : null
+    }));
+
+    return successResponse(res, statusCodes.OK, 'Chit detail retrieved successfully', {
+      configure_business_agent_id: config.id,
+      group_id: group.id,
+      group_name: group.group_name,
+      chit_amount: parseFloat(group.chit_amount) || 0,
+      commission_amount: parseFloat(commission_amount.toFixed(2)),
+      total_paid: parseFloat(total_paid.toFixed(2)),
+      total_pending: parseFloat(total_pending.toFixed(2)),
+      payout_status: payout_status,
+      member: {
+        id: member.id,
+        name: member.name,
+        user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+        mobile_number: member.mobile_number,
+        profile_image: member.upload_image
+      },
+      transaction_history
+    });
+  } catch (error) {
+    console.error('Error in getBusinessAgentChitDetailService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -6225,6 +6534,7 @@ module.exports = {
   deleteHistoryBusinessAgentService,
   getBusinessAgentCommissionSummaryService,
   getHistoryByGroupIdService,
+  getBusinessAgentChitDetailService,
   updateCollectionSubmissionStatusService,
   getAllCollectionSubmissionsService,
   storeDirectPaymentService,
