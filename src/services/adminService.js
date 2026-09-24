@@ -2804,16 +2804,30 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
       });
 
       const chit_groups = Array.from(groupsMap.values());
+      const totalMemberCommission = chit_groups.reduce((sum, g) => sum + (parseFloat(g.commission_amount) || 0), 0);
+      const totalMemberReceived = chit_groups.reduce((sum, g) => sum + (parseFloat(g.total_paid) || 0), 0);
+      const totalMemberPending = Math.max(0, totalMemberCommission - totalMemberReceived);
+      const memberPayoutStatus = getPayoutStatus(totalMemberReceived, totalMemberPending);
+
+      const memberSummary = {
+        member_id: member.id,
+        user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+        name: member.name || '',
+        initial: member.name && member.name.trim().length > 0 ? member.name.trim()[0].toUpperCase() : 'M',
+        profile_image: member.upload_image || null,
+        commission: parseFloat(totalMemberCommission.toFixed(2)),
+        received: parseFloat(totalMemberReceived.toFixed(2)),
+        pending: parseFloat(totalMemberPending.toFixed(2)),
+        payout_status: memberPayoutStatus,
+        joined_on: member.createdAt ? formatDateDDMMYYYY(member.createdAt) : (member.registration_date ? formatDateDDMMYYYY(member.registration_date) : null),
+        groups_count: chit_groups.length
+      };
+
+      const paginated_groups = (min !== undefined || max !== undefined) ? chit_groups.slice(offset, offset + limit) : chit_groups;
 
       return successResponse(res, statusCodes.OK, 'Chit groups for member retrieved successfully', {
-        member: {
-          id: member.id,
-          name: member.name,
-          user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
-          mobile_number: member.mobile_number,
-          profile_image: member.upload_image
-        },
-        chit_groups,
+        member: memberSummary,
+        chit_groups: paginated_groups,
         count: chit_groups.length
       });
     }
@@ -3512,7 +3526,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
       }
     });
 
-    const chit_wise_commission = Array.from(chitWiseMap.values()).map(item => {
+    const all_chit_wise = Array.from(chitWiseMap.values()).map(item => {
       const commission = parseFloat(item.commission.toFixed(2));
       const total_received = parseFloat(item.total_received.toFixed(2));
       const total_pending = parseFloat(Math.max(0, commission - total_received).toFixed(2));
@@ -3530,6 +3544,8 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
         members_count: item.member_ids.size
       };
     });
+
+    const chit_wise_commission = all_chit_wise.slice(offset, offset + limit);
 
     // 2. Grouping Members You Have Suggested (for Screenshot 1 - Section 2)
     const memberWiseMap = new Map();
@@ -3587,7 +3603,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
       }
     });
 
-    const members_you_have_suggested = Array.from(memberWiseMap.values()).map(item => {
+    const members_you_have_suggested = Array.from(memberWiseMap.values()).slice(0, 3).map(item => {
       const commission = parseFloat(item.commission.toFixed(2));
       const received = parseFloat(item.total_received.toFixed(2));
       const pending = parseFloat(Math.max(0, commission - received).toFixed(2));
@@ -3617,7 +3633,8 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
         member_joined
       },
       chit_wise_commission,
-      members_you_have_suggested
+      members_you_have_suggested,
+      count: all_chit_wise.length
     });
 
   } catch (error) {

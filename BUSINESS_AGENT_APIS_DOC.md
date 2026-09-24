@@ -10,9 +10,9 @@ You can use either the **User Route** (recommended for mobile/user app) or the *
 
 | Screen # | Screen Description | User / App Endpoint | Admin Endpoint | Method |
 | :--- | :--- | :--- | :--- | :---: |
-| **Screen 1** | **Business Agent Dashboard** (4 KPI cards + Chit-wise list + Suggested members) | `/api/user/business-agent/summary` | `/api/configure-business-agent-commission/summary-by-agent` | `POST` |
+| **Screen 1** | **Business Agent Dashboard** (4 KPI cards + Paginated Chit-wise list + Top 3 Suggested members) | `/api/user/business-agent/summary` | `/api/configure-business-agent-commission/summary-by-agent` | `POST` |
 | **Screen 2** | **Chit-wise Detail** (Chit group header + member referrals in that group) | `/api/user/business-agent/members-by-group` | `/api/history-business-agent/history-by-group-id` | `POST` |
-| **Screen 3** | **Member-wise Detail** (Member profile header + chit groups joined by that member) | `/api/user/business-agent/chits-by-member` | `/api/member/businesslist-under-members` | `POST` |
+| **Screen 3** | **Member-wise Detail** (Member summary header + chit groups joined by that member) | `/api/user/business-agent/chits-by-member` | `/api/member/businesslist-under-members` | `POST` |
 | **Screen 4** | **Chit Details & Transaction History** (Referral card + payout payment history & proofs) | `/api/user/business-agent/chit-detail` | `/api/configure-business-agent-commission/chit-detail` | `POST` |
 
 ---
@@ -42,8 +42,8 @@ Content-Type: application/json
 
 Provides clean data containing:
 1. `summary` (4 top KPI cards: `total_commission`, `paid_commission`, `pending_commission`, `member_joined`)
-2. `chit_wise_commission` (Chit-wise commission list)
-3. `members_you_have_suggested` (List of suggested members)
+2. `chit_wise_commission` (Chit-wise commission list paginated by `min` & `max`)
+3. `members_you_have_suggested` (Top 3 suggested members preview)
 
 ### 📍 Endpoint
 - **URL (App):** `POST /api/user/business-agent/summary`  
@@ -123,21 +123,9 @@ Provides clean data containing:
         "payout_status": 3,
         "joined_on": "12/07/2026",
         "groups_count": 1
-      },
-      {
-        "member_id": 48,
-        "user_code": "923856",
-        "name": "Gopala",
-        "initial": "G",
-        "profile_image": null,
-        "commission": 0,
-        "received": 0,
-        "pending": 0,
-        "payout_status": 3,
-        "joined_on": "12/07/2026",
-        "groups_count": 1
       }
-    ]
+    ],
+    "count": 1
   }
 }
 ```
@@ -196,7 +184,7 @@ Displays group details at the top header and all member referrals enrolled in th
 
 # 3️⃣ Screen 3: Member-Wise Detail (Chits for Member)
 
-Displays member profile header and all chit groups that specific member joined under this agent. Clicking a chit item navigates to Screen 4 (Chit Details).
+Displays member profile summary header and all chit groups that specific member joined under this agent. Clicking a chit item navigates to Screen 4 (Chit Details).
 
 ### 📍 Endpoint
 - **URL (App):** `POST /api/user/business-agent/chits-by-member`  
@@ -219,11 +207,17 @@ Displays member profile header and all chit groups that specific member joined u
   "message": "Chit groups for member retrieved successfully",
   "data": {
     "member": {
-      "id": 52,
-      "name": "Swathi",
+      "member_id": 52,
       "user_code": "667606",
-      "mobile_number": "9876543210",
-      "profile_image": null
+      "name": "Swathi",
+      "initial": "S",
+      "profile_image": null,
+      "commission": 5000,
+      "received": 2000,
+      "pending": 3000,
+      "payout_status": 2,
+      "joined_on": "12/07/2026",
+      "groups_count": 1
     },
     "chit_groups": [
       {
