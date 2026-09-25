@@ -1,7 +1,7 @@
 const Joi = require('joi');
 
 const getHomeRecordSchema = Joi.object({
-  subscriber_id: Joi.string().required()
+  subscriber_id: Joi.alternatives().try(Joi.string(), Joi.number()).optional()
 });
 
 const getAllHomeRecordsSchema = Joi.object({

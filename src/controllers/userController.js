@@ -3,11 +3,11 @@ const adminService = require('../services/adminService');
 const { errorResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 const { ConfigureBusinessAgentCommission } = require('../models');
+const { isBusinessAgent } = require('../utils/authHelpers');
 
 const getHomeRecord = async (req, res) => {
   try {
-    const { subscriber_id } = req.body;
-    return await userService.getHomeRecordService(res, req.user, subscriber_id);
+    return await userService.getHomeRecordService(res, req.user, req.user ? req.user.id : null);
   } catch (error) {
     console.error('Error in getHomeRecord:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -16,7 +16,8 @@ const getHomeRecord = async (req, res) => {
 
 const getAllHomeRecords = async (req, res) => {
   try {
-    const { subscriber_id, type, auction_type, min, max } = req.body || {};
+    const { type, auction_type, min, max } = req.body || {};
+    const subscriber_id = req.user ? req.user.id : null;
     return await userService.getAllHomeRecordsService(res, req.user, type, min, max, auction_type, subscriber_id);
   } catch (error) {
     console.error('Error in getAllHomeRecords:', error);
@@ -46,7 +47,7 @@ const submitChitInterest = async (req, res) => {
 
 const getPendingPayments = async (req, res) => {
   try {
-    const { subscriber_id, min, max } = req.body || {};
+    const { min, max } = req.body || {};
     return await userService.getPendingPaymentsService(res, req.user, null, min, max);
   } catch (error) {
     console.error('Error in getPendingPayments:', error);
@@ -66,8 +67,8 @@ const getBids = async (req, res) => {
 
 const getBidDetails = async (req, res) => {
   try {
-    const { group_id, subscriber_id } = req.body || {};
-    return await userService.getBidDetailsService(res, group_id, req.user, subscriber_id);
+    const { group_id } = req.body || {};
+    return await userService.getBidDetailsService(res, group_id, req.user, req.user ? req.user.id : null);
   } catch (error) {
     console.error('Error in getBidDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -106,8 +107,11 @@ const getPaymentReceipt = async (req, res) => {
 
 const getBusinessListUnderMembers = async (req, res) => {
   try {
-    const { business_agent_id, min, max, member_id } = req.body || {};
-    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : (req.user ? req.user.id : null));
+    if (!isBusinessAgent(req.user)) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
+    }
+    const { min, max, member_id } = req.body || {};
+    const agentId = req.user.id;
     return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id);
   } catch (error) {
     console.error('Error in getBusinessListUnderMembers:', error);
@@ -117,8 +121,11 @@ const getBusinessListUnderMembers = async (req, res) => {
 
 const getBusinessAgentCommissionSummary = async (req, res) => {
   try {
-    const { business_agent_id, min, max } = req.body || {};
-    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : (req.user ? req.user.id : null));
+    if (!isBusinessAgent(req.user)) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
+    }
+    const { min, max } = req.body || {};
+    const agentId = req.user.id;
     return await adminService.getBusinessAgentCommissionSummaryService(res, agentId, min, max);
   } catch (error) {
     console.error('Error in getBusinessAgentCommissionSummary:', error);
@@ -128,6 +135,9 @@ const getBusinessAgentCommissionSummary = async (req, res) => {
 
 const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
   try {
+    if (!isBusinessAgent(req.user)) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
+    }
     const data = req.body;
     const configId = data.configure_business_agent_id;
 
@@ -149,8 +159,11 @@ const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
 
 const getHistoryByGroupId = async (req, res) => {
   try {
-    const { group_id, business_agent_id, min, max } = req.body || {};
-    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : (req.user ? req.user.id : null));
+    if (!isBusinessAgent(req.user)) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
+    }
+    const { group_id, min, max } = req.body || {};
+    const agentId = req.user.id;
     return await adminService.getHistoryByGroupIdService(res, group_id, min, max, agentId);
   } catch (error) {
     console.error('Error in getHistoryByGroupId:', error);
@@ -160,8 +173,10 @@ const getHistoryByGroupId = async (req, res) => {
 
 const getBusinessAgentChitDetail = async (req, res) => {
   try {
-    const { business_agent_id } = req.body || {};
-    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : (req.user ? req.user.id : null));
+    if (!isBusinessAgent(req.user)) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
+    }
+    const agentId = req.user.id;
     return await adminService.getBusinessAgentChitDetailService(res, req.body, agentId);
   } catch (error) {
     console.error('Error in getBusinessAgentChitDetail:', error);
@@ -171,8 +186,11 @@ const getBusinessAgentChitDetail = async (req, res) => {
 
 const getBusinessAgentTotalCommission = async (req, res) => {
   try {
-    const { business_agent_id, min, max, search } = req.body;
-    const agentId = business_agent_id || req.user.id;
+    if (!isBusinessAgent(req.user)) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
+    }
+    const { min, max, search } = req.body || {};
+    const agentId = req.user.id;
     return await userService.getBusinessAgentTotalCommissionService(res, agentId, min, max, search);
   } catch (error) {
     console.error('Error in getBusinessAgentTotalCommission:', error);
@@ -182,8 +200,11 @@ const getBusinessAgentTotalCommission = async (req, res) => {
 
 const getBusinessAgentPaidCommission = async (req, res) => {
   try {
-    const { business_agent_id, min, max, search, from_date, to_date } = req.body;
-    const agentId = business_agent_id || req.user.id;
+    if (!isBusinessAgent(req.user)) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
+    }
+    const { min, max, search, from_date, to_date } = req.body || {};
+    const agentId = req.user.id;
     return await userService.getBusinessAgentPaidCommissionService(res, agentId, min, max, search, from_date, to_date);
   } catch (error) {
     console.error('Error in getBusinessAgentPaidCommission:', error);
@@ -193,8 +214,11 @@ const getBusinessAgentPaidCommission = async (req, res) => {
 
 const getBusinessAgentPendingCommission = async (req, res) => {
   try {
-    const { business_agent_id, min, max, search, from_date, to_date } = req.body;
-    const agentId = business_agent_id || req.user.id;
+    if (!isBusinessAgent(req.user)) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
+    }
+    const { min, max, search, from_date, to_date } = req.body || {};
+    const agentId = req.user.id;
     return await userService.getBusinessAgentPendingCommissionService(res, agentId, min, max, search, from_date, to_date);
   } catch (error) {
     console.error('Error in getBusinessAgentPendingCommission:', error);
@@ -204,8 +228,11 @@ const getBusinessAgentPendingCommission = async (req, res) => {
 
 const getBusinessAgentMemberJoined = async (req, res) => {
   try {
-    const { business_agent_id, min, max, search } = req.body;
-    const agentId = business_agent_id || req.user.id;
+    if (!isBusinessAgent(req.user)) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
+    }
+    const { min, max, search } = req.body || {};
+    const agentId = req.user.id;
     return await userService.getBusinessAgentMemberJoinedService(res, agentId, min, max, search);
   } catch (error) {
     console.error('Error in getBusinessAgentMemberJoined:', error);

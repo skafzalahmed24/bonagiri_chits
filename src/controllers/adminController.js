@@ -634,8 +634,9 @@ const getAllAgentTargetEntry = async (req, res) => {
 const getBusinessListUnderMembers = async (req, res) => {
   try {
     const { business_agent_id, min, max, member_id } = req.body || {};
-    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : null);
-    return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    const agentId = business_agent_id || null;
+    return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id, companyId);
   } catch (error) {
     console.error('Error in getBusinessListUnderMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1255,8 +1256,9 @@ const deleteHistoryBusinessAgent = async (req, res) => {
 const getBusinessAgentCommissionSummary = async (req, res) => {
   try {
     const { business_agent_id, min, max } = req.body || {};
-    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : null);
-    return await adminService.getBusinessAgentCommissionSummaryService(res, agentId, min, max);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    const agentId = business_agent_id || null;
+    return await adminService.getBusinessAgentCommissionSummaryService(res, agentId, min, max, companyId);
   } catch (error) {
     console.error('Error in getBusinessAgentCommissionSummary:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1266,8 +1268,9 @@ const getBusinessAgentCommissionSummary = async (req, res) => {
 const getBusinessAgentChitDetail = async (req, res) => {
   try {
     const { business_agent_id } = req.body || {};
-    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : null);
-    return await adminService.getBusinessAgentChitDetailService(res, req.body, agentId);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    const agentId = business_agent_id || null;
+    return await adminService.getBusinessAgentChitDetailService(res, req.body, agentId, companyId);
   } catch (error) {
     console.error('Error in getBusinessAgentChitDetail:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1277,8 +1280,9 @@ const getBusinessAgentChitDetail = async (req, res) => {
 const getHistoryByGroupId = async (req, res) => {
   try {
     const { group_id, business_agent_id, min, max } = req.body || {};
-    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : null);
-    return await adminService.getHistoryByGroupIdService(res, group_id, min, max, agentId);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    const agentId = business_agent_id || null;
+    return await adminService.getHistoryByGroupIdService(res, group_id, min, max, agentId, companyId);
   } catch (error) {
     console.error('Error in getHistoryByGroupId:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

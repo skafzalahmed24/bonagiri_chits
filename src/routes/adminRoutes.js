@@ -179,7 +179,7 @@ router.post('/agent-target-entry/store-or-update', authMiddleware.authenticateTo
 router.post('/agent-target-entry/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AGENT_TARGETS), validate(adminValidation.getAllAgentTargetEntrySchema), adminController.getAllAgentTargetEntry);
 router.post('/member/get-filtered-by-group-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getFilteredMembersByGroupAndAgentSchema), adminController.getFilteredMembersByGroupAndAgent);
 router.post('/agent/transfer-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AGENT_TRANSFER), validate(adminValidation.transferAgentUpdateSchema), adminController.transferAgentUpdate);
-router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(adminValidation.getBusinessListUnderMembersSchema), adminController.getBusinessListUnderMembers);
+router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getBusinessListUnderMembersSchema), adminController.getBusinessListUnderMembers);
 
 //get by id routes 
 // Company Setup — the company's own profile; scoped to the token, no id accepted.
@@ -237,9 +237,9 @@ router.post('/history-business-agent/get-by-id', authMiddleware.authenticateToke
 router.post('/history-business-agent/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.deleteHistoryBusinessAgentSchema), adminController.deleteHistoryBusinessAgent);
 
 // business-agent summary route
-router.post('/configure-business-agent-commission/summary-by-agent', authMiddleware.authenticateToken, validate(adminValidation.getBusinessAgentCommissionSummarySchema), adminController.getBusinessAgentCommissionSummary);
-router.post('/history-business-agent/history-by-group-id', authMiddleware.authenticateToken, validate(adminValidation.getHistoryByGroupIdSchema), adminController.getHistoryByGroupId);
-router.post('/configure-business-agent-commission/chit-detail', authMiddleware.authenticateToken, validate(adminValidation.getBusinessAgentChitDetailSchema), adminController.getBusinessAgentChitDetail);
+router.post('/configure-business-agent-commission/summary-by-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getBusinessAgentCommissionSummarySchema), adminController.getBusinessAgentCommissionSummary);
+router.post('/history-business-agent/history-by-group-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getHistoryByGroupIdSchema), adminController.getHistoryByGroupId);
+router.post('/configure-business-agent-commission/chit-detail', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getBusinessAgentChitDetailSchema), adminController.getBusinessAgentChitDetail);
 
 // collection-agent submissions update
 router.post('/collection-agent/submissions/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.updateCollectionSubmissionStatusSchema), adminController.updateCollectionSubmissionStatus);

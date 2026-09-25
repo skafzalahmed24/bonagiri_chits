@@ -2735,21 +2735,39 @@ const storeOrUpdateGroupUnderStaticListService = async (res, comp_id, data = {})
   }
 };
 
-const getBusinessListUnderMembersService = async (res, business_agent_id, min, max, member_id = null) => {
+const getBusinessListUnderMembersService = async (res, business_agent_id, min, max, member_id = null, companyId = null) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
+    if (business_agent_id && companyId) {
+      const agentMember = await Member.findOne({
+        where: { id: business_agent_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!agentMember) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent not found');
+      }
+    }
+
     if (member_id) {
       // Screenshot 3: Member-wise Detail (Chit Groups for this Member)
-      const member = await Member.findByPk(member_id, {
+      const member = await Member.findOne({
+        where: {
+          id: member_id,
+          is_deleted_status: 0,
+          ...(companyId ? { company_id: companyId } : {})
+        },
         attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt']
       });
       if (!member) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
       }
 
-      const enrollmentWhere = { subscriber_id: member_id, delete_status: 0 };
+      const enrollmentWhere = {
+        subscriber_id: member_id,
+        delete_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      };
       if (business_agent_id) {
         enrollmentWhere.business_agent_id = business_agent_id;
       }
@@ -2761,7 +2779,11 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
         ]
       });
 
-      const configWhere = { member_id, is_deleted_status: 0 };
+      const configWhere = {
+        member_id,
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      };
       if (business_agent_id) {
         configWhere.business_agent_id = business_agent_id;
       }
@@ -2853,7 +2875,10 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
     }
 
     // Default flow: list of all members under business agent
-    const enrollmentWhere = { delete_status: 0 };
+    const enrollmentWhere = {
+      delete_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
     if (business_agent_id) {
       enrollmentWhere.business_agent_id = business_agent_id;
     }
@@ -2879,7 +2904,10 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
       ]
     });
 
-    const configWhere = { is_deleted_status: 0 };
+    const configWhere = {
+      is_deleted_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
     if (business_agent_id) {
       configWhere.business_agent_id = business_agent_id;
     }
@@ -3367,7 +3395,7 @@ const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
   try {
     const { id, ...historyData } = data;
 
-    const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findOne({ where: { id, company_id: companyId } }))?.configure_business_agent_id : null);
+    const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findByPk(id))?.configure_business_agent_id : null);
     if (!configId) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration ID is required');
 
     const config = await ConfigureBusinessAgentCommission.findByPk(configId);
@@ -3464,18 +3492,35 @@ const deleteHistoryBusinessAgentService = async (res, id, companyId) => {
   }
 };
 
-const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, min, max) => {
+const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, min, max, companyId = null) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
+    if (business_agent_id && companyId) {
+      const agentMember = await Member.findOne({
+        where: { id: business_agent_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!agentMember) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent not found');
+      }
+    }
+
     const totalCommissionStr = await ConfigureBusinessAgentCommission.sum('commission_amount', {
-      where: { business_agent_id, is_deleted_status: 0 }
+      where: {
+        ...(business_agent_id ? { business_agent_id } : {}),
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      }
     });
     const total_commission_amount = parseFloat(totalCommissionStr) || 0;
 
     const configRecords = await ConfigureBusinessAgentCommission.findAll({
-      where: { business_agent_id, is_deleted_status: 0 },
+      where: {
+        ...(business_agent_id ? { business_agent_id } : {}),
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      },
       include: [
         { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
         { 
@@ -3502,8 +3547,16 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
     const paid_commission = allHistories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
     const pending_commission_amount = parseFloat(Math.max(0, total_commission_amount - paid_commission).toFixed(2));
 
+    const enrollmentWhere = {
+      delete_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
+    if (business_agent_id) {
+      enrollmentWhere.business_agent_id = business_agent_id;
+    }
+
     const enrollments = await Enrollment.findAll({
-      where: { business_agent_id, delete_status: 0 },
+      where: enrollmentWhere,
       attributes: ['subscriber_id']
     });
     const uniqueMembers = new Set(enrollments.map(e => e.subscriber_id));
@@ -3598,7 +3651,7 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
 
     // Also include referred members from Enrollment who might not have a commission config record yet
     const agentEnrollments = await Enrollment.findAll({
-      where: { business_agent_id, delete_status: 0 },
+      where: enrollmentWhere,
       include: [{
         model: Member,
         as: 'subscriber',
@@ -3663,21 +3716,39 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
   }
 };
 
-const getHistoryByGroupIdService = async (res, group_id, min, max, business_agent_id = null) => {
+const getHistoryByGroupIdService = async (res, group_id, min, max, business_agent_id = null, companyId = null) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
     // Fetch group details
-    const group = await ChitsGroup.findByPk(group_id, {
+    const group = await ChitsGroup.findOne({
+      where: {
+        id: group_id,
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      },
       attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status', 'createdAt']
     });
     if (!group) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
     }
 
+    if (business_agent_id && companyId) {
+      const agentMember = await Member.findOne({
+        where: { id: business_agent_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!agentMember) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent not found');
+      }
+    }
+
     // 1. Fetch enrollments for this group (optionally filtered by business_agent_id)
-    const enrollmentWhere = { group_id, delete_status: 0 };
+    const enrollmentWhere = {
+      group_id,
+      delete_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
     if (business_agent_id) {
       enrollmentWhere.business_agent_id = business_agent_id;
     }
@@ -3701,7 +3772,11 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
     });
 
     // 2. Fetch configured commissions for this group
-    const configWhere = { group_id, is_deleted_status: 0 };
+    const configWhere = {
+      group_id,
+      is_deleted_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
     if (business_agent_id) {
       configWhere.business_agent_id = business_agent_id;
     }
@@ -3814,10 +3889,37 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
   }
 };
 
-const getBusinessAgentChitDetailService = async (res, payload, agentId = null) => {
+const getBusinessAgentChitDetailService = async (res, payload, agentId = null, companyId = null) => {
   try {
-    const { configure_business_agent_id, group_id, member_id, business_agent_id } = payload || {};
-    const effectiveAgentId = business_agent_id || agentId;
+    const { configure_business_agent_id, group_id, member_id } = payload || {};
+    const effectiveAgentId = agentId;
+
+    if (effectiveAgentId && companyId) {
+      const agentMember = await Member.findOne({
+        where: { id: effectiveAgentId, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!agentMember) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent not found');
+      }
+    }
+
+    if (member_id && companyId) {
+      const mem = await Member.findOne({
+        where: { id: member_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!mem) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      }
+    }
+
+    if (group_id && companyId) {
+      const grp = await ChitsGroup.findOne({
+        where: { id: group_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!grp) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+      }
+    }
 
     let config = null;
     if (configure_business_agent_id) {
@@ -3825,7 +3927,8 @@ const getBusinessAgentChitDetailService = async (res, payload, agentId = null) =
         where: {
           id: configure_business_agent_id,
           is_deleted_status: 0,
-          ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {})
+          ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {}),
+          ...(companyId ? { company_id: companyId } : {})
         },
         include: [
           { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
@@ -3838,7 +3941,8 @@ const getBusinessAgentChitDetailService = async (res, payload, agentId = null) =
           group_id,
           member_id,
           is_deleted_status: 0,
-          ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {})
+          ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {}),
+          ...(companyId ? { company_id: companyId } : {})
         },
         include: [
           { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
@@ -3851,7 +3955,13 @@ const getBusinessAgentChitDetailService = async (res, payload, agentId = null) =
       // Fallback: If not configured in commission table, check if enrolled in group
       if (group_id && member_id) {
         const enrollment = await Enrollment.findOne({
-          where: { group_id, subscriber_id: member_id, delete_status: 0 },
+          where: {
+            group_id,
+            subscriber_id: member_id,
+            delete_status: 0,
+            ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {}),
+            ...(companyId ? { company_id: companyId } : {})
+          },
           include: [
             { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount'] },
             { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image'] }

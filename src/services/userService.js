@@ -17,7 +17,7 @@ const { calculateMemberRating } = require('../utils/ratingHelper');
 const fcmService = require('./fcmService');
 
 const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) => {
-    const subscriber_id = reqSubscriberId || (userPayload ? userPayload.id : null);
+    const subscriber_id = (userPayload && userPayload.id) ? userPayload.id : reqSubscriberId;
     try {
         // 1. Fetch only essential Enrollment fields
         const enrollment = await Enrollment.findOne({
@@ -181,7 +181,7 @@ const resolveChitGroupAuctionType = (group) => {
 };
 
 const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max = 10, auction_type = null, reqSubscriberId = null) => {
-    const subscriber_id = reqSubscriberId || (userPayload ? userPayload.id : null);
+    const subscriber_id = (userPayload && userPayload.id) ? userPayload.id : reqSubscriberId;
     try {
         const enrollments = await Enrollment.findAll({
             where: {
@@ -833,7 +833,7 @@ const getBidDetailsService = async (res, group_id, userPayload, bodySubscriberId
         const membersCount = allEnrollments.length;
 
         // 3. User's enrolled member numbers in this group (e.g. ["#08", "#07"])
-        const currentMemberId = bodySubscriberId || userPayload?.id;
+        const currentMemberId = (userPayload && userPayload.id) ? userPayload.id : bodySubscriberId;
         const userEnrollments = currentMemberId
             ? allEnrollments.filter(e => e.subscriber_id == currentMemberId)
             : [];
