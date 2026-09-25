@@ -633,10 +633,10 @@ const getAllAgentTargetEntry = async (req, res) => {
 
 const getBusinessListUnderMembers = async (req, res) => {
   try {
-    const { business_agent_id, min, max, member_id } = req.body || {};
+    const { business_agent_id, min, max, member_id, search } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
     const agentId = business_agent_id || null;
-    return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id, companyId);
+    return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id, companyId, search);
   } catch (error) {
     console.error('Error in getBusinessListUnderMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

@@ -76,7 +76,8 @@ const getBusinessListUnderMembersSchema = Joi.object({
   business_agent_id: Joi.number().integer().optional(),
   member_id: Joi.number().integer().optional(),
   min: Joi.number().integer().min(0).optional(),
-  max: Joi.number().integer().min(1).optional()
+  max: Joi.number().integer().min(1).optional(),
+  search: Joi.string().allow('', null).optional()
 });
 
 const getBusinessAgentCommissionSummarySchema = Joi.object({

@@ -2739,7 +2739,7 @@ const storeOrUpdateGroupUnderStaticListService = async (res, comp_id, data = {})
   }
 };
 
-const getBusinessListUnderMembersService = async (res, business_agent_id, min, max, member_id = null, companyId = null) => {
+const getBusinessListUnderMembersService = async (res, business_agent_id, min, max, member_id = null, companyId = null, search = null) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
@@ -2882,36 +2882,7 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
       });
     }
 
-    // Default flow: list of all members under business agent
-    const enrollmentWhere = {
-      delete_status: 0,
-      ...(companyId ? { company_id: companyId } : {})
-    };
-    if (business_agent_id) {
-      enrollmentWhere.business_agent_id = business_agent_id;
-    }
-
-    const enrollments = await Enrollment.findAndCountAll({
-      where: enrollmentWhere,
-      limit,
-      offset,
-      include: [
-        {
-          model: Member,
-          as: 'subscriber',
-          attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt'],
-          include: [
-            { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
-          ]
-        },
-        {
-          model: ChitsGroup,
-          as: 'group',
-          attributes: ['id', 'group_name', 'chit_amount']
-        }
-      ]
-    });
-
+    // Default flow: list of all suggested members under business agent
     const configWhere = {
       is_deleted_status: 0,
       ...(companyId ? { company_id: companyId } : {})
@@ -2922,7 +2893,18 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
 
     const configs = await ConfigureBusinessAgentCommission.findAll({
       where: configWhere,
-      raw: true
+      include: [
+        {
+          model: Member,
+          as: 'member',
+          attributes: ['id', 'name', 'member_id', 'gender', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt']
+        },
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status']
+        }
+      ]
     });
 
     const configIds = configs.map(c => c.id);
@@ -2934,42 +2916,142 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
       });
     }
 
-    const rows = enrollments.rows.map(enrollment => {
-      const eData = enrollment.toJSON();
-      const member = eData.subscriber || {};
-      const config = configs.find(c => c.member_id === member.id && c.group_id === eData.group_id);
-      
-      let total_paid = 0;
-      if (config) {
-        const histories = allHistories.filter(h => h.configure_business_agent_id === config.id);
-        total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
-      }
-      const commission_amount = config ? (parseFloat(config.commission_amount) || 0) : 0;
-      const total_pending = Math.max(0, commission_amount - total_paid);
+    const enrollmentWhere = {
+      delete_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
+    if (business_agent_id) {
+      enrollmentWhere.business_agent_id = business_agent_id;
+    }
 
-      const payout_status = getPayoutStatus(total_paid, total_pending);
+    const enrollments = await Enrollment.findAll({
+      where: enrollmentWhere,
+      include: [
+        {
+          model: Member,
+          as: 'subscriber',
+          attributes: ['id', 'name', 'member_id', 'gender', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt']
+        },
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status']
+        }
+      ]
+    });
+
+    const memberMap = new Map();
+
+    configs.forEach(cfg => {
+      const m = cfg.member || {};
+      const mId = cfg.member_id || m.id;
+      if (!mId) return;
+
+      const histories = allHistories.filter(h => h.configure_business_agent_id === cfg.id);
+      const configPaid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+      const configComm = parseFloat(cfg.commission_amount) || 0;
+
+      if (!memberMap.has(mId)) {
+        memberMap.set(mId, {
+          member_id: mId,
+          id: mId,
+          name: m.name || 'Unknown',
+          user_code: m.other_info_user_code ? String(m.other_info_user_code) : (m.member_id || ''),
+          member_code: m.other_info_user_code ? `MEM-${m.other_info_user_code}` : (m.member_id || ''),
+          initial: m.name && m.name.trim().length > 0 ? m.name.trim()[0].toUpperCase() : 'M',
+          profile_image: m.upload_image || null,
+          mobile_number: m.mobile_number || null,
+          gender: m.gender || null,
+          joined_on: m.createdAt ? formatDateDDMMYYYY(m.createdAt) : (m.registration_date ? formatDateDDMMYYYY(m.registration_date) : null),
+          commission: 0,
+          total_received: 0,
+          group_ids: new Set()
+        });
+      }
+
+      const item = memberMap.get(mId);
+      item.commission += configComm;
+      item.total_received += configPaid;
+      if (cfg.group_id) {
+        item.group_ids.add(cfg.group_id);
+      }
+    });
+
+    enrollments.forEach(enr => {
+      const sub = enr.subscriber || {};
+      const mId = enr.subscriber_id || sub.id;
+      if (!mId) return;
+
+      if (!memberMap.has(mId)) {
+        memberMap.set(mId, {
+          member_id: mId,
+          id: mId,
+          name: sub.name || 'Unknown',
+          user_code: sub.other_info_user_code ? String(sub.other_info_user_code) : (sub.member_id || ''),
+          member_code: sub.other_info_user_code ? `MEM-${sub.other_info_user_code}` : (sub.member_id || ''),
+          initial: sub.name && sub.name.trim().length > 0 ? sub.name.trim()[0].toUpperCase() : 'M',
+          profile_image: sub.upload_image || null,
+          mobile_number: sub.mobile_number || null,
+          gender: sub.gender || null,
+          joined_on: enr.enrollment_date ? formatDateDDMMYYYY(enr.enrollment_date) : (sub.createdAt ? formatDateDDMMYYYY(sub.createdAt) : (sub.registration_date ? formatDateDDMMYYYY(sub.registration_date) : null)),
+          commission: 0,
+          total_received: 0,
+          group_ids: new Set()
+        });
+      }
+
+      const item = memberMap.get(mId);
+      if (enr.group_id) {
+        item.group_ids.add(enr.group_id);
+      }
+    });
+
+    let allMembers = Array.from(memberMap.values()).map(item => {
+      const commission = parseFloat(item.commission.toFixed(2));
+      const received = parseFloat(item.total_received.toFixed(2));
+      const pending = parseFloat(Math.max(0, commission - received).toFixed(2));
+      const payout_status = getPayoutStatus(received, pending);
 
       return {
-        id: eData.id,
-        enrollment_id: eData.id,
-        group_id: eData.group_id,
-        group: eData.group,
-        member_id: member.id,
-        member: {
-          ...member,
-          user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
-          member_code: member.other_info_user_code ? `MEM-${member.other_info_user_code}` : (member.member_id || '')
-        },
-        has_commission: !!config,
-        commission_amount: parseFloat(commission_amount.toFixed(2)),
-        total_paid: parseFloat(total_paid.toFixed(2)),
-        total_pending: parseFloat(total_pending.toFixed(2)),
-        payout_status: payout_status,
-        configure_business_agent_id: config ? config.id : null
+        member_id: item.member_id,
+        id: item.member_id,
+        name: item.name,
+        user_code: item.user_code,
+        member_code: item.member_code,
+        initial: item.initial,
+        profile_image: item.profile_image,
+        mobile_number: item.mobile_number,
+        gender: item.gender,
+        commission,
+        received,
+        total_received: received,
+        pending,
+        total_pending: pending,
+        payout_status,
+        joined_on: item.joined_on,
+        groups_count: item.group_ids.size || 1
       };
     });
 
-    return successResponse(res, statusCodes.OK, 'Members under business agent retrieved successfully', { count: enrollments.count, rows });
+    if (search && String(search).trim() !== '') {
+      const term = String(search).trim().toLowerCase();
+      allMembers = allMembers.filter(m => {
+        const nameMatch = (m.name || '').toLowerCase().includes(term);
+        const codeMatch = String(m.user_code || '').toLowerCase().includes(term) || String(m.member_code || '').toLowerCase().includes(term);
+        const phoneMatch = String(m.mobile_number || '').toLowerCase().includes(term);
+        return nameMatch || codeMatch || phoneMatch;
+      });
+    }
+
+    const total_count = allMembers.length;
+    const paginatedRows = (min !== undefined || max !== undefined) ? allMembers.slice(offset, offset + limit) : allMembers;
+
+    return successResponse(res, statusCodes.OK, 'Members under business agent retrieved successfully', {
+      count: total_count,
+      total_count,
+      rows: paginatedRows,
+      members_you_have_suggested: paginatedRows
+    });
   } catch (error) {
     console.error('Error in getBusinessListUnderMembersService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -4094,7 +4176,7 @@ const getBusinessAgentChitDetailService = async (res, payload, agentId = null, c
       description: h.description || '',
       upload_document: h.upload_document || null,
       has_attached_proof: !!h.upload_document,
-      attached_proof_url: h.upload_document ? (h.upload_document.startsWith('http') ? h.upload_document : `/uploads/${h.upload_document.replace(/^uploads\//, '')}`) : null
+      attached_proof_url: h.upload_document ? (h.upload_document.startsWith('http') ? h.upload_document : `/uploads/${h.upload_document.replace(/^\/?(uploads\/+)*/i, '')}`) : null
     }));
 
     return successResponse(res, statusCodes.OK, 'Chit detail retrieved successfully', {

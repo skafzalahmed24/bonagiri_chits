@@ -110,10 +110,10 @@ const getBusinessListUnderMembers = async (req, res) => {
     if (!isBusinessAgent(req.user)) {
       return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
     }
-    const { min, max, member_id } = req.body || {};
+    const { min, max, member_id, search } = req.body || {};
     const agentId = req.user.id;
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-    return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id, companyId);
+    return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id, companyId, search);
   } catch (error) {
     console.error('Error in getBusinessListUnderMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
