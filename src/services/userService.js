@@ -2709,9 +2709,11 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
         }, { transaction });
 
         // Clearance Logic
-        // Find all unpaid installments for this member
+        // Only the chits this agent services: money an agent collects must never pay
+        // an installment on a chit assigned to another agent, or the collection is
+        // credited to that agent in every report. Anything left over becomes a member advance.
         const enrollments = await Enrollment.findAll({
-            where: { subscriber_id: member_id, delete_status: 0 },
+            where: { subscriber_id: member_id, delete_status: 0, collection_agent_id },
             include: [{ model: ChitsGroup, as: 'group' }]
         });
 

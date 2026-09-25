@@ -63,6 +63,25 @@ module.exports = (sequelize, DataTypes) => {
     sac_code: {
       type: DataTypes.STRING,
     },
+    // Printed on the statutory registrar forms — see docs/STATUTORY_FORM_TEMPLATES.md
+    foreman_name: {
+      type: DataTypes.STRING,
+    },
+    foreman_father_name: {
+      type: DataTypes.STRING,
+    },
+    foreman_address: {
+      type: DataTypes.TEXT,
+    },
+    cin: {
+      type: DataTypes.STRING,
+    },
+    place: {
+      type: DataTypes.STRING,
+    },
+    registrar_office_address: {
+      type: DataTypes.TEXT,
+    },
     is_deleted_status: {
       type: DataTypes.INTEGER,
       defaultValue: 0,

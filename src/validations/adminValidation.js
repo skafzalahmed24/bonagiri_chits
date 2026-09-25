@@ -1226,7 +1226,42 @@ module.exports = {
   getMemberReferralsSchema: Joi.object({
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional(),
-    search: Joi.string().allow('', null).optional()
+    search: Joi.string().allow('', null).optional(),
+    status: Joi.number().integer().valid(0, 1, 2).allow(null).optional()
+  }),
+  updateMemberReferralStatusSchema: Joi.object({
+    referral_id: Joi.string().uuid().required().messages({
+      'any.required': 'Referral id is required',
+      'string.guid': 'Invalid referral id'
+    }),
+    status: Joi.number().integer().valid(0, 1, 2).required().messages({
+      'any.required': 'Status is required',
+      'any.only': 'Invalid status. Must be 0 (Pending), 1 (Accepted) or 2 (Declined).'
+    })
+  }),
+  companySetupSchema: Joi.object({
+    company_name: Joi.string().allow('', null).optional(),
+    company_address: Joi.string().allow('', null).optional(),
+    bank_name: Joi.string().allow('', null).optional(),
+    gst_percentage: Joi.number().precision(2).allow(null).optional(),
+    gst_number: Joi.string().allow('', null).optional(),
+    gst_type: Joi.number().integer().allow(null).optional(),
+    pan_number: Joi.string().allow('', null).optional(),
+    sac_code: Joi.string().allow('', null).optional(),
+    cheque_return_charges: Joi.number().precision(2).allow(null).optional(),
+    enrollment_charges: Joi.number().precision(2).allow(null).optional(),
+    notice_charges: Joi.number().precision(2).allow(null).optional(),
+    transaction_lock_days: Joi.number().integer().min(0).allow(null).optional(),
+    rect_print_format: Joi.number().integer().allow(null).optional(),
+    latitude: Joi.string().allow('', null).optional(),
+    longitude: Joi.string().allow('', null).optional(),
+    location: Joi.string().allow('', null).optional(),
+    foreman_name: Joi.string().allow('', null).optional(),
+    foreman_father_name: Joi.string().allow('', null).optional(),
+    foreman_address: Joi.string().allow('', null).optional(),
+    cin: Joi.string().allow('', null).optional(),
+    place: Joi.string().allow('', null).optional(),
+    registrar_office_address: Joi.string().allow('', null).optional(),
   }),
   getPlatformTermsPrivacySchema: Joi.object({
     type: Joi.number().integer().valid(1, 2).required().messages({
