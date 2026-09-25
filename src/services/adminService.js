@@ -1343,6 +1343,26 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
       if (!subscriber || !subscriber.is_verified) {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Subscriber must be verified before enrollment');
       }
+
+      // A group cannot take more members than it has positions. Lock the group row
+      // so two enrollments saved at the same moment cannot both pass this check.
+      const capacity = await sequelize.transaction(async (t) => {
+        const group = await ChitsGroup.findByPk(enrollmentData.group_id, {
+          attributes: ['id', 'no_of_installments'],
+          lock: t.LOCK.UPDATE,
+          transaction: t,
+        });
+        if (!group) return { missing: true };
+        const taken = await Enrollment.count({ where: { group_id: group.id, delete_status: 0 }, transaction: t })
+          + await SelfChit.count({ where: { group_id: group.id, is_deleted_status: 0 }, transaction: t });
+        const positions = parseInt(group.no_of_installments) || 0;
+        return { taken, positions, isFull: taken >= positions };
+      });
+      if (capacity.missing) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+      if (capacity.isFull) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, `This chit group is full (${capacity.taken}/${capacity.positions} positions taken).`);
+      }
+
       const newEnrollment = await Enrollment.create(enrollmentData);
       await checkAndUpdateChitFullStatus(newEnrollment.group_id);
 
@@ -4096,11 +4116,14 @@ const storeDirectPaymentService = async (res, user, data) => {
     const cash = parseFloat(cash_amount) || 0;
     const upi = parseFloat(upi_amount) || 0;
     const bank = parseFloat(bank_amount) || 0;
-    const totalCollected = parseFloat(received_amount) || 0;
+    // received_amount is the instalment part only; penalty_paid rides on top. The
+    // money that actually arrived is both, so that is what the split must cover and
+    // what the accounts are credited with — the same rule agent verification uses.
+    const totalCollected = (parseFloat(received_amount) || 0) + (parseFloat(penalty_paid) || 0);
 
     if (totalCollected > 0 && Math.abs(cash + upi + bank - totalCollected) > 0.01) {
       await transaction.rollback();
-      return errorResponse(res, statusCodes.BAD_REQUEST, 'Sum of cash, upi, and bank amounts must equal total received amount');
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Sum of cash, upi, and bank amounts must equal the instalment amount plus penalty');
     }
 
     if (upi > 0 && !upi_account_id) {
@@ -4149,9 +4172,10 @@ const storeDirectPaymentService = async (res, user, data) => {
     const receivedAmountFloat = parseFloat(received_amount) || 0;
     const penaltyPaidFloat = parseFloat(penalty_paid) || 0;
     
-    if (receivedAmountFloat > dueAmount + penaltyPaidFloat) {
+    // The instalment part may not exceed what is still due on the instalment.
+    if (receivedAmountFloat > dueAmount + 0.01) {
       await transaction.rollback();
-      return errorResponse(res, statusCodes.BAD_REQUEST, `Payment exceeds the due amount. Maximum allowed is ${dueAmount + penaltyPaidFloat}`);
+      return errorResponse(res, statusCodes.BAD_REQUEST, `Payment exceeds the due amount. Maximum allowed is ${dueAmount}`);
     }
 
     // Generate gapless receipt number
@@ -6213,6 +6237,52 @@ const getLedgerReportService = async (res, reqBody) => {
     }
 };
 
+// Company Setup: the company's own profile, including what the statutory
+// registrar forms print. Scoped to the caller's company — never takes an id.
+const SETUP_FIELDS = [
+  'company_name', 'company_address', 'bank_name', 'gst_percentage', 'gst_number', 'gst_type',
+  'pan_number', 'sac_code', 'cheque_return_charges', 'enrollment_charges', 'notice_charges',
+  'transaction_lock_days', 'rect_print_format', 'latitude', 'longitude', 'location',
+  'foreman_name', 'foreman_father_name', 'foreman_address', 'cin', 'place', 'registrar_office_address',
+];
+
+const getCompanySetupService = async (res, userToken) => {
+  try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    if (!companyId) return errorResponse(res, statusCodes.BAD_REQUEST, 'No company on this session');
+
+    const company = await Company.findByPk(companyId, { attributes: ['id', ...SETUP_FIELDS] });
+    if (!company) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+
+    return successResponse(res, statusCodes.OK, 'Company setup retrieved successfully', company);
+  } catch (error) {
+    console.error('Error in getCompanySetupService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateCompanySetupService = async (res, data = {}, userToken) => {
+  try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    if (!companyId) return errorResponse(res, statusCodes.BAD_REQUEST, 'No company on this session');
+
+    const company = await Company.findByPk(companyId);
+    if (!company) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+
+    const patch = {};
+    SETUP_FIELDS.forEach((f) => {
+      if (data[f] !== undefined) patch[f] = data[f];
+    });
+    await company.update(patch);
+
+    const fresh = await Company.findByPk(companyId, { attributes: ['id', ...SETUP_FIELDS] });
+    return successResponse(res, statusCodes.OK, 'Company setup saved successfully', fresh);
+  } catch (error) {
+    console.error('Error in updateCompanySetupService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getStatutoryReportService = async (res, reqBody) => {
     try {
         const { start_date, end_date } = reqBody;
@@ -6272,7 +6342,7 @@ const searchEnquiryService = async (res, reqBody) => {
     }
 };
 
-const getMemberReferralsService = async (res, min = 0, max = 10, search = '') => {
+const getMemberReferralsService = async (res, min = 0, max = 10, search = '', status, userToken) => {
   try {
     const limit = parseInt(max, 10);
     const offset = parseInt(min, 10);
@@ -6281,6 +6351,14 @@ const getMemberReferralsService = async (res, min = 0, max = 10, search = '') =>
     if (search) {
       whereClause.name = { [Op.iLike]: `%${search}%` };
     }
+    if (status !== undefined && status !== null && status !== '') {
+      whereClause.status = Number(status);
+    }
+
+    // A referral has no company of its own; it belongs to the company of the
+    // member who made it. Without this, every company saw every company's referrals.
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    if (!companyId) return errorResponse(res, statusCodes.BAD_REQUEST, 'No company on this session');
 
     const { count, rows } = await MemberReferral.findAndCountAll({
       where: whereClause,
@@ -6291,14 +6369,34 @@ const getMemberReferralsService = async (res, min = 0, max = 10, search = '') =>
         {
           model: Member,
           as: 'referrer',
-          attributes: ['id', 'name', 'member_id', 'mobile_number']
+          attributes: ['id', 'name', 'member_id', 'mobile_number'],
+          where: { company_id: companyId },
+          required: true,
         }
-      ]
+      ],
+      distinct: true,
     });
 
     return successResponse(res, statusCodes.OK, 'Member referrals retrieved successfully', { count, rows });
   } catch (error) {
     console.error('Error in getMemberReferralsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateMemberReferralStatusService = async (res, referral_id, status, userToken) => {
+  try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    const referral = await MemberReferral.findOne({
+      where: { id: referral_id },
+      include: [{ model: Member, as: 'referrer', attributes: ['id'], where: { company_id: companyId }, required: true }],
+    });
+    if (!referral) return errorResponse(res, statusCodes.NOT_FOUND, 'Referral not found');
+
+    await referral.update({ status });
+    return successResponse(res, statusCodes.OK, 'Referral status updated successfully', referral);
+  } catch (error) {
+    console.error('Error in updateMemberReferralStatusService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -6589,8 +6687,11 @@ module.exports = {
   updateCustomerVisitStatusService,
   getLedgerReportService,
   getStatutoryReportService,
+  getCompanySetupService,
+  updateCompanySetupService,
   searchEnquiryService,
   getMemberReferralsService,
+  updateMemberReferralStatusService,
   getAppSupportedCountriesService,
   getAdvancesByMemberService,
   applyAdvanceService

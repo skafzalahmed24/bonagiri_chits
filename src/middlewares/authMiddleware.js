@@ -97,7 +97,18 @@ const requireRole = (allowedRoles) => (req, res, next) => {
   next();
 };
 
+// Office users only: the company admin, or a staff user holding at least one
+// permission. For lookups every office screen needs (group and member pickers);
+// members and agents using the portal are refused.
+const requireOfficeUser = (req, res, next) => {
+  if (!req.user) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+  if (req.user.role === 'company') return next();
+  if (req.user.role === 'staff' && Object.values(req.user.permissions || {}).some((p) => p && p.view)) return next();
+  return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+};
+
 module.exports = {
+  requireOfficeUser,
   authenticateDefaultToken,
   authenticateToken,
   authenticateSuperAdminToken,

@@ -1544,6 +1544,24 @@ const getLedgerReport = async (req, res) => {
   }
 };
 
+const getCompanySetup = async (req, res) => {
+  try {
+    return await adminService.getCompanySetupService(res, req.user);
+  } catch (error) {
+    console.error('Error in getCompanySetup:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateCompanySetup = async (req, res) => {
+  try {
+    return await adminService.updateCompanySetupService(res, req.body, req.user);
+  } catch (error) {
+    console.error('Error in updateCompanySetup:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getStatutoryReport = async (req, res) => {
   try {
     return await adminService.getStatutoryReportService(res, req.body);
@@ -1555,10 +1573,20 @@ const getStatutoryReport = async (req, res) => {
 
 const getMemberReferrals = async (req, res) => {
   try {
-    const { min, max, search } = req.body;
-    return await adminService.getMemberReferralsService(res, min, max, search);
+    const { min, max, search, status } = req.body;
+    return await adminService.getMemberReferralsService(res, min, max, search, status, req.user);
   } catch (error) {
     console.error('Error in getMemberReferrals:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateMemberReferralStatus = async (req, res) => {
+  try {
+    const { referral_id, status } = req.body;
+    return await adminService.updateMemberReferralStatusService(res, referral_id, status, req.user);
+  } catch (error) {
+    console.error('Error in updateMemberReferralStatus:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1759,8 +1787,11 @@ module.exports = {
   updateCustomerVisitStatus,
   getLedgerReport,
   getStatutoryReport,
+  getCompanySetup,
+  updateCompanySetup,
   searchEnquiry,
   getMemberReferrals,
+  updateMemberReferralStatus,
   testSendTwilioOtp,
   testVerifyTwilioOtp,
   getAppSupportedCountries,

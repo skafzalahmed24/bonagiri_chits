@@ -8,6 +8,7 @@ const selfTransferController = require('../controllers/selfTransferController');
 const borrowRepayController = require('../controllers/borrowRepayController');
 const outgoingPaymentController = require('../controllers/outgoingPaymentController');
 const expenditureController = require('../controllers/expenditureController');
+const suretyDenominationController = require('../controllers/suretyDenominationController');
 const reportController = require('../controllers/reportController');
 const platformSupportController = require('../controllers/platformSupportController');
 const bannerController = require('../controllers/bannerController');
@@ -52,8 +53,11 @@ router.post('/reset-password', authRateLimiter, authMiddleware.authenticateDefau
 router.post('/change-password', authRateLimiter, authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.changePassword);
 
 // Twilio OTP test routes
-router.post('/test/send-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.testSendTwilioOtpSchema), adminController.testSendTwilioOtp);
-router.post('/test/verify-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.testVerifyTwilioOtpSchema), adminController.testVerifyTwilioOtp);
+// Twilio smoke-test routes — never mounted in production.
+if (process.env.NODE_ENV !== 'production') {
+  router.post('/test/send-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.testSendTwilioOtpSchema), adminController.testSendTwilioOtp);
+  router.post('/test/verify-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.testVerifyTwilioOtpSchema), adminController.testVerifyTwilioOtp);
+}
 router.get('/app-countries', adminController.getAppSupportedCountries);
 router.post('/app-countries', adminController.getAppSupportedCountries);
 
@@ -122,7 +126,8 @@ router.post('/chits-group/check-capacity', authMiddleware.authenticateToken, aut
 router.post('/audit-logs/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.AUDIT_LOG), adminController.getAllAuditLogs);
 
 // import locations 
-router.post('/import-locations', authMiddleware.authenticateToken, adminController.importLocations);
+// Seeds countries and states for the whole platform — super admin only.
+router.post('/import-locations', authMiddleware.authenticateSuperAdminToken, adminController.importLocations);
 
 // country & state routes
 router.post('/get-countries', authMiddleware.authenticateToken, validate(adminValidation.getCountriesSchema), adminController.getCountriesList);
@@ -177,6 +182,9 @@ router.post('/agent/transfer-agent', authMiddleware.authenticateToken, authMiddl
 router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(adminValidation.getBusinessListUnderMembersSchema), adminController.getBusinessListUnderMembers);
 
 //get by id routes 
+// Company Setup — the company's own profile; scoped to the token, no id accepted.
+router.post('/company/setup/get', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_COMPANY_SETUP), adminController.getCompanySetup);
+router.post('/company/setup/update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_COMPANY_SETUP), validate(adminValidation.companySetupSchema), adminController.updateCompanySetup);
 router.post('/company/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getCompanyById);
 router.post('/member/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermissionOrUserRole(MODULES.M_MEMBERS, 'member'), validate(adminValidation.getByIdSchema), adminController.getMemberById);
 router.post('/route/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ROUTES), validate(adminValidation.getByIdSchema), adminController.getRouteById);
@@ -309,6 +317,7 @@ router.post('/enquiry/search', authMiddleware.authenticateToken, adminController
 
 // member referrals
 router.post('/refer-members', authMiddleware.authenticateToken, validate(adminValidation.getMemberReferralsSchema), adminController.getMemberReferrals);
+router.post('/refer-members/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.updateMemberReferralStatusSchema), adminController.updateMemberReferralStatus);
 
 // Super Admin Terms & Privacy routes
 router.post('/super-admin/terms-privacy/get', authMiddleware.authenticateSuperAdminToken, validate(adminValidation.getPlatformTermsPrivacySchema), platformSupportController.getPlatformTermsPrivacy);
@@ -367,6 +376,34 @@ router.post('/reports/day-report', authMiddleware.authenticateToken, authMiddlew
 router.post('/reports/cb-inflow', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_CB_INFLOW), reportController.getCbInflowReport);
 router.post('/reports/account-book', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_CASH_BOOK, MODULES.R_BANK_BOOK]), reportController.getAccountBookReport);
 router.post('/reports/day-book', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_DAY_BOOK), reportController.getDayBookReport);
+// One engine behind every "... wise outstanding" report; group_by picks the bucket.
+// Values for the eleven registrar forms; the wording lives in the frontend templates.
+// Dues behind the legal notices. Read-only: unlike the old system, generating a
+// notice here never posts incidental charges.
+// Recorded auctions in a range; the bidder, register, dividend, GST and turnover reports are cuts of it.
+// Verified receipts in a range, split by how the money came in: DCR, monthly summary, cheque enquiry.
+// Sureties (guarantors on a ticket) and the day-close cash count.
+router.post('/surety/get-all', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.T_SURETY_ENTRY, MODULES.R_SURETY_LIST]), suretyDenominationController.listSureties);
+router.post('/surety/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SURETY_ENTRY), suretyDenominationController.saveSurety);
+router.post('/surety/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SURETY_ENTRY), suretyDenominationController.deleteSurety);
+router.post('/denomination/get-by-date', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_DENOMINATIONS), suretyDenominationController.getDenomination);
+router.post('/denomination/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_DENOMINATIONS), suretyDenominationController.saveDenomination);
+// Picker lookups (names and ids only) for any office user; portal members are refused.
+router.post('/options/chit-groups', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getGroupOptions);
+router.post('/options/members', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getMemberOptions);
+router.post('/reports/fdr-statement', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_FDR_RELEASE, MODULES.E_GROUP]), reportController.getFdrStatement);
+router.post('/reports/agent-targets', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_AGENT_TARGETS), reportController.getAgentTargetReport);
+router.post('/reports/advance-register', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_ADV_ADJUSTMENTS), reportController.getAdvanceRegister);
+router.post('/reports/subscriber-ledger', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.C_SUB_LEDGER, MODULES.E_GROUP]), reportController.getSubscriberLedger);
+router.post('/reports/account-copy', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_MEMBER_ACC_RECEIPT, MODULES.R_MEMBER_ACC_CRDR]), reportController.getAccountCopy);
+router.post('/reports/subscribers', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_SUBSCRIBERS_LIST, MODULES.R_PERSONS_REPORT, MODULES.E_GROUP, MODULES.T_SURETY_ENTRY]), reportController.getSubscriberRegister);
+// Points at likely duplicate members; never merges anything.
+router.post('/reports/repeated-persons', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_REPEATED_PERSONS), reportController.getRepeatedPersons);
+router.post('/reports/collection-register', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_DAILY_COLLECTION, MODULES.R_MONTHLY_COLLECTION, MODULES.R_CHEQUE_ENQUIRY, MODULES.R_DAY_REGISTER, MODULES.R_DEFAULT_CHARGE, MODULES.E_RECEIPT, MODULES.R_BULK_RECEIPT, MODULES.E_GROUP]), reportController.getCollectionRegister);
+router.post('/reports/auction-register', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_AUCTION_TURNOVER, MODULES.R_BIDDERS_LIST, MODULES.R_GROUP_BIDDERS, MODULES.R_BIDS_REGISTER, MODULES.R_DIVIDEND_LIST, MODULES.R_GST_REPORT, MODULES.R_GST_SUMMARY, MODULES.R_MINUTES_FILING, MODULES.E_GROUP]), reportController.getAuctionRegister);
+router.post('/reports/notice', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_PRL, MODULES.R_PRLG, MODULES.R_UCPL, MODULES.R_MRCL, MODULES.R_FORMAN_NOTICE, MODULES.R_LEGAL_NOTICE, MODULES.R_ADVOCATE_NOTICE, MODULES.R_INTIMATION, MODULES.R_DP_NOTICE, MODULES.R_NO_DUE]), reportController.getNoticeData);
+router.post('/reports/statutory-form', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_FORM_1, MODULES.R_FORM_1B, MODULES.R_FORM_2, MODULES.R_FORM_3, MODULES.R_FORM_5, MODULES.R_FORM_6, MODULES.R_FORM_7, MODULES.R_FORM_10, MODULES.R_FORM_11, MODULES.R_ANNEXURE, MODULES.R_ACK]), reportController.getStatutoryFormContext);
+router.post('/reports/outstanding', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_GROUP_OUTSTANDING, MODULES.R_AGENT_OUTSTANDING, MODULES.R_AREA_OUTSTANDING, MODULES.R_ROUTE_OUTSTANDING, MODULES.R_PS_OUTSTANDING, MODULES.R_NPS_OUTSTANDING, MODULES.R_SUIT_OUTSTANDING, MODULES.R_CUSTOM_OUTSTANDING, MODULES.R_DEFAULTER_LIST, MODULES.R_AGENT_WISE_OUTSTANDING, MODULES.E_PENALTY, MODULES.E_GROUP]), reportController.getOutstandingReport);
 router.post('/reports/agent-float', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_AGENT_FLOAT, MODULES.T_COLLECTION_VERIFY]), reportController.getAgentFloatReport);
 
 module.exports = router;
