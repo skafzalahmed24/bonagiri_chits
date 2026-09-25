@@ -1169,10 +1169,11 @@ const deleteSelfChit = async (req, res) => {
 const storeOrUpdateConfigureBusinessAgentCommission = async (req, res) => {
   try {
     const data = { ...req.body };
-    if (req.user && req.user.role === 'company' && req.user.id) {
-      data.company_id = req.user.id;
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    if (companyId) {
+      data.company_id = companyId;
     }
-    return await adminService.storeOrUpdateConfigureBusinessAgentCommissionService(res, data);
+    return await adminService.storeOrUpdateConfigureBusinessAgentCommissionService(res, data, companyId);
   } catch (error) {
     console.error('Error in storeOrUpdateConfigureBusinessAgentCommission:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1182,7 +1183,8 @@ const storeOrUpdateConfigureBusinessAgentCommission = async (req, res) => {
 const getAllConfigureBusinessAgentCommissions = async (req, res) => {
   try {
     const { min, max, group_id, business_agent_id } = req.body || {};
-    return await adminService.getAllConfigureBusinessAgentCommissionsService(res, { group_id, business_agent_id }, min, max);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getAllConfigureBusinessAgentCommissionsService(res, { group_id, business_agent_id }, min, max, companyId);
   } catch (error) {
     console.error('Error in getAllConfigureBusinessAgentCommissions:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1214,7 +1216,8 @@ const deleteConfigureBusinessAgentCommission = async (req, res) => {
 const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
   try {
     const data = { ...req.body };
-    return await adminService.storeOrUpdateHistoryBusinessAgentService(res, data);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.storeOrUpdateHistoryBusinessAgentService(res, data, companyId);
   } catch (error) {
     console.error('Error in storeOrUpdateHistoryBusinessAgent:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1224,7 +1227,8 @@ const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
 const getAllHistoryBusinessAgents = async (req, res) => {
   try {
     const { configure_business_agent_id, min, max } = req.body || {};
-    return await adminService.getAllHistoryBusinessAgentsService(res, configure_business_agent_id, min, max);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getAllHistoryBusinessAgentsService(res, configure_business_agent_id, min, max, companyId);
   } catch (error) {
     console.error('Error in getAllHistoryBusinessAgents:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

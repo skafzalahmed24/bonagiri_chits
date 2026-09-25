@@ -112,7 +112,8 @@ const getBusinessListUnderMembers = async (req, res) => {
     }
     const { min, max, member_id } = req.body || {};
     const agentId = req.user.id;
-    return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id, companyId);
   } catch (error) {
     console.error('Error in getBusinessListUnderMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -126,7 +127,8 @@ const getBusinessAgentCommissionSummary = async (req, res) => {
     }
     const { min, max } = req.body || {};
     const agentId = req.user.id;
-    return await adminService.getBusinessAgentCommissionSummaryService(res, agentId, min, max);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getBusinessAgentCommissionSummaryService(res, agentId, min, max, companyId);
   } catch (error) {
     console.error('Error in getBusinessAgentCommissionSummary:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -138,19 +140,27 @@ const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
     if (!isBusinessAgent(req.user)) {
       return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
     }
-    const data = req.body;
+    const data = { ...req.body };
     const configId = data.configure_business_agent_id;
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
 
     if (configId) {
-      const config = await ConfigureBusinessAgentCommission.findByPk(configId);
-      if (!config || config.business_agent_id !== req.user.id) {
+      const config = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          id: configId,
+          business_agent_id: req.user.id,
+          is_deleted_status: 0,
+          ...(companyId ? { company_id: companyId } : {})
+        }
+      });
+      if (!config) {
         return errorResponse(res, statusCodes.FORBIDDEN, 'You do not have permission to modify this record.');
       }
     } else {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'configure_business_agent_id is required');
     }
 
-    return await adminService.storeOrUpdateHistoryBusinessAgentService(res, data);
+    return await adminService.storeOrUpdateHistoryBusinessAgentService(res, data, companyId);
   } catch (error) {
     console.error('Error in storeOrUpdateHistoryBusinessAgent:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -164,7 +174,8 @@ const getHistoryByGroupId = async (req, res) => {
     }
     const { group_id, min, max } = req.body || {};
     const agentId = req.user.id;
-    return await adminService.getHistoryByGroupIdService(res, group_id, min, max, agentId);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getHistoryByGroupIdService(res, group_id, min, max, agentId, companyId);
   } catch (error) {
     console.error('Error in getHistoryByGroupId:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -177,7 +188,8 @@ const getBusinessAgentChitDetail = async (req, res) => {
       return errorResponse(res, statusCodes.FORBIDDEN, 'Only business agents can view this');
     }
     const agentId = req.user.id;
-    return await adminService.getBusinessAgentChitDetailService(res, req.body, agentId);
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getBusinessAgentChitDetailService(res, req.body, agentId, companyId);
   } catch (error) {
     console.error('Error in getBusinessAgentChitDetail:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

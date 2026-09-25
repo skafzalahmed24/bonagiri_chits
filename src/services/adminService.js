@@ -50,7 +50,11 @@ const resolveCompanyIdForAuth = async (userPayload) => {
   if (userPayload.role === 'staff') {
     return userPayload.company_id;
   }
-  if (userPayload.role === 'member' || userPayload.role === 'subscriber') {
+  if (userPayload.role === 'member' || userPayload.role === 'subscriber' || userPayload.id) {
+    if (userPayload.id) {
+      const member = await Member.findByPk(userPayload.id, { attributes: ['company_id'] });
+      if (member && member.company_id) return member.company_id;
+    }
     const userEnrollment = await Enrollment.findOne({
       where: {
         [Op.or]: [
@@ -2846,6 +2850,10 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
       });
 
       const chit_groups = Array.from(groupsMap.values());
+      if (business_agent_id && chit_groups.length === 0) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      }
+
       const totalMemberCommission = chit_groups.reduce((sum, g) => sum + (parseFloat(g.commission_amount) || 0), 0);
       const totalMemberReceived = chit_groups.reduce((sum, g) => sum + (parseFloat(g.total_paid) || 0), 0);
       const totalMemberPending = Math.max(0, totalMemberCommission - totalMemberReceived);
@@ -3257,11 +3265,19 @@ const deleteSelfChitService = async (res, id, companyId) => {
   }
 };
 
-const storeOrUpdateConfigureBusinessAgentCommissionService = async (res, data = {}) => {
+const storeOrUpdateConfigureBusinessAgentCommissionService = async (res, data = {}, companyId = null) => {
   try {
     const { id, ...configData } = data;
+    if (companyId) configData.company_id = companyId;
+
     if (id) {
-      const config = await ConfigureBusinessAgentCommission.findOne({ where: { id, company_id: companyId } });
+      const config = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          id,
+          is_deleted_status: 0,
+          ...(companyId ? { company_id: companyId } : {})
+        }
+      });
       if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
 
       const existing = await ConfigureBusinessAgentCommission.findOne({
@@ -3270,7 +3286,8 @@ const storeOrUpdateConfigureBusinessAgentCommissionService = async (res, data = 
           business_agent_id: configData.business_agent_id || config.business_agent_id,
           member_id: configData.member_id || config.member_id,
           is_deleted_status: 0,
-          id: { [Op.ne]: id }
+          id: { [Op.ne]: id },
+          ...(companyId ? { company_id: companyId } : {})
         }
       });
       if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration already exists for this group, business agent, and member');
@@ -3283,7 +3300,8 @@ const storeOrUpdateConfigureBusinessAgentCommissionService = async (res, data = 
           group_id: configData.group_id,
           business_agent_id: configData.business_agent_id,
           member_id: configData.member_id,
-          is_deleted_status: 0
+          is_deleted_status: 0,
+          ...(companyId ? { company_id: companyId } : {})
         }
       });
       if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration already exists for this group, business agent, and member');
@@ -3297,11 +3315,14 @@ const storeOrUpdateConfigureBusinessAgentCommissionService = async (res, data = 
   }
 };
 
-const getAllConfigureBusinessAgentCommissionsService = async (res, filters = {}, min, max) => {
+const getAllConfigureBusinessAgentCommissionsService = async (res, filters = {}, min, max, companyId = null) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
-    const where = { is_deleted_status: 0 };
+    const where = {
+      is_deleted_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
     if (filters.group_id) where.group_id = filters.group_id;
     if (filters.business_agent_id) where.business_agent_id = filters.business_agent_id;
 
@@ -3391,14 +3412,20 @@ const deleteConfigureBusinessAgentCommissionService = async (res, id, companyId)
   }
 };
 
-const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
+const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}, companyId = null) => {
   try {
     const { id, ...historyData } = data;
 
     const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findByPk(id))?.configure_business_agent_id : null);
     if (!configId) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration ID is required');
 
-    const config = await ConfigureBusinessAgentCommission.findByPk(configId);
+    const config = await ConfigureBusinessAgentCommission.findOne({
+      where: {
+        id: configId,
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      }
+    });
     if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
 
     const totalCommission = parseFloat(config.commission_amount) || 0;
@@ -3409,11 +3436,20 @@ const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
     previousTotal = parseFloat(previousTotal);
 
     if (id) {
-      const history = await HistoryBusinessAgent.findByPk(id);
+      const history = await HistoryBusinessAgent.findOne({
+        where: {
+          id,
+          configure_business_agent_id: configId,
+          is_deleted_status: 0
+        }
+      });
       if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
 
+      // Do NOT allow update to change configure_business_agent_id
+      delete historyData.configure_business_agent_id;
+
       const oldAmount = parseFloat(history.paid_amount) || 0;
-      const newAmount = parseFloat(historyData.paid_amount) || oldAmount;
+      const newAmount = historyData.paid_amount !== undefined ? (parseFloat(historyData.paid_amount) || 0) : oldAmount;
       const newTotal = previousTotal - oldAmount + newAmount;
 
       if (newTotal > totalCommission) {
@@ -3434,7 +3470,10 @@ const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
         return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
       }
 
-      const newHistory = await HistoryBusinessAgent.create(historyData);
+      const newHistory = await HistoryBusinessAgent.create({
+        ...historyData,
+        configure_business_agent_id: configId
+      });
 
       const newStatus = newTotal >= totalCommission ? 3 : (newTotal > 0 ? 2 : 1);
       await config.update({ status: newStatus });
@@ -3447,10 +3486,20 @@ const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}) => {
   }
 };
 
-const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_id, min, max) => {
+const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_id, min, max, companyId = null) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
+
+    if (configure_business_agent_id && companyId) {
+      const config = await ConfigureBusinessAgentCommission.findOne({
+        where: { id: configure_business_agent_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!config) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+      }
+    }
+
     const where = { is_deleted_status: 0 };
     if (configure_business_agent_id) where.configure_business_agent_id = configure_business_agent_id;
 
@@ -3458,6 +3507,14 @@ const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_
       where,
       limit,
       offset,
+      include: companyId ? [
+        {
+          model: ConfigureBusinessAgentCommission,
+          as: 'configure_business_agent',
+          where: { company_id: companyId, is_deleted_status: 0 },
+          attributes: []
+        }
+      ] : [],
       order: [['createdAt', 'DESC']]
     });
     return successResponse(res, statusCodes.OK, 'History records retrieved successfully', records);
@@ -3470,7 +3527,18 @@ const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_
 const getHistoryBusinessAgentByIdService = async (res, id, companyId) => {
   try {
     const history = await HistoryBusinessAgent.findOne({
-      where: { id, company_id: companyId, is_deleted_status: 0 }
+      where: { id, is_deleted_status: 0 },
+      include: [
+        {
+          model: ConfigureBusinessAgentCommission,
+          as: 'configure_business_agent',
+          where: {
+            is_deleted_status: 0,
+            ...(companyId ? { company_id: companyId } : {})
+          },
+          required: !!companyId
+        }
+      ]
     });
     if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
     return successResponse(res, statusCodes.OK, 'History record retrieved successfully', history);
@@ -3482,7 +3550,19 @@ const getHistoryBusinessAgentByIdService = async (res, id, companyId) => {
 
 const deleteHistoryBusinessAgentService = async (res, id, companyId) => {
   try {
-    const history = await HistoryBusinessAgent.findOne({ where: { id, company_id: companyId } });
+    const history = await HistoryBusinessAgent.findOne({
+      where: { id, is_deleted_status: 0 },
+      include: [
+        {
+          model: ConfigureBusinessAgentCommission,
+          as: 'configure_business_agent',
+          where: {
+            ...(companyId ? { company_id: companyId } : {})
+          },
+          required: !!companyId
+        }
+      ]
+    });
     if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
     await history.update({ is_deleted_status: 1 });
     return successResponse(res, statusCodes.OK, 'History record deleted successfully');
