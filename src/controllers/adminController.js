@@ -633,8 +633,9 @@ const getAllAgentTargetEntry = async (req, res) => {
 
 const getBusinessListUnderMembers = async (req, res) => {
   try {
-    const { business_agent_id, min, max } = req.body || {};
-    return await adminService.getBusinessListUnderMembersService(res, business_agent_id, min, max);
+    const { business_agent_id, min, max, member_id } = req.body || {};
+    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : null);
+    return await adminService.getBusinessListUnderMembersService(res, agentId, min, max, member_id);
   } catch (error) {
     console.error('Error in getBusinessListUnderMembers:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1254,9 +1255,21 @@ const deleteHistoryBusinessAgent = async (req, res) => {
 const getBusinessAgentCommissionSummary = async (req, res) => {
   try {
     const { business_agent_id, min, max } = req.body || {};
-    return await adminService.getBusinessAgentCommissionSummaryService(res, business_agent_id, min, max);
+    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : null);
+    return await adminService.getBusinessAgentCommissionSummaryService(res, agentId, min, max);
   } catch (error) {
     console.error('Error in getBusinessAgentCommissionSummary:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentChitDetail = async (req, res) => {
+  try {
+    const { business_agent_id } = req.body || {};
+    const agentId = business_agent_id || (req.user && req.user.role === 'member' ? req.user.id : null);
+    return await adminService.getBusinessAgentChitDetailService(res, req.body, agentId);
+  } catch (error) {
+    console.error('Error in getBusinessAgentChitDetail:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1733,6 +1746,7 @@ module.exports = {
   getHistoryBusinessAgentById,
   deleteHistoryBusinessAgent,
   getBusinessAgentCommissionSummary,
+  getBusinessAgentChitDetail,
   getHistoryByGroupId,
   updateCollectionSubmissionStatus,
   getAllCollectionSubmissions,

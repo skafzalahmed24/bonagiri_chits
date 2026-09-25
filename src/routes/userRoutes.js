@@ -33,6 +33,10 @@ router.post('/payment-receipt', authMiddleware.authenticateToken, validate(userV
 
 // business-agent routes (authenticated)
 router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, validate(userValidation.getBusinessListUnderMembersSchema), userController.getBusinessListUnderMembers);
+router.post('/business-agent/summary', authMiddleware.authenticateToken, validate(userValidation.getBusinessAgentCommissionSummarySchema), userController.getBusinessAgentCommissionSummary);
+router.post('/business-agent/members-by-group', authMiddleware.authenticateToken, validate(userValidation.getHistoryByGroupIdSchema), userController.getHistoryByGroupId);
+router.post('/business-agent/chit-detail', authMiddleware.authenticateToken, validate(userValidation.getBusinessAgentChitDetailSchema), userController.getBusinessAgentChitDetail);
+router.post('/business-agent/chits-by-member', authMiddleware.authenticateToken, validate(userValidation.getBusinessListUnderMembersSchema), userController.getBusinessListUnderMembers);
 router.post('/member/ledger', authMiddleware.authenticateToken, validate(userValidation.getMemberLedgerSchema), userController.getMemberLedger);
 router.post('/business-agent/total-commission', authMiddleware.authenticateToken, validate(userValidation.getBusinessAgentTotalCommissionSchema), userController.getBusinessAgentTotalCommission);
 router.post('/business-agent/paid-commission', authMiddleware.authenticateToken, validate(userValidation.getBusinessAgentPaidCommissionSchema), userController.getBusinessAgentPaidCommission);

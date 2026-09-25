@@ -73,9 +73,30 @@ const getPaymentReceiptSchema = Joi.object({
 });
 
 const getBusinessListUnderMembersSchema = Joi.object({
-  business_agent_id: Joi.number().integer().required(),
+  business_agent_id: Joi.number().integer().optional(),
+  member_id: Joi.number().integer().optional(),
   min: Joi.number().integer().min(0).optional(),
   max: Joi.number().integer().min(1).optional()
+});
+
+const getBusinessAgentCommissionSummarySchema = Joi.object({
+  business_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
+const getHistoryByGroupIdSchema = Joi.object({
+  group_id: Joi.string().uuid().required(),
+  business_agent_id: Joi.number().integer().optional(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional()
+});
+
+const getBusinessAgentChitDetailSchema = Joi.object({
+  configure_business_agent_id: Joi.string().uuid().optional(),
+  group_id: Joi.string().uuid().optional(),
+  member_id: Joi.number().integer().optional(),
+  business_agent_id: Joi.number().integer().optional()
 });
 
 const getBusinessAgentTotalCommissionSchema = Joi.object({
@@ -348,5 +369,8 @@ module.exports = {
   getBusinessAgentTotalCommissionSchema,
   getBusinessAgentPaidCommissionSchema,
   getBusinessAgentPendingCommissionSchema,
-  getBusinessAgentMemberJoinedSchema
+  getBusinessAgentMemberJoinedSchema,
+  getBusinessAgentCommissionSummarySchema,
+  getHistoryByGroupIdSchema,
+  getBusinessAgentChitDetailSchema
 };

@@ -238,7 +238,8 @@ router.post('/history-business-agent/delete', authMiddleware.authenticateToken, 
 
 // business-agent summary route
 router.post('/configure-business-agent-commission/summary-by-agent', authMiddleware.authenticateToken, validate(adminValidation.getBusinessAgentCommissionSummarySchema), adminController.getBusinessAgentCommissionSummary);
-router.post('/history-business-agent/history-by-group-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getHistoryByGroupIdSchema), adminController.getHistoryByGroupId);
+router.post('/history-business-agent/history-by-group-id', authMiddleware.authenticateToken, validate(adminValidation.getHistoryByGroupIdSchema), adminController.getHistoryByGroupId);
+router.post('/configure-business-agent-commission/chit-detail', authMiddleware.authenticateToken, validate(adminValidation.getBusinessAgentChitDetailSchema), adminController.getBusinessAgentChitDetail);
 
 // collection-agent submissions update
 router.post('/collection-agent/submissions/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.updateCollectionSubmissionStatusSchema), adminController.updateCollectionSubmissionStatus);
