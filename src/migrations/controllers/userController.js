@@ -7,7 +7,7 @@ const { ConfigureBusinessAgentCommission } = require('../models');
 const getHomeRecord = async (req, res) => {
   try {
     const { subscriber_id } = req.body;
-    return await userService.getHomeRecordService(res, req.user);
+    return await userService.getHomeRecordService(res, req.user, subscriber_id);
   } catch (error) {
     console.error('Error in getHomeRecord:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

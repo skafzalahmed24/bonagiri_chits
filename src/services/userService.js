@@ -13,10 +13,11 @@ const { Op } = require('sequelize');
 
 const { getSimulatedNow } = require('../utils/timeSimulator');
 const { isCollectionAgent, isBusinessAgent } = require('../utils/authHelpers');
+const { calculateMemberRating } = require('../utils/ratingHelper');
 const fcmService = require('./fcmService');
 
-const getHomeRecordService = async (res, userPayload) => {
-    const subscriber_id = userPayload ? userPayload.id : null;
+const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) => {
+    const subscriber_id = reqSubscriberId || (userPayload ? userPayload.id : null);
     try {
         // 1. Fetch only essential Enrollment fields
         const enrollment = await Enrollment.findOne({
@@ -93,8 +94,9 @@ const getHomeRecordService = async (res, userPayload) => {
 
         // 5. Fetch the latest upcoming chit record (same logic as getUpcomingChitsService, limit 1)
         let latest_upcoming_chit = null;
+        let member = null;
         try {
-            const member = await Member.findByPk(subscriber_id);
+            member = await Member.findByPk(subscriber_id);
             const company_id = member ? member.company_id : null;
 
             const whereClause = { status: 1 };
@@ -131,6 +133,16 @@ const getHomeRecordService = async (res, userPayload) => {
             // Non-blocking: keep latest_upcoming_chit as null
         }
 
+        // 6. Calculate Member Star Rating (matching login response)
+        let memberRating = null;
+        try {
+            if (subscriber_id) {
+                memberRating = await calculateMemberRating(subscriber_id, member);
+            }
+        } catch (ratingErr) {
+            console.error('Error calculating member rating in getHomeRecordService:', ratingErr);
+        }
+
         const responseData = {
             id: enrollment.id,
             group_id: enrollment.group_id,
@@ -146,7 +158,8 @@ const getHomeRecordService = async (res, userPayload) => {
                 updatedAt: upcomingInstallment.updatedAt
             }),
             upcoming_auction,
-            latest_upcoming_chit
+            latest_upcoming_chit,
+            rating: memberRating
         };
 
         return successResponse(res, statusCodes.OK, 'Latest home record and upcoming installment retrieved successfully', responseData);
