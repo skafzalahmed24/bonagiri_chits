@@ -1431,6 +1431,44 @@ const getAdminNotificationHistory = async (req, res) => {
   }
 };
 
+const getAdminNotificationBadgeCount = async (req, res) => {
+  try {
+    return await adminNotificationService.getAdminNotificationBadgeCountService(res, req.user);
+  } catch (error) {
+    console.error('Error in getAdminNotificationBadgeCount:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const markAdminNotificationRead = async (req, res) => {
+  try {
+    const { notification_id } = req.body || {};
+    return await adminNotificationService.markAdminNotificationReadService(res, req.user, notification_id);
+  } catch (error) {
+    console.error('Error in markAdminNotificationRead:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const markAllAdminNotificationsRead = async (req, res) => {
+  try {
+    return await adminNotificationService.markAllAdminNotificationsReadService(res, req.user);
+  } catch (error) {
+    console.error('Error in markAllAdminNotificationsRead:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteAdminNotification = async (req, res) => {
+  try {
+    const { notification_id, delete_all } = req.body || {};
+    return await adminNotificationService.deleteAdminNotificationService(res, req.user, notification_id, delete_all);
+  } catch (error) {
+    console.error('Error in deleteAdminNotification:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const storeDirectPayment = async (req, res) => {
   try {
     return await adminService.storeDirectPaymentService(res, req.user, req.body);
@@ -1779,6 +1817,10 @@ module.exports = {
   registerAdminToken,
   sendManualNotification,
   getAdminNotificationHistory,
+  getAdminNotificationBadgeCount,
+  markAdminNotificationRead,
+  markAllAdminNotificationsRead,
+  deleteAdminNotification,
   storeDirectPayment,
   getAllAuditLogs,
   getMemberDocumentsAdmin,

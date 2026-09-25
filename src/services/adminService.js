@@ -3,12 +3,13 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 const SystemSettingsService = require('./systemSettingsService');
 const twilioService = require('./twilioService');
+const fcmService = require('./fcmService');
 const { calculateMemberRating } = require('../utils/ratingHelper');
 const { deleteUploadedFile } = require('../utils/fileHelper');
 
@@ -4362,6 +4363,20 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
     }
 
     await transaction.commit();
+
+    if (status === 2 && submission.member) {
+      try {
+        fcmService.sendPushToMember(
+          submission.member,
+          'Payment Verified!',
+          `Your payment of ₹${submission.received_amount} has been verified and credited to your account.`,
+          { type: 'PAYMENT_VERIFIED', submission_id: String(id), amount: String(submission.received_amount) }
+        );
+      } catch (fcmErr) {
+        console.error('Failed to send payment verified push:', fcmErr.message);
+      }
+    }
+
     return successResponse(res, statusCodes.OK, 'Submission status updated successfully', submission);
   } catch (error) {
     if (transaction) await transaction.rollback();
@@ -5934,8 +5949,6 @@ const getDashboardSummaryService = async (res, companyId) => {
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
-
-const fcmService = require('./fcmService');
 
 const registerAdminTokenService = async (res, userPayload, fcm_token) => {
   try {

@@ -293,7 +293,11 @@ router.post('/dashboard/summary', authMiddleware.authenticateToken, adminControl
 // fcm notifications routes
 router.post('/admin/notifications/register-token', authMiddleware.authenticateToken, validate(adminValidation.registerTokenSchema), adminController.registerAdminToken);
 router.post('/admin/notifications/send-manual', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.sendManualNotificationSchema), adminController.sendManualNotification);
-router.post('/admin/notifications/history', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.getAdminNotificationHistorySchema), adminController.getAdminNotificationHistory);
+router.post('/admin/notifications/history', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, validate(adminValidation.getAdminNotificationHistorySchema), adminController.getAdminNotificationHistory);
+router.post('/admin/notifications/badge-count', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, adminController.getAdminNotificationBadgeCount);
+router.post('/admin/notifications/mark-read', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, adminController.markAdminNotificationRead);
+router.post('/admin/notifications/mark-all-read', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, adminController.markAllAdminNotificationsRead);
+router.post('/admin/notifications/delete', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, adminController.deleteAdminNotification);
 
 // System Utilities Routes
 router.get('/admin/system/settings', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemSettings);

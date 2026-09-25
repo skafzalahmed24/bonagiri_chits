@@ -6,7 +6,7 @@ const {
     UpcomingChit, UpcomingChitInterest, CustomerPayment, GroupUnderStaticList,
     Auction, CollectionAgentAmount, FixedSchemeChitsConfiguration,
     NotificationHistory, MemberDocument, CustomerVisit, Gallery, MemberReferral,
-    ConfigureBusinessAgentCommission, HistoryBusinessAgent, ChitType,
+    ConfigureBusinessAgentCommission, HistoryBusinessAgent, ChitType, StaffUser,
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
@@ -385,23 +385,35 @@ const submitChitInterestService = async (res, userPayload, upcoming_chit_id, sho
                 await interestRecord.update({ showing_interest: 1 });
             }
 
-            // Send notification to member confirming registered interest
-            try {
-                const member = await Member.findByPk(user_id);
-                if (member) {
-                    fcmService.sendPushToMember(
-                        member,
-                        'Interest Registered!',
-                        `You have registered your interest in upcoming chit: ${chit.group_name || 'Upcoming Chit'}. Our team will contact you once enrollment begins.`,
-                        {
+            // Send notification to Admin ONLY (member does not get self-notification)
+            const member = await Member.findByPk(user_id).catch(() => null);
+            const companyId = chit.company_id || member?.company_id || userPayload?.company_id;
+            const memberName = member?.name || member?.rep_by_first_name || 'Member';
+            const memberPhone = member?.mobile_number || '';
+
+            // Record in Admin Notification History
+            if (companyId) {
+                try {
+                    await NotificationHistory.create({
+                        user_id: String(companyId),
+                        user_type: 'STAFF',
+                        company_id: companyId,
+                        title: 'Upcoming Chit Interest',
+                        body: `Member ${memberName} registered interest in upcoming chit "${chit.group_name || 'Upcoming Chit'}".`,
+                        data_payload: {
                             type: 'UPCOMING_CHIT_INTEREST',
                             upcoming_chit_id: String(upcoming_chit_id),
+                            member_id: String(user_id),
+                            member_name: memberName,
+                            member_phone: memberPhone,
                             group_name: String(chit.group_name || '')
-                        }
-                    );
+                        },
+                        is_read: false
+                    });
+                    console.log(`[NOTIF] Created Admin Notification for upcoming chit interest (Company: ${companyId}, Member: ${memberName})`);
+                } catch (adminNotifErr) {
+                    console.error('[NOTIF] Failed to save Admin Notification for chit interest:', adminNotifErr.message);
                 }
-            } catch (fcmErr) {
-                console.error('Failed to send interest FCM:', fcmErr);
             }
         }
 
@@ -2800,6 +2812,51 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
         }
 
         await transaction.commit();
+
+        // Dispatch notifications to Member & Admin (non-blocking)
+        try {
+            const member = await Member.findByPk(member_id);
+            let agentName = 'Collection Agent';
+            if (collection_agent_id) {
+                const agentUser = await StaffUser.findByPk(collection_agent_id) || await Member.findByPk(collection_agent_id);
+                if (agentUser) agentName = agentUser.name || agentUser.first_name || 'Collection Agent';
+            }
+            if (member) {
+                // 1. Member Notification
+                await fcmService.sendPushToMember(
+                    member,
+                    'Payment Received',
+                    `Payment of ₹${amount} collected by ${agentName}. Status: Pending Verification.`,
+                    {
+                        type: 'PAYMENT_COLLECTED',
+                        submission_id: String(submission.id),
+                        amount: String(amount),
+                        agent_name: agentName
+                    }
+                );
+                // 2. Admin / Staff Notification
+                if (member.company_id) {
+                    await NotificationHistory.create({
+                        user_id: String(member.company_id),
+                        user_type: 'STAFF',
+                        company_id: member.company_id,
+                        title: 'Payment Collected by Agent',
+                        body: `Agent ${agentName} collected ₹${amount} from member ${member.name || member.rep_by_first_name || 'Member'}.`,
+                        data_payload: {
+                            type: 'AGENT_PAYMENT_COLLECTED',
+                            submission_id: String(submission.id),
+                            member_id: String(member.id),
+                            amount: String(amount),
+                            agent_name: agentName
+                        },
+                        is_read: false
+                    });
+                }
+            }
+        } catch (notifErr) {
+            console.error('[NOTIF] Failed to send payment collection notification:', notifErr.message);
+        }
+
         return successResponse(res, statusCodes.OK, 'Payment submitted successfully', { submission_id: submission.id });
     } catch (error) {
         await transaction.rollback();
@@ -3159,6 +3216,29 @@ const uploadMemberDocumentService = async (res, body, userPayload) => {
             status: 1
         });
 
+        // Notify Admin (non-blocking)
+        try {
+            const member = await Member.findByPk(member_id);
+            if (member && member.company_id) {
+                await NotificationHistory.create({
+                    user_id: String(member.company_id),
+                    user_type: 'STAFF',
+                    company_id: member.company_id,
+                    title: 'Member Document Uploaded',
+                    body: `Document (${document_type}) uploaded for member ${member.first_name || 'Member'}.`,
+                    data_payload: {
+                        type: 'DOCUMENT_UPLOADED',
+                        member_id: String(member_id),
+                        group_id: String(group_id),
+                        document_type
+                    },
+                    is_read: false
+                });
+            }
+        } catch (notifErr) {
+            console.error('[NOTIF] Failed to send document upload notification:', notifErr.message);
+        }
+
         return successResponse(res, statusCodes.OK, 'Document uploaded successfully', {
             member_id,
             group_id,
@@ -3211,6 +3291,9 @@ const getNotificationHistoryService = async (res, userPayload, min = 0, max = 20
             user_id: String(userPayload.id),
             user_type: 'MEMBER'
         };
+        if (userPayload.company_id) {
+            whereClause.company_id = userPayload.company_id;
+        }
 
         if (filter === 'unread') {
             whereClause.is_read = false;
@@ -3218,8 +3301,13 @@ const getNotificationHistoryService = async (res, userPayload, min = 0, max = 20
             whereClause.is_read = true;
         }
 
+        const unreadWhere = { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false };
+        if (userPayload.company_id) {
+            unreadWhere.company_id = userPayload.company_id;
+        }
+
         const unread_count = await NotificationHistory.count({
-            where: { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false }
+            where: unreadWhere
         });
 
         const { count, rows } = await NotificationHistory.findAndCountAll({
@@ -3244,8 +3332,13 @@ const getNotificationBadgeCountService = async (res, userPayload) => {
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
+        const unreadWhere = { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false };
+        if (userPayload.company_id) {
+            unreadWhere.company_id = userPayload.company_id;
+        }
+
         const unread_count = await NotificationHistory.count({
-            where: { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false }
+            where: unreadWhere
         });
 
         return successResponse(res, statusCodes.OK, 'Notification badge count retrieved successfully', {
@@ -3261,8 +3354,13 @@ const markNotificationReadService = async (res, userPayload, notification_id) =>
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
+        const whereClause = { id: notification_id, user_id: String(userPayload.id), user_type: 'MEMBER' };
+        if (userPayload.company_id) {
+            whereClause.company_id = userPayload.company_id;
+        }
+
         const notification = await NotificationHistory.findOne({
-            where: { id: notification_id, user_id: String(userPayload.id), user_type: 'MEMBER' }
+            where: whereClause
         });
 
         if (!notification) {
@@ -3271,8 +3369,13 @@ const markNotificationReadService = async (res, userPayload, notification_id) =>
 
         await notification.update({ is_read: true });
 
+        const unreadWhere = { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false };
+        if (userPayload.company_id) {
+            unreadWhere.company_id = userPayload.company_id;
+        }
+
         const unread_count = await NotificationHistory.count({
-            where: { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false }
+            where: unreadWhere
         });
 
         return successResponse(res, statusCodes.OK, 'Notification marked as read', { unread_count });
@@ -3286,9 +3389,14 @@ const markAllNotificationsReadService = async (res, userPayload) => {
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
+        const whereClause = { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false };
+        if (userPayload.company_id) {
+            whereClause.company_id = userPayload.company_id;
+        }
+
         await NotificationHistory.update(
             { is_read: true },
-            { where: { user_id: String(userPayload.id), user_type: 'MEMBER', is_read: false } }
+            { where: whereClause }
         );
 
         return successResponse(res, statusCodes.OK, 'All notifications marked as read', { unread_count: 0 });
@@ -3302,9 +3410,14 @@ const deleteNotificationService = async (res, userPayload, notification_id, dele
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
+        const baseWhere = { user_id: String(userPayload.id), user_type: 'MEMBER' };
+        if (userPayload.company_id) {
+            baseWhere.company_id = userPayload.company_id;
+        }
+
         if (delete_all) {
             await NotificationHistory.destroy({
-                where: { user_id: String(userPayload.id), user_type: 'MEMBER' }
+                where: baseWhere
             });
             return successResponse(res, statusCodes.OK, 'All notifications deleted successfully', { unread_count: 0 });
         }
@@ -3314,7 +3427,7 @@ const deleteNotificationService = async (res, userPayload, notification_id, dele
         }
 
         const deletedCount = await NotificationHistory.destroy({
-            where: { id: notification_id, user_id: String(userPayload.id), user_type: 'MEMBER' }
+            where: { ...baseWhere, id: notification_id }
         });
 
         if (deletedCount === 0) {
@@ -3770,6 +3883,28 @@ const storeCustomerVisitService = async (res, payload) => {
             customer_vistor_status: customer_vistor_status || 0
         });
 
+        // Notify Admin (non-blocking)
+        try {
+            if (member.company_id) {
+                await NotificationHistory.create({
+                    user_id: String(member.company_id),
+                    user_type: 'STAFF',
+                    company_id: member.company_id,
+                    title: 'Customer Visit Logged',
+                    body: `Agent ${agent.first_name || agent.name || 'Collection Agent'} logged a visit for member ${member.first_name || 'Member'}.`,
+                    data_payload: {
+                        type: 'CUSTOMER_VISIT',
+                        visit_id: String(newVisit.id),
+                        member_id: String(member_id),
+                        collection_agent_id: String(collection_agent_id)
+                    },
+                    is_read: false
+                });
+            }
+        } catch (notifErr) {
+            console.error('[NOTIF] Failed to send customer visit notification:', notifErr.message);
+        }
+
         return successResponse(res, statusCodes.OK, 'Customer visit stored successfully', newVisit);
     } catch (error) {
         console.error('Error in storeCustomerVisitService:', error);
@@ -3958,6 +4093,33 @@ const referMemberService = async (res, userPayload, payload) => {
             mobile_number,
             status: 0
         });
+
+        // Dispatch notification to Admin ONLY (referrer does not get self-notification)
+        try {
+            const referrer = await Member.findByPk(refer_by_user_id) || await StaffUser.findByPk(refer_by_user_id);
+            const referrerName = referrer?.name || referrer?.rep_by_first_name || 'A user';
+            const companyId = referrer?.company_id;
+
+            if (companyId) {
+                await NotificationHistory.create({
+                    user_id: String(companyId),
+                    user_type: 'STAFF',
+                    company_id: companyId,
+                    title: 'New Customer Referral',
+                    body: `${referrerName} referred new customer: ${name} (${mobile_number}).`,
+                    data_payload: {
+                        type: 'NEW_REFERRAL',
+                        referral_id: String(newReferral.id),
+                        refer_by_user_id: String(refer_by_user_id),
+                        name,
+                        mobile_number
+                    },
+                    is_read: false
+                });
+            }
+        } catch (notifErr) {
+            console.error('[NOTIF] Failed to send referral notification:', notifErr.message);
+        }
 
         return successResponse(res, statusCodes.CREATED, 'Referral submitted successfully', newReferral);
     } catch (error) {
