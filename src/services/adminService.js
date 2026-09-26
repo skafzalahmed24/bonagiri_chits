@@ -3049,9 +3049,7 @@ const getBusinessListUnderMembersService = async (res, business_agent_id, min, m
 
     return successResponse(res, statusCodes.OK, 'Members under business agent retrieved successfully', {
       count: total_count,
-      total_count,
-      rows: paginatedRows,
-      members_you_have_suggested: paginatedRows
+      rows: paginatedRows
     });
   } catch (error) {
     console.error('Error in getBusinessListUnderMembersService:', error);
@@ -3799,6 +3797,8 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
           user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
           initial: member.name && member.name.trim().length > 0 ? member.name.trim()[0].toUpperCase() : 'M',
           profile_image: member.upload_image || null,
+          gender: member.gender || null,
+          gender_name: member.gender_dropdown?.dropdown_name || null,
           joined_on: member.createdAt ? formatDateDDMMYYYY(member.createdAt) : null,
           commission: 0,
           total_received: 0,
@@ -3818,7 +3818,8 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
       include: [{
         model: Member,
         as: 'subscriber',
-        attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'upload_image', 'createdAt']
+        attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'upload_image', 'gender', 'createdAt'],
+        include: [{ model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }]
       }]
     });
 
@@ -3831,6 +3832,8 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
           user_code: sub.other_info_user_code ? String(sub.other_info_user_code) : (sub.member_id || ''),
           initial: sub.name && sub.name.trim().length > 0 ? sub.name.trim()[0].toUpperCase() : 'M',
           profile_image: sub.upload_image || null,
+          gender: sub.gender || null,
+          gender_name: sub.gender_dropdown?.dropdown_name || null,
           joined_on: sub.createdAt ? formatDateDDMMYYYY(sub.createdAt) : null,
           commission: 0,
           total_received: 0,
@@ -3852,6 +3855,8 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
         name: item.name,
         initial: item.initial,
         profile_image: item.profile_image,
+        gender: item.gender,
+        gender_name: item.gender_name,
         commission,
         received,
         pending,
@@ -4656,6 +4661,10 @@ const getMemberByIdService = async (res, id, companyId) => {
       memberData.trust_tier = ratingDetails.trust_tier;
       memberData.risk_level = ratingDetails.risk_level;
     }
+
+    // Clean image and gender fields
+    memberData.profile_image = memberData.upload_image || null;
+    memberData.gender_name = memberData.gender_dropdown?.dropdown_name || null;
 
     return successResponse(res, statusCodes.OK, 'Member retrieved successfully', memberData);
   } catch (error) {

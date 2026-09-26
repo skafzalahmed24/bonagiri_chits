@@ -31,7 +31,7 @@ const resolveCompanyId = (userToken) => {
   return (userToken.role === 'staff' || userToken.role === 'member') ? userToken.company_id : userToken.id;
 };
 
-const getValidOffersForSubscriberHelper = async (subscriberId, companyId = null) => {
+const getValidOffersForSubscriberHelper = async (subscriberId, companyId = null, bannerType = 2) => {
   try {
     const simulatedNow = await getSimulatedNow();
     const todayStr = simulatedNow.toISOString().split('T')[0];
@@ -43,15 +43,17 @@ const getValidOffersForSubscriberHelper = async (subscriberId, companyId = null)
     });
     const assignedBannerIds = assignedRecords.map(r => r.assigned_banner_id);
 
+    if (assignedBannerIds.length === 0) {
+      return [];
+    }
+
     const whereClause = {
+      id: { [Op.in]: assignedBannerIds },
+      banner_type: bannerType,
       is_deleted_status: 0,
       status: 1,
       banner_start_date: { [Op.lte]: todayStr },
-      banner_end_date: { [Op.gte]: todayStr },
-      [Op.or]: [
-        { banner_type: 1 }, // Regular (for all)
-        ...(assignedBannerIds.length > 0 ? [{ id: { [Op.in]: assignedBannerIds }, banner_type: 2 }] : [])
-      ]
+      banner_end_date: { [Op.gte]: todayStr }
     };
 
     if (companyId) {
@@ -397,40 +399,75 @@ const changeBannerStatusService = async (res, userToken, id, status) => {
 
 const getUserValidOffersService = async (res, userPayload, body = {}) => {
   try {
-    if (!userPayload || !userPayload.id) {
-      return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    let subscriberId = body.subscriber_id || body.member_id;
+    if (!subscriberId && userPayload) {
+      if (userPayload.role === 'member' || !isNaN(parseInt(userPayload.id, 10))) {
+        subscriberId = userPayload.id;
+      }
     }
 
-    const subscriberId = userPayload.id;
-    const companyId = userPayload.company_id || null;
-    const { min = 0, max = 10 } = body;
+    if (!subscriberId) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Subscriber ID is required');
+    }
 
+    let subIdInt = parseInt(subscriberId, 10);
+    let member = null;
+
+    if (isNaN(subIdInt) || subIdInt <= 0) {
+      member = await Member.findOne({
+        where: {
+          [Op.or]: [
+            { member_id: String(subscriberId) },
+            { other_info_user_code: parseInt(subscriberId, 10) || -1 }
+          ]
+        },
+        attributes: ['id', 'company_id']
+      });
+      if (member) {
+        subIdInt = member.id;
+      }
+    } else {
+      member = await Member.findByPk(subIdInt, { attributes: ['id', 'company_id'] });
+    }
+
+    const effectiveMemberId = member ? member.id : subIdInt;
+    const companyId = member ? member.company_id : (userPayload?.company_id || null);
+
+    const { min = 0, max = 10 } = body;
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
     const simulatedNow = await getSimulatedNow();
     const todayStr = simulatedNow.toISOString().split('T')[0];
 
-    // Find assigned banner IDs for this subscriber
+    // Find assigned banner IDs for this subscriber (banner_type: 2 - particular subscribers)
     const assignedRecords = await AssignedBannerToPeople.findAll({
-      where: { subscriber_id: subscriberId },
+      where: { subscriber_id: effectiveMemberId },
       attributes: ['assigned_banner_id']
     });
     const assignedBannerIds = assignedRecords.map(r => r.assigned_banner_id);
 
+    if (assignedBannerIds.length === 0) {
+      return successResponse(res, statusCodes.OK, 'Valid offers retrieved successfully', {
+        count: 0,
+        rows: []
+      });
+    }
+
     const whereClause = {
+      id: { [Op.in]: assignedBannerIds },
+      banner_type: 2,
       is_deleted_status: 0,
       status: 1,
       banner_start_date: { [Op.lte]: todayStr },
-      banner_end_date: { [Op.gte]: todayStr },
-      [Op.or]: [
-        { banner_type: 1 }, // Regular (for all)
-        ...(assignedBannerIds.length > 0 ? [{ id: { [Op.in]: assignedBannerIds }, banner_type: 2 }] : [])
-      ]
+      banner_end_date: { [Op.gte]: todayStr }
     };
 
     if (companyId) {
-      whereClause.company_id = companyId;
+      whereClause[Op.or] = [
+        { company_id: companyId },
+        { company_id: null }
+      ];
     }
 
     const { count, rows } = await Banner.findAndCountAll({
@@ -445,7 +482,7 @@ const getUserValidOffersService = async (res, userPayload, body = {}) => {
       id: b.id,
       banner_image: b.banner_image,
       banner_type: b.banner_type,
-      banner_type_label: b.banner_type === 1 ? 'Regular' : 'Targeted',
+      banner_type_label: 'Targeted',
       banner_start_date: b.banner_start_date,
       banner_end_date: b.banner_end_date,
       status: b.status

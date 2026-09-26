@@ -7,7 +7,7 @@ const {
     Auction, CollectionAgentAmount, FixedSchemeChitsConfiguration,
     NotificationHistory, MemberDocument, CustomerVisit, Gallery, MemberReferral,
     ConfigureBusinessAgentCommission, HistoryBusinessAgent, ChitType, StaffUser,
-    sequelize
+    Banner, sequelize
 } = require('../models');
 const { Op } = require('sequelize');
 
@@ -143,6 +143,44 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
             console.error('Error calculating member rating in getHomeRecordService:', ratingErr);
         }
 
+        // 7. Fetch active regular banners (banner_type: 1)
+        let banners = [];
+        try {
+            const simulatedNow = await getSimulatedNow();
+            const todayStr = simulatedNow.toISOString().split('T')[0];
+            const company_id = member ? member.company_id : (userPayload ? userPayload.company_id : null);
+
+            const bannerWhere = {
+                banner_type: 1,
+                is_deleted_status: 0,
+                status: 1,
+                banner_start_date: { [Op.lte]: todayStr },
+                banner_end_date: { [Op.gte]: todayStr }
+            };
+
+            if (company_id) {
+                bannerWhere.company_id = company_id;
+            }
+
+            const bannerRows = await Banner.findAll({
+                where: bannerWhere,
+                order: [['banner_start_date', 'DESC'], ['id', 'DESC']],
+                attributes: ['id', 'company_id', 'banner_image', 'banner_type', 'status', 'banner_start_date', 'banner_end_date', 'createdAt']
+            });
+
+            banners = bannerRows.map(b => ({
+                id: b.id,
+                banner_image: b.banner_image,
+                banner_type: b.banner_type,
+                banner_type_label: 'Regular',
+                banner_start_date: b.banner_start_date,
+                banner_end_date: b.banner_end_date,
+                status: b.status
+            }));
+        } catch (bannerErr) {
+            console.error('Error fetching regular banners in getHomeRecordService:', bannerErr);
+        }
+
         const responseData = {
             id: enrollment.id,
             group_id: enrollment.group_id,
@@ -159,7 +197,8 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
             }),
             upcoming_auction,
             latest_upcoming_chit,
-            rating: memberRating
+            rating: memberRating,
+            banners
         };
 
         return successResponse(res, statusCodes.OK, 'Latest home record and upcoming installment retrieved successfully', responseData);

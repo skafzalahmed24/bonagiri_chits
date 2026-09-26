@@ -323,6 +323,8 @@ const getChitTypesSchema = Joi.object({
 });
 
 const getUserValidOffersSchema = Joi.object({
+  subscriber_id: Joi.alternatives().try(Joi.number().integer(), Joi.string()).optional(),
+  member_id: Joi.alternatives().try(Joi.number().integer(), Joi.string()).optional(),
   min: Joi.number().integer().min(0).optional(),
   max: Joi.number().integer().min(1).optional()
 });
