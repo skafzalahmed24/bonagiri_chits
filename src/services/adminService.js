@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, EnrollmentJointHolder, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
@@ -12,6 +12,8 @@ const twilioService = require('./twilioService');
 const fcmService = require('./fcmService');
 const { calculateMemberRating } = require('../utils/ratingHelper');
 const { deleteUploadedFile } = require('../utils/fileHelper');
+const { dailyPenaltyFor, penaltyPercentFor, toDateStr, daysBetween, addDays } = require('../utils/penalty');
+const { memberTicketsInGroup, ticketWin, holderMembersOf } = require('../utils/jointHolders');
 
 const formatDateDDMMYYYY = (dateVal) => {
   if (!dateVal) return null;
@@ -825,184 +827,174 @@ const computeGroupStatus = async (group) => {
   return 0;
 };
 
+const frequencyFromModeName = (name) => {
+  const n = String(name || '').toLowerCase();
+  if (n === 'weekly') return 2;
+  if (n === 'daily') return 3;
+  return 1; // monthly, and the default
+};
+
+/**
+ * The group's instalment schedule for one payment frequency, as rows of
+ * { type, installment_no, due_date, payable_amount }. Copies the schedule of a
+ * member who already has one with the same frequency, so everyone in a group is on
+ * the same dates; otherwise generates it (decision 1: instalment 1 on the start date).
+ * Used by enrollment and by the late-join preview so the two can never disagree.
+ */
+const buildGroupSchedule = async (group, mappedType, { transaction, excludeEnrollmentId = null } = {}) => {
+  const peerRows = await sequelize.query(`
+    SELECT ci.enrollment_id
+    FROM chits_installments ci
+    JOIN enrollments e ON e.id = ci.enrollment_id
+    WHERE e.group_id = :groupId
+      AND e.delete_status = 0
+      AND e.id <> :excludeId
+      AND ci.type = :mappedType
+    LIMIT 1
+  `, {
+    replacements: { groupId: group.id, excludeId: excludeEnrollmentId || -1, mappedType },
+    type: sequelize.QueryTypes.SELECT,
+    transaction
+  });
+
+  if (peerRows.length > 0) {
+    const peerInstallments = await ChitsInstallment.findAll({
+      where: { enrollment_id: peerRows[0].enrollment_id },
+      order: [['installment_no', 'ASC']],
+      transaction
+    });
+    if (peerInstallments.length > 0) {
+      return peerInstallments.map((p) => ({
+        type: p.type,
+        installment_no: p.installment_no,
+        due_date: toDateStr(p.due_date),
+        payable_amount: p.payable_amount
+      }));
+    }
+  }
+
+  const noOfInstallments = group.no_of_installments || 1;
+  const initialDateStr = getGroupStartDate(group) || new Date().toISOString().split('T')[0];
+  const payableAmount = parseFloat(((parseFloat(group.chit_amount) || 0) / noOfInstallments).toFixed(2));
+
+  const schemeConfig = group.scheme_configuration_id
+    ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
+    : null;
+  const pricesArray = schemeConfig && schemeConfig.prices
+    ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
+    : [];
+
+  const daysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  const asDateStr = (d) => new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+  const dateIterator = new Date(initialDateStr);
+  const dueDayOfMonth = group.due_date_number_count || dateIterator.getDate();
+
+  const rows = [];
+  for (let i = 1; i <= noOfInstallments; i++) {
+    let currentPayableAmount = payableAmount;
+    if (schemeConfig) {
+      if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) {
+        currentPayableAmount = parseFloat(pricesArray[i - 1]?.installment) || 0;
+      } else if (schemeConfig.scheme_type === 62) {
+        currentPayableAmount = parseFloat(pricesArray[i - 1]?.not_withdrawn) || 0;
+      } else if (schemeConfig.scheme_type === 63) {
+        currentPayableAmount = parseFloat(schemeConfig.installment) || 0;
+      }
+    }
+
+    let dueDateStr;
+    if (i === 1) {
+      dueDateStr = asDateStr(dateIterator);
+    } else if (mappedType === 2) {
+      const d = new Date(initialDateStr);
+      d.setDate(d.getDate() + 7 * (i - 1));
+      dueDateStr = asDateStr(d);
+    } else if (mappedType === 3) {
+      const d = new Date(initialDateStr);
+      d.setDate(d.getDate() + (i - 1));
+      dueDateStr = asDateStr(d);
+    } else {
+      // Pin to the 1st before moving months so short months can't overflow, then clamp.
+      const d = new Date(initialDateStr);
+      d.setDate(1);
+      d.setMonth(d.getMonth() + (i - 1));
+      d.setDate(Math.min(dueDayOfMonth, daysInMonth(d)));
+      dueDateStr = asDateStr(d);
+    }
+
+    rows.push({ type: mappedType, installment_no: i, due_date: dueDateStr, payable_amount: currentPayableAmount });
+  }
+  return rows;
+};
+
+/** The company's late-join grace period in days (company setting, default 15). */
+const lateJoinGraceDays = async (companyId, transaction) => {
+  if (!companyId) return 15;
+  const company = await Company.findByPk(companyId, { attributes: ['late_join_grace_days'], transaction });
+  const days = company ? parseInt(company.late_join_grace_days, 10) : NaN;
+  return Number.isNaN(days) ? 15 : days;
+};
+
+/** Instalments already due on the joining date: the late joiner's catch-up. */
+const catchUpRows = (rows, enrollmentDateStr) => rows.filter((r) => r.due_date <= enrollmentDateStr);
+
 const createInstallmentsForEnrollment = async (enrollment, group, options = {}) => {
   const transaction = options.transaction;
-  
+
   // Skip if installments data already generated for this enrollment
-  const existingInstallmentRecord = await ChitsInstallment.findOne({ 
+  const existingInstallmentRecord = await ChitsInstallment.findOne({
     where: { enrollment_id: enrollment.id },
     transaction
   });
   if (existingInstallmentRecord) return;
 
-  const modeName = enrollment.payment_mode ? enrollment.payment_mode.dropdown_name : 'Unknown';
-  let mappedType = null;
-  if (modeName.toLowerCase() === 'monthly') mappedType = 1;
-  else if (modeName.toLowerCase() === 'weekly') mappedType = 2;
-  else if (modeName.toLowerCase() === 'daily') mappedType = 3;
-  else mappedType = 1; // Default to 1
+  const mappedType = frequencyFromModeName(enrollment.payment_mode && enrollment.payment_mode.dropdown_name);
+  const schedule = await buildGroupSchedule(group, mappedType, { transaction, excludeEnrollmentId: enrollment.id });
 
-  // Find a peer that has instalments and the same payment frequency
-  const peerInstallmentRows = await sequelize.query(`
-    SELECT ci.enrollment_id 
-    FROM chits_installments ci
-    JOIN enrollments e ON e.id = ci.enrollment_id
-    WHERE e.group_id = :groupId 
-      AND e.delete_status = 0 
-      AND e.id != :enrollmentId
-      AND ci.type = :mappedType
-    LIMIT 1
-  `, {
-    replacements: { groupId: group.id, enrollmentId: enrollment.id, mappedType },
-    type: sequelize.QueryTypes.SELECT,
-    transaction
-  });
+  const installmentsJsonArray = schedule.map((r) => ({
+    enrollment_id: enrollment.id,
+    group_id: group.id,
+    type: r.type,
+    installment_no: r.installment_no,
+    due_date: r.due_date,
+    over_due_days_count: 0,
+    penalty_amount: 0.00,
+    payable_amount: r.payable_amount,
+    penalty_from_date: null,
+    penalty_last_applied_date: null
+  }));
 
-  let copiedSchedule = null;
-  if (peerInstallmentRows && peerInstallmentRows.length > 0) {
-    const peerEnrollmentId = peerInstallmentRows[0].enrollment_id;
-    const peerInstallments = await ChitsInstallment.findAll({
-      where: { enrollment_id: peerEnrollmentId },
-      order: [['installment_no', 'ASC']],
-      transaction
+  // Late joiner (WP5): instalments already due on the joining date carry the penalty
+  // the admin chose, and the daily penalty waits for the grace period.
+  const enrollmentDateStr = toDateStr(enrollment.enrollment_date);
+  const catchUp = enrollmentDateStr ? catchUpRows(installmentsJsonArray, enrollmentDateStr) : [];
+  if (catchUp.length > 0) {
+    const graceDays = await lateJoinGraceDays(enrollment.company_id || group.company_id, transaction);
+    const penaltyFromDateStr = addDays(enrollmentDateStr, graceDays);
+    const penaltyType = parseInt(enrollment.late_join_penalty_type, 10);
+    const amount = parseFloat(enrollment.late_join_penalty_amount) || 0;
+
+    let applied = 0;
+    catchUp.forEach((inst, idx) => {
+      inst.penalty_from_date = penaltyFromDateStr;
+      if (penaltyType === 1 && amount > 0) {
+        // Spread a fixed total; the last instalment takes the rounding remainder.
+        const share = parseFloat((amount / catchUp.length).toFixed(2));
+        inst.penalty_amount = idx === catchUp.length - 1
+          ? parseFloat((amount - share * (catchUp.length - 1)).toFixed(2))
+          : share;
+      } else if (penaltyType === 2 && amount > 0) {
+        inst.penalty_amount = amount;
+      }
+      applied += inst.penalty_amount;
     });
-    if (peerInstallments && peerInstallments.length > 0) {
-      copiedSchedule = peerInstallments;
-    }
-  }
 
-  const noOfInstallments = group.no_of_installments || 1;
-  const installmentsJsonArray = [];
-
-  if (copiedSchedule) {
-    for (const peerInst of copiedSchedule) {
-      installmentsJsonArray.push({
-        enrollment_id: enrollment.id,
-        group_id: group.id,
-        type: peerInst.type,
-        installment_no: peerInst.installment_no,
-        due_date: peerInst.due_date,
-        over_due_days_count: 0,
-        penalty_amount: 0.00,
-        payable_amount: peerInst.payable_amount,
-        penalty_from_date: null,
-        penalty_last_applied_date: null
-      });
-    }
-  } else {
-    const startDateStr = getGroupStartDate(group);
-    const initialDateStr = startDateStr || new Date().toISOString().split('T')[0];
-    const chitAmount = parseFloat(group.chit_amount) || 0;
-    const payableAmount = parseFloat((chitAmount / noOfInstallments).toFixed(2));
-
-    const schemeConfig = group.scheme_configuration_id
-      ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
-      : null;
-
-    const pricesArray = schemeConfig && schemeConfig.prices
-      ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
-      : [];
-
-    let dueDayOfMonth = group.due_date_number_count;
-    const daysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-    
-    const dateIterator = new Date(initialDateStr);
-    if (!dueDayOfMonth) {
-      dueDayOfMonth = dateIterator.getDate();
-    }
-
-    for (let i = 1; i <= noOfInstallments; i++) {
-      let currentPayableAmount = payableAmount;
-
-      if (schemeConfig) {
-        if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) {
-          const row = pricesArray[i - 1];
-          currentPayableAmount = parseFloat(row?.installment) || 0;
-        } else if (schemeConfig.scheme_type === 62) {
-          const row = pricesArray[i - 1];
-          currentPayableAmount = parseFloat(row?.not_withdrawn) || 0;
-        } else if (schemeConfig.scheme_type === 63) {
-          currentPayableAmount = parseFloat(schemeConfig.installment) || 0;
-        }
-      }
-
-      let dueDateStr = '';
-      if (i === 1) {
-        dueDateStr = new Date(dateIterator.getTime() - (dateIterator.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
-      } else {
-        if (mappedType === 1) {
-          const newDate = new Date(initialDateStr);
-          newDate.setDate(1);
-          newDate.setMonth(newDate.getMonth() + (i - 1));
-          newDate.setDate(Math.min(dueDayOfMonth, daysInMonth(newDate)));
-          dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
-        } else if (mappedType === 2) {
-          const newDate = new Date(initialDateStr);
-          newDate.setDate(newDate.getDate() + 7 * (i - 1));
-          dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
-        } else if (mappedType === 3) {
-          const newDate = new Date(initialDateStr);
-          newDate.setDate(newDate.getDate() + (i - 1));
-          dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
-        }
-      }
-
-      installmentsJsonArray.push({
-        enrollment_id: enrollment.id,
-        group_id: group.id,
-        type: mappedType,
-        installment_no: i,
-        due_date: dueDateStr,
-        over_due_days_count: 0,
-        penalty_amount: 0.00,
-        payable_amount: currentPayableAmount,
-        penalty_from_date: null,
-        penalty_last_applied_date: null
-      });
-    }
-  }
-
-  if (enrollment.enrollment_date) {
-    const enrollmentDateObj = new Date(enrollment.enrollment_date);
-    enrollmentDateObj.setUTCHours(23, 59, 59, 999);
-    const latePenaltyType = parseInt(enrollment.late_join_penalty_type);
-    const latePenaltyAmount = parseFloat(enrollment.late_join_penalty_amount) || 0;
-
-    const catchUpInstalments = installmentsJsonArray.filter(i => new Date(i.due_date) <= enrollmentDateObj);
-
-    if (catchUpInstalments.length > 0) {
-      let companyId = enrollment.company_id || group.company_id;
-      let graceDays = 15;
-      if (companyId) {
-        const company = await Company.findByPk(companyId, { transaction });
-        if (company && company.late_join_grace_days !== undefined && company.late_join_grace_days !== null) {
-          graceDays = parseInt(company.late_join_grace_days);
-        }
-      }
-
-      const penaltyFromDateObj = new Date(enrollmentDateObj);
-      penaltyFromDateObj.setDate(penaltyFromDateObj.getDate() + graceDays);
-      const penaltyFromDateStr = penaltyFromDateObj.toISOString().split('T')[0];
-
-      let type1Share = 0;
-      let type1Remainder = 0;
-      if (latePenaltyType === 1 && latePenaltyAmount > 0) {
-        type1Share = parseFloat((latePenaltyAmount / catchUpInstalments.length).toFixed(2));
-        const totalType1 = type1Share * catchUpInstalments.length;
-        type1Remainder = parseFloat((latePenaltyAmount - totalType1).toFixed(2));
-      }
-
-      for (let idx = 0; idx < catchUpInstalments.length; idx++) {
-        const inst = catchUpInstalments[idx];
-        inst.penalty_from_date = penaltyFromDateStr;
-        if (latePenaltyType === 1) {
-          let toAdd = type1Share;
-          if (idx === catchUpInstalments.length - 1) toAdd += type1Remainder;
-          inst.penalty_amount = parseFloat(toAdd.toFixed(2));
-        } else if (latePenaltyType === 2) {
-          inst.penalty_amount = latePenaltyAmount;
-        }
-      }
+    // Record what was actually applied, for audit (type 2 stores the total, not the per-instalment amount).
+    if (!Number.isNaN(penaltyType)) {
+      await Enrollment.update(
+        { late_join_penalty_type: penaltyType, late_join_penalty_amount: parseFloat(applied.toFixed(2)) },
+        { where: { id: enrollment.id }, transaction }
+      );
     }
   }
 
@@ -1237,9 +1229,9 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
       try {
         const enrollments = await Enrollment.findAll({
           where: { group_id: chitsGroup.id, delete_status: 0, company_id: chitsGroup.company_id },
-          include: [{ model: Member, as: 'subscriber', where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } }, required: true }]
+          attributes: ['id']
         });
-        const members = enrollments.map(e => e.subscriber);
+        const members = (await holderMembersOf(enrollments.map((e) => e.id))).filter((m) => m.fcm_token);
 
         if (members.length > 0) {
           fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Completed', `Congratulations! The Chit Group ${chitsGroup.chit_group_name} has successfully completed its term.`, { type: 'GROUP_COMPLETED', group_id: String(chitsGroup.id) });
@@ -1458,11 +1450,133 @@ const checkAndUpdateChitFullStatus = async (group_id) => {
   }
 };
 
+/**
+ * Joint enrollment (up to 3 holders a ticket). Checks the other holders are verified,
+ * active members of the main holder's company, not the main holder, not listed twice,
+ * and that every share adds up to 100%. Returns { holders, mainShare } or { error }.
+ */
+const MAX_TICKET_HOLDERS = 3;
+const validateJointHolders = async (input, mainShareInput, subscriber) => {
+  const list = Array.isArray(input) ? input : [];
+  if (list.length === 0) return { holders: [], mainShare: 100 };
+  if (list.length + 1 > MAX_TICKET_HOLDERS) {
+    return { error: `A ticket can have at most ${MAX_TICKET_HOLDERS} holders.` };
+  }
+
+  const ids = list.map((h) => Number(h.member_id));
+  if (new Set(ids).size !== ids.length) return { error: 'The same member is listed twice as a joint holder.' };
+  if (ids.includes(Number(subscriber.id))) return { error: 'The main holder cannot also be a joint holder.' };
+
+  const members = await Member.findAll({ where: { id: { [Op.in]: ids } } });
+  for (const h of list) {
+    const m = members.find((x) => Number(x.id) === Number(h.member_id));
+    if (!m || Number(m.is_deleted_status) !== 0) return { error: `Joint holder #${h.member_id} was not found.` };
+    if (String(m.company_id) !== String(subscriber.company_id)) return { error: `Joint holder ${m.name} belongs to another company.` };
+    if (!m.is_verified) return { error: `Joint holder ${m.name} must be verified before enrollment.` };
+  }
+
+  const jointTotal = list.reduce((sum, h) => sum + Number(h.share_percent), 0);
+  const mainShare = mainShareInput !== undefined && mainShareInput !== null
+    ? Number(mainShareInput)
+    : parseFloat((100 - jointTotal).toFixed(2));
+  if (!(mainShare > 0)) return { error: "The main holder's share must be more than 0%." };
+  if (Math.abs(mainShare + jointTotal - 100) > 0.01) {
+    return { error: `Shares must add up to 100% (they add up to ${parseFloat((mainShare + jointTotal).toFixed(2))}%).` };
+  }
+
+  return {
+    mainShare,
+    holders: list.map((h) => ({ member: members.find((x) => Number(x.id) === Number(h.member_id)), share_percent: Number(h.share_percent) }))
+  };
+};
+
+/**
+ * Change who holds a ticket: add, remove or re-share joint holders, or turn a single
+ * ticket into a joint one (and back). Allowed only until the ticket wins an auction —
+ * after that the prize and the liability are fixed on the holders at the time.
+ * Removed holders keep their row with removed_on / removed_reason, so history stays.
+ */
+const updateJointHoldersService = async (res, data = {}) => {
+  const { company_id, enrollment_id, joint_holders: input, main_holder_share: mainShareInput, effective_date, reason } = data;
+  const enrollment = await Enrollment.findOne({ where: { id: enrollment_id, company_id, delete_status: 0 } });
+  if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+
+  const win = await ticketWin(enrollment);
+  if (win) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, `This ticket won auction #${win.auction_number}, so its holders can no longer change.`);
+  }
+
+  const subscriber = await Member.findByPk(enrollment.subscriber_id);
+  const joint = await validateJointHolders(input, mainShareInput, subscriber);
+  if (joint.error) return errorResponse(res, statusCodes.BAD_REQUEST, joint.error);
+
+  const bd = await SystemSettingsService.getBusinessDate();
+  const today = `${bd.getFullYear()}-${String(bd.getMonth() + 1).padStart(2, '0')}-${String(bd.getDate()).padStart(2, '0')}`;
+  const onDate = effective_date ? toDateStr(effective_date) : today;
+  const enrolledOn = toDateStr(enrollment.enrollment_date);
+  if (enrolledOn && onDate < enrolledOn) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, 'The change date cannot be before the enrollment date.');
+  }
+  if (onDate > today) return errorResponse(res, statusCodes.BAD_REQUEST, 'The change date cannot be in the future.');
+
+  const current = await EnrollmentJointHolder.findAll({ where: { enrollment_id: enrollment.id, removed_on: null } });
+  const nextIds = new Set(joint.holders.map((h) => Number(h.member.id)));
+  const leaving = current.filter((c) => !nextIds.has(Number(c.member_id)));
+  if (leaving.length && !(reason && String(reason).trim())) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, 'Give a reason when removing a joint holder.');
+  }
+
+  const transaction = await sequelize.transaction();
+  try {
+    for (const c of leaving) {
+      await c.update({ removed_on: onDate, removed_reason: String(reason).trim() }, { transaction });
+    }
+    for (const h of joint.holders) {
+      const existing = current.find((c) => Number(c.member_id) === Number(h.member.id));
+      if (existing) {
+        if (Number(existing.share_percent) !== h.share_percent) await existing.update({ share_percent: h.share_percent }, { transaction });
+      } else {
+        await EnrollmentJointHolder.create({
+          company_id: enrollment.company_id,
+          enrollment_id: enrollment.id,
+          member_id: h.member.id,
+          share_percent: h.share_percent,
+          added_on: onDate
+        }, { transaction });
+      }
+    }
+    await enrollment.update({ main_holder_share: joint.mainShare }, { transaction });
+    await transaction.commit();
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
+
+  // Tell everyone affected: current holders and anyone who just left.
+  const leftMembers = leaving.length ? await Member.findAll({ where: { id: { [Op.in]: leaving.map((c) => c.member_id) } } }) : [];
+  const notify = [...(await holderMembersOf([enrollment.id])), ...leftMembers].filter((m) => m && m.fcm_token);
+  const group = await ChitsGroup.findByPk(enrollment.group_id, { attributes: ['group_name'] });
+  const seen = new Set();
+  notify.forEach((m) => {
+    if (seen.has(m.id)) return;
+    seen.add(m.id);
+    fcmService.sendPushToMember(m, 'Ticket holders updated', `The holders of your ticket #${enrollment.group_position_number} in ${group ? group.group_name : 'your chit'} have changed.`, { type: 'TICKET_HOLDERS_UPDATED', enrollment_id: String(enrollment.id) });
+  });
+
+  const holders = await EnrollmentJointHolder.findAll({
+    where: { enrollment_id: enrollment.id },
+    attributes: ['id', 'member_id', 'share_percent', 'added_on', 'removed_on', 'removed_reason'],
+    include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }],
+    order: [['added_on', 'ASC'], ['id', 'ASC']]
+  });
+  return successResponse(res, statusCodes.OK, 'Ticket holders updated', { enrollment_id: enrollment.id, main_holder_share: joint.mainShare, joint_holders: holders });
+};
+
 const storeOrUpdateEnrollmentService = async (res, data = {}) => {
   try {
-    const { id, ...enrollmentData } = data;
+    const { id, joint_holders: jointHoldersInput, main_holder_share: mainShareInput, ...enrollmentData } = data;
     if (id) {
-      const enrollment = await Enrollment.findByPk(id);
+      const enrollment = await Enrollment.findOne({ where: { id, company_id: enrollmentData.company_id } });
       if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
 
       if (enrollmentData.group_id && String(enrollmentData.group_id) !== String(enrollment.group_id)) {
@@ -1480,6 +1594,11 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
       if (!subscriber || !subscriber.is_verified) {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Subscriber must be verified before enrollment');
       }
+
+      // Joint enrollment: validate the other holders and the shares up front.
+      const joint = await validateJointHolders(jointHoldersInput, mainShareInput, subscriber);
+      if (joint.error) return errorResponse(res, statusCodes.BAD_REQUEST, joint.error);
+      enrollmentData.main_holder_share = joint.mainShare;
 
       const result = await sequelize.transaction(async (t) => {
         const group = await ChitsGroup.findByPk(enrollmentData.group_id, {
@@ -1499,6 +1618,17 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
         }
 
         const newEnrollment = await Enrollment.create(enrollmentData, { transaction: t });
+
+        if (joint.holders.length > 0) {
+          const addedOn = toDateStr(enrollmentData.enrollment_date) || toDateStr(new Date());
+          await EnrollmentJointHolder.bulkCreate(joint.holders.map((h) => ({
+            company_id: newEnrollment.company_id || subscriber.company_id,
+            enrollment_id: newEnrollment.id,
+            member_id: h.member.id,
+            share_percent: h.share_percent,
+            added_on: addedOn
+          })), { transaction: t });
+        }
         
         const loadedEnrollment = await Enrollment.findByPk(newEnrollment.id, {
           include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
@@ -1518,7 +1648,9 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
       await checkAndUpdateChitFullStatus(newEnrollment.group_id);
 
       if (subscriber && chitGroup) {
-        fcmService.sendPushToMember(subscriber, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${chitGroup.chit_group_name}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
+        for (const holder of [subscriber, ...joint.holders.map((h) => h.member)]) {
+          fcmService.sendPushToMember(holder, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${chitGroup.chit_group_name}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
+        }
       }
 
       return successResponse(res, statusCodes.CREATED, 'Enrollment stored successfully', newEnrollment);
@@ -1547,6 +1679,7 @@ const getAllEnrollmentDetailsService = async (res, company_id, min, max, search)
         { model: Company, as: 'company', attributes: ['company_name'] },
         { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
         { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] },
+        { model: EnrollmentJointHolder, as: 'joint_holders', separate: true, where: { removed_on: null }, attributes: ['id', 'member_id', 'share_percent', 'added_on'], include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }] },
         { model: Member, as: 'business_agent', attributes: ['name', 'member_id'] },
         { model: Member, as: 'collection_agent', attributes: ['name', 'member_id'] },
         { model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] },
@@ -2157,14 +2290,23 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     }
 
     // 2. Bidder checks
-    const winnerEnrollment = await Enrollment.findOne({
-      where: { group_id, subscriber_id: bidder_id, delete_status: 0 },
-      transaction
-    });
-
-    if (!winnerEnrollment) {
+    // A member may bid through any ticket they hold (as main or joint holder). The
+    // ticket that wins is their first ticket in the group that hasn't won yet.
+    const bidderTickets = await memberTicketsInGroup(group_id, bidder_id, { transaction });
+    if (!bidderTickets.length) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Bidder is not enrolled in this group');
+    }
+    let winnerEnrollment = null;
+    let existingWin = null;
+    for (const ticket of bidderTickets) {
+      const win = await ticketWin(ticket, { transaction });
+      if (!win) { winnerEnrollment = ticket; break; }
+      existingWin = existingWin || win;
+    }
+    if (!winnerEnrollment) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, `This member's ticket has already won auction #${existingWin.auction_number} in this group`);
     }
 
     if (group.company_chit_number && winnerEnrollment.group_position_number === group.company_chit_number) {
@@ -2173,15 +2315,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     }
 
     // 3. Duplicate-winner guard
-    const existingWin = await Auction.findOne({
-      where: { group_id, bidder_id },
-      transaction
-    });
-
-    if (existingWin) {
-      await transaction.rollback();
-      return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
-    }
+    // Duplicate-winner guard: handled per ticket above (a prized ticket can't win again).
 
     // 4. Auction number
     const lastAuction = await Auction.findOne({
@@ -2266,6 +2400,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     }
 
     // 6. Create auction row and apply adjustments
+    auctionData.ticket_number = winnerEnrollment.group_position_number;
     const newAuction = await Auction.create(auctionData, { transaction });
 
     if (schemeConfig) {
@@ -2291,16 +2426,18 @@ const recordWinnerService = async (res, reqBody, userToken) => {
 
     // FCM Notification Trigger
     try {
-      const winner = await Member.findByPk(bidder_id);
-      if (winner && winner.fcm_token) {
-        fcmService.sendPushToMember(winner, 'Auction Won', `Congratulations! You won the auction for Chit ${group.chit_group_name}`, { type: 'AUCTION_WIN', group_id: String(group_id) });
-      }
+      // The prize belongs to the ticket, so every holder of the winning ticket hears it.
+      const winners = await holderMembersOf([winnerEnrollment.id]);
+      winners.filter((w) => w.fcm_token).forEach((w) => {
+        fcmService.sendPushToMember(w, 'Auction Won', `Congratulations! Your ticket won the auction for Chit ${group.chit_group_name}`, { type: 'AUCTION_WIN', group_id: String(group_id) });
+      });
+      const winnerIds = new Set(winners.map((w) => w.id));
 
       const allEnrollments = await Enrollment.findAll({
         where: { group_id, delete_status: 0, company_id: safeCompanyId || group.company_id },
-        include: [{ model: Member, as: 'subscriber', where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } }, required: true }]
+        attributes: ['id']
       });
-      const groupMembers = allEnrollments.map(e => e.subscriber).filter(s => s.id !== bidder_id);
+      const groupMembers = (await holderMembersOf(allEnrollments.map((e) => e.id))).filter((m) => m.fcm_token && !winnerIds.has(m.id));
       
       let dividendText = '';
       if (schemeConfig && schemeConfig.scheme_type !== 63 && schemeConfig.scheme_type !== 64) {
@@ -4709,10 +4846,9 @@ const storeDirectPaymentService = async (res, user, data) => {
 
     // Trigger FCM Notification for Payment Received
     try {
-      const subscriber = await Member.findByPk(installmentInfo.enrollment.subscriber_id);
-      if (subscriber) {
+      for (const holder of await holderMembersOf([installmentInfo.enrollment.id])) {
         fcmService.sendPushToMember(
-          subscriber,
+          holder,
           'Payment Received',
           `Payment of ₹${receivedAmountFloat} received successfully for Receipt #${newReceiptNumber}.`,
           { type: 'PAYMENT_RECEIVED', receipt_number: newReceiptNumber, amount: String(receivedAmountFloat) }
@@ -4922,7 +5058,8 @@ const getEnrollmentByIdService = async (res, id, companyId) => {
         { model: ChitsGroup, as: 'group' },
         { model: Member, as: 'subscriber' },
         { model: Member, as: 'business_agent' },
-        { model: Member, as: 'collection_agent' }
+        { model: Member, as: 'collection_agent' },
+        { model: EnrollmentJointHolder, as: 'joint_holders', separate: true, where: { removed_on: null }, attributes: ['id', 'member_id', 'share_percent', 'added_on'], include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }] }
       ]
     });
     if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
@@ -6994,111 +7131,44 @@ const getGroupStartDate = (group) => {
   return group.commencement_date || group.chit_start_date || null;
 };
 
-const lateJoinPreviewService = async (res, payload, userPayload) => {
+const lateJoinPreviewService = async (res, payload) => {
   try {
     const { group_id, enrollment_date, payment_mode_id, company_id } = payload;
-    const group = await ChitsGroup.findByPk(group_id);
-    if (!group) return errorResponse(res, 404, 'Group not found');
-    if (company_id && group.company_id && String(group.company_id) !== String(company_id)) {
-      return errorResponse(res, 404, 'Group not found in this company');
-    }
+    const group = await ChitsGroup.findOne({ where: { id: group_id, is_deleted_status: 0, ...(company_id ? { company_id } : {}) } });
+    if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
 
     let mappedType = 1;
     if (payment_mode_id) {
       const mode = await StaticDropdownsList.findByPk(payment_mode_id);
-      if (mode) {
-        const name = mode.dropdown_name.toLowerCase();
-        if (name === 'monthly') mappedType = 1;
-        else if (name === 'weekly') mappedType = 2;
-        else if (name === 'daily') mappedType = 3;
-      }
+      mappedType = frequencyFromModeName(mode && mode.dropdown_name);
     }
 
-    const peerRows = await sequelize.query("SELECT ci.enrollment_id FROM chits_installments ci JOIN enrollments e ON e.id = ci.enrollment_id WHERE e.group_id = :groupId AND e.delete_status = 0 AND ci.type = :mappedType LIMIT 1", {
-      replacements: { groupId: group.id, mappedType }, type: sequelize.QueryTypes.SELECT
-    });
+    const enrollmentDateStr = toDateStr(enrollment_date);
+    const schedule = await buildGroupSchedule(group, mappedType);
 
-    let copiedSchedule = null;
-    if (peerRows && peerRows.length > 0) {
-      copiedSchedule = await ChitsInstallment.findAll({ where: { enrollment_id: peerRows[0].enrollment_id }, order: [['installment_no', 'ASC']] });
-    }
+    const installmentsDue = catchUpRows(schedule, enrollmentDateStr).map((r) => ({
+      installment_no: r.installment_no,
+      due_date: r.due_date,
+      payable_amount: parseFloat(r.payable_amount) || 0,
+      days_overdue: Math.max(0, daysBetween(r.due_date, enrollmentDateStr))
+    }));
 
-    const noOfInstallments = group.no_of_installments || 1;
-    const installments = [];
-    if (copiedSchedule && copiedSchedule.length > 0) {
-      for (const peerInst of copiedSchedule) {
-        installments.push({ installment_no: peerInst.installment_no, due_date: peerInst.due_date, payable_amount: peerInst.payable_amount });
-      }
-    } else {
-      const initialDateStr = getGroupStartDate(group) || new Date().toISOString().split('T')[0];
-      const payableAmount = parseFloat((parseFloat(group.chit_amount || 0) / noOfInstallments).toFixed(2));
-      const schemeConfig = group.scheme_configuration_id ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id) : null;
-      const pricesArray = schemeConfig && schemeConfig.prices ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices) : [];
+    const totalDue = installmentsDue.reduce((sum, r) => sum + r.payable_amount, 0);
+    // A new member hasn't won an auction, so the non-prized rate applies.
+    const suggested = installmentsDue.reduce((sum, r) => sum + r.days_overdue * dailyPenaltyFor(group, false, r.payable_amount), 0);
 
-      let dueDayOfMonth = group.due_date_number_count;
-      const dateIterator = new Date(initialDateStr);
-      if (!dueDayOfMonth) dueDayOfMonth = dateIterator.getDate();
-
-      for (let i = 1; i <= noOfInstallments; i++) {
-        let currentPayableAmount = payableAmount;
-        if (schemeConfig) {
-          if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) currentPayableAmount = parseFloat(pricesArray[i - 1]?.installment || 0);
-          else if (schemeConfig.scheme_type === 62) currentPayableAmount = parseFloat(pricesArray[i - 1]?.not_withdrawn || 0);
-          else if (schemeConfig.scheme_type === 63) currentPayableAmount = parseFloat(schemeConfig.installment || 0);
-        }
-        let dueDateStr = '';
-        if (i === 1) dueDateStr = new Date(dateIterator.getTime() - (dateIterator.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
-        else {
-          if (mappedType === 1) {
-            const newDate = new Date(initialDateStr); newDate.setDate(1); newDate.setMonth(newDate.getMonth() + (i - 1));
-            newDate.setDate(Math.min(dueDayOfMonth, new Date(newDate.getFullYear(), newDate.getMonth() + 1, 0).getDate()));
-            dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
-          } else if (mappedType === 2) {
-            const newDate = new Date(initialDateStr); newDate.setDate(newDate.getDate() + 7 * (i - 1)); dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
-          } else {
-            const newDate = new Date(initialDateStr); newDate.setDate(newDate.getDate() + (i - 1)); dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
-          }
-        }
-        installments.push({ installment_no: i, due_date: dueDateStr, payable_amount: currentPayableAmount });
-      }
-    }
-
-    const enrollmentDateObj = new Date(enrollment_date);
-    enrollmentDateObj.setUTCHours(23, 59, 59, 999);
-
-    const dueInstallments = installments.filter(i => new Date(i.due_date) <= enrollmentDateObj);
-    let totalDue = 0;
-    let suggestedPenalty = 0;
-    const { dailyPenaltyFor } = require('./userService');
-
-    for (const inst of dueInstallments) {
-      const dDate = new Date(inst.due_date);
-      dDate.setUTCHours(23, 59, 59, 999);
-      let diffMs = enrollmentDateObj - dDate;
-      let daysOverdue = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
-      inst.days_overdue = daysOverdue;
-      totalDue += parseFloat(inst.payable_amount || 0);
-      if (daysOverdue > 0) {
-        const penaltyPerDay = dailyPenaltyFor(parseFloat(group.chit_amount || 0), group.total_months || group.no_of_installments, parseFloat(inst.payable_amount || 0), false);
-        suggestedPenalty += daysOverdue * penaltyPerDay;
-      }
-    }
-
-    const company = await Company.findByPk(company_id);
-    const graceDays = company?.late_join_grace_days ?? 15;
-
-    return successResponse(res, statusCodes.OK, 'Preview generated', {
-      is_late: dueInstallments.length > 0,
-      installments_due: dueInstallments,
-      count: dueInstallments.length,
+    return successResponse(res, statusCodes.OK, 'Late-join preview', {
+      is_late: installmentsDue.length > 0,
+      installments_due: installmentsDue,
+      count: installmentsDue.length,
       total_due: parseFloat(totalDue.toFixed(2)),
-      daily_rate: 0,
-      suggested_penalty: Math.round(suggestedPenalty),
-      grace_days: graceDays
+      penalty_percent_per_day: penaltyPercentFor(group, false),
+      suggested_penalty: Math.round(suggested),
+      grace_days: await lateJoinGraceDays(group.company_id)
     });
   } catch (err) {
     console.error('Error in lateJoinPreviewService:', err);
-    return errorResponse(res, 500, 'Internal server error');
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
 
@@ -7152,6 +7222,7 @@ module.exports = {
   getDistrictsListService,
   deleteCityService,
   fetchStaticDropdownService,
+  updateJointHoldersService,
   storeOrUpdateEnrollmentService,
   getAllEnrollmentDetailsService,
   deleteEnrollmentService,

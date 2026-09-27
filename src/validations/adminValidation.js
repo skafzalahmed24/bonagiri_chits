@@ -370,8 +370,9 @@ const chitsGroupValidator = Joi.object({
     'number.max': 'Commission cannot exceed 5% by statutory cap'
   }),
   max_ceiling_in: Joi.number().precision(2).allow(null).optional(),
-  penality_for_nps: Joi.number().precision(2).allow(null).optional(),
-  penality_for_ps: Joi.number().precision(2).allow(null).optional(),
+  // Penalty rates: % of the overdue instalment per day (0–100).
+  penality_for_nps: Joi.number().min(0).max(100).precision(2).allow(null).optional(),
+  penality_for_ps: Joi.number().min(0).max(100).precision(2).allow(null).optional(),
   auctions_per_month: Joi.number().integer().allow(null).optional(),
   installment_amount: Joi.number().precision(2).allow(null).optional(),
   auction_date: Joi.date().iso().allow('', null).optional(),
@@ -637,7 +638,7 @@ module.exports = {
   lateJoinPreviewSchema: Joi.object({
     group_id: Joi.string().uuid().required(),
     enrollment_date: Joi.date().required(),
-    payment_mode_id: Joi.string().allow(null, '').optional()
+    payment_mode_id: Joi.number().integer().allow(null).optional()
   }),
   enrollmentValidator: Joi.object({
     id: Joi.number().integer().optional(),
@@ -664,7 +665,29 @@ module.exports = {
     nominee_pincode: Joi.string().allow('', null).optional(),
     fill_subscriber_address_status: Joi.number().integer().valid(0, 1).optional(),
     late_join_penalty_type: Joi.number().integer().valid(0, 1, 2).allow(null).optional(),
-    late_join_penalty_amount: Joi.number().min(0).allow(null).optional()
+    late_join_penalty_amount: Joi.number().min(0).allow(null).optional(),
+    // Joint enrollment (new tickets only): up to 2 more holders besides the main holder.
+    joint_holders: Joi.array().items(Joi.object({
+      member_id: Joi.number().integer().required(),
+      share_percent: Joi.number().greater(0).max(100).precision(2).required()
+    })).max(2).optional().messages({ 'array.max': 'A ticket can have at most 3 holders (the main holder and 2 joint holders).' }),
+    main_holder_share: Joi.number().greater(0).max(100).precision(2).optional()
+  }),
+  updateJointHoldersSchema: Joi.object({
+    company_id: Joi.string().uuid().allow('', null).optional(),
+    enrollment_id: Joi.number().integer().required(),
+    // The full new list of joint holders (empty = back to a single-holder ticket).
+    joint_holders: Joi.array().items(Joi.object({
+      member_id: Joi.number().integer().required(),
+      share_percent: Joi.number().greater(0).max(100).precision(2).required()
+    })).max(2).required().messages({ 'array.max': 'A ticket can have at most 3 holders (the main holder and 2 joint holders).' }),
+    main_holder_share: Joi.number().greater(0).max(100).precision(2).optional(),
+    effective_date: Joi.date().iso().optional(),
+    reason: Joi.string().trim().max(500).allow('', null).optional(),
+    consent: Joi.boolean().valid(true).required().messages({
+      'any.only': 'Confirm that every holder, old and new, has agreed to this change.',
+      'any.required': 'Confirm that every holder, old and new, has agreed to this change.'
+    })
   }),
   getEnrollmentSchema: Joi.object({
     company_id: Joi.string().uuid().allow('', null).optional(),

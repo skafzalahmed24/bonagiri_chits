@@ -412,6 +412,17 @@ const storeOrUpdateEnrollment = async (req, res) => {
   }
 };
 
+const updateJointHolders = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    data.company_id = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.updateJointHoldersService(res, data);
+  } catch (error) {
+    console.error('Error in updateJointHolders:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getAllEnrollmentDetails = async (req, res) => {
   try {
     const { company_id, min, max, search } = req.body || {};
@@ -1746,6 +1757,7 @@ module.exports = {
   fetchStaticDropdown,
   lateJoinPreview,
   storeOrUpdateEnrollment,
+  updateJointHolders,
   getAllEnrollmentDetails,
   deleteEnrollment,
   getPositionNumbers,

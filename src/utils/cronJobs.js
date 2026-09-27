@@ -3,6 +3,8 @@ const { ChitsInstallment, Enrollment, ChitsGroup, sequelize } = require('../mode
 const { Op } = require('sequelize');
 const fcmService = require('../services/fcmService');
 const SystemSettingsService = require('../services/systemSettingsService');
+const { dailyPenaltyFor } = require('./penalty');
+const { isTicketPrized, holderMembersOf } = require('./jointHolders');
 
 const runGroupStatusJob = async () => {
   try {
@@ -24,9 +26,9 @@ const runGroupStatusJob = async () => {
         await group.update({ chits_group_status: 1 });
         const enrollments = await Enrollment.findAll({
           where: { group_id: group.id, delete_status: 0, company_id: group.company_id },
-          include: [{ model: sequelize.models.Member, as: 'subscriber', where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } }, required: true }]
+          attributes: ['id']
         });
-        const members = enrollments.map(e => e.subscriber);
+        const members = (await holderMembersOf(enrollments.map((e) => e.id))).filter((m) => m.fcm_token);
         if (members.length > 0) {
           fcmService.sendPushToMulticast(members, group.company_id, 'Chit Group Commenced!', `The Chit Group ${group.chit_group_name} has officially commenced.`, { type: 'GROUP_STARTED', group_id: String(group.id) });
         }
@@ -37,19 +39,8 @@ const runGroupStatusJob = async () => {
   }
 };
 
-const isPrizedEnrollment = async (group, subscriberId) => {
-  if (!subscriberId) return false;
-  const auctionWin = await sequelize.models.Auction.findOne({
-    where: { group_id: group.id, bidder_id: subscriberId }
-  });
-  return !!auctionWin;
-};
-
-const dailyPenaltyFor = (installment, group, isPrized) => {
-  return isPrized
-    ? (parseFloat(group.penality_for_ps) || 0)
-    : (parseFloat(group.penality_for_nps) || 0);
-};
+// Prize status belongs to the ticket: a ticket won by any of its holders is prized.
+const isPrizedEnrollment = (enrollment) => isTicketPrized(enrollment);
 
 const startDailyPenaltyCron = () => {
   cron.schedule('* * * * *', async () => {
@@ -120,19 +111,13 @@ const startDailyPenaltyCron = () => {
         const days = Math.floor((D_UTC - start_UTC) / (1000 * 60 * 60 * 24));
 
         if (days > 0) {
-          const subscriberId = installment.enrollment?.subscriber?.id;
-          let isWinner = false;
-          if (subscriberId) {
-            const cacheKey = `${group.id}_${subscriberId}`;
-            if (winnerCache[cacheKey] !== undefined) {
-              isWinner = winnerCache[cacheKey];
-            } else {
-              isWinner = await isPrizedEnrollment(group, subscriberId);
-              winnerCache[cacheKey] = isWinner;
-            }
+          const cacheKey = installment.enrollment.id;
+          if (winnerCache[cacheKey] === undefined) {
+            winnerCache[cacheKey] = await isPrizedEnrollment(installment.enrollment);
           }
+          const isWinner = winnerCache[cacheKey];
 
-          const rate = dailyPenaltyFor(installment, group, isWinner);
+          const rate = dailyPenaltyFor(group, isWinner, installment.payable_amount);
           const newOverdueCount = (installment.over_due_days_count || 0) + days;
           const newPenaltyAmount = parseFloat(installment.penalty_amount || 0) + (days * rate);
 
@@ -144,8 +129,8 @@ const startDailyPenaltyCron = () => {
 
           // Send FCM Notification on first day of overdue (we approximate this by checking if it was previously not overdue)
           if ((installment.over_due_days_count || 0) === 0) {
-            const subscriber = installment.enrollment?.subscriber;
-            if (subscriber && subscriber.fcm_token) {
+            const holders = await holderMembersOf([installment.enrollment.id]);
+            for (const subscriber of holders.filter((h) => h.fcm_token)) {
               fcmService.sendPushToMember(
                 subscriber,
                 'Payment Overdue!',
@@ -158,8 +143,8 @@ const startDailyPenaltyCron = () => {
           processedCount++;
         } else if (days === -1) {
           // Due tomorrow
-          const subscriber = installment.enrollment?.subscriber;
-          if (subscriber && subscriber.fcm_token) {
+          const holders = await holderMembersOf([installment.enrollment.id]);
+          for (const subscriber of holders.filter((h) => h.fcm_token)) {
             fcmService.sendPushToMember(
               subscriber,
               'Payment Due Tomorrow',

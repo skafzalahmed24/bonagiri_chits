@@ -45,17 +45,22 @@ const run = async () => {
           let changed = false;
           
           if (missingInstallmentsCount > 0) {
-            const preCount = await ChitsInstallment.count({ where: { group_id: group.id }, transaction: t });
-            await createInstallmentsForGroup(group.id, { transaction: t });
-            const postCount = await ChitsInstallment.count({ where: { group_id: group.id }, transaction: t });
+            const existingInsts = await ChitsInstallment.findAll({ where: { group_id: group.id }, attributes: ['id'], transaction: t });
+            const existingIds = existingInsts.map(r => r.id);
             
-            const newInstsCount = postCount - preCount;
+            await createInstallmentsForGroup(group.id, { transaction: t });
+            
+            const postInsts = await ChitsInstallment.findAll({ where: { group_id: group.id }, attributes: ['id'], transaction: t });
+            const postIds = postInsts.map(r => r.id);
+            const newIds = postIds.filter(id => !existingIds.includes(id));
+            
+            const newInstsCount = newIds.length;
             installmentsCreated += newInstsCount;
             
             if (newInstsCount > 0) {
               await ChitsInstallment.update(
                 { penalty_from_date: businessDateStr },
-                { where: { group_id: group.id, due_date: { [Op.lte]: businessDateStr }, penalty_from_date: null }, transaction: t }
+                { where: { id: { [Op.in]: newIds }, due_date: { [Op.lte]: businessDateStr }, penalty_from_date: null }, transaction: t }
               );
             }
             changed = true;

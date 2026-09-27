@@ -147,7 +147,9 @@ router.post('/fetch-static-dropdown', authMiddleware.authenticateToken, validate
 router.post('/fetch-static-dropdown-subcategory', authMiddleware.authenticateToken, adminController.getAllSubcategories);
 
 // Enrollment Routes
+router.post('/enrollment/late-join-preview', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENTS), validate(adminValidation.lateJoinPreviewSchema), adminController.lateJoinPreview);
 router.post('/enrollment/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENTS), validate(adminValidation.enrollmentValidator), adminController.storeOrUpdateEnrollment);
+router.post('/enrollment/joint-holders/update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENTS), validate(adminValidation.updateJointHoldersSchema), adminController.updateJointHolders);
 router.post('/enrollment/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENTS), validate(adminValidation.getEnrollmentSchema), adminController.getAllEnrollmentDetails);
 router.post('/enrollment/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENTS), validate(adminValidation.deleteEnrollmentSchema), adminController.deleteEnrollment);
 router.post('/enrollment/get-position-numbers', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_ENROLLMENTS), validate(adminValidation.getPositionNumbersSchema), adminController.getPositionNumbers);

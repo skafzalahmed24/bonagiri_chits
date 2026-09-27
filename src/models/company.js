@@ -45,6 +45,11 @@ module.exports = (sequelize, DataTypes) => {
     transaction_lock_days: {
       type: DataTypes.INTEGER,
     },
+    late_join_grace_days: {
+      type: DataTypes.INTEGER,
+      defaultValue: 15,
+      allowNull: true,
+    },
     latitude: {
       type: DataTypes.STRING,
     },
