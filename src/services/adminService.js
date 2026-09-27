@@ -815,140 +815,228 @@ const deleteAreaService = async (res, id, companyId) => {
   }
 };
 
-const createInstallaments = async (chits_group_id, chits_group_status) => {
-  try {
-    if (Number(chits_group_status) === 1) {
-      const group = await ChitsGroup.findByPk(chits_group_id);
-      if (!group) {
-        console.error('Chits Group not found for createInstallaments');
-        return;
-      }
+const computeGroupStatus = async (group) => {
+  if (Number(group.chits_group_status) === 2) return 2;
+  const businessDate = await SystemSettingsService.getBusinessDate();
+  const startDateStr = getGroupStartDate(group);
+  if (!startDateStr) return 0;
+  const startDate = new Date(startDateStr);
+  if (startDate <= new Date(businessDate)) return 1;
+  return 0;
+};
 
-      const enrollments = await Enrollment.findAll({
-        where: { group_id: chits_group_id, delete_status: 0 },
-        include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }]
-      });
+const createInstallmentsForEnrollment = async (enrollment, group, options = {}) => {
+  const transaction = options.transaction;
+  
+  // Skip if installments data already generated for this enrollment
+  const existingInstallmentRecord = await ChitsInstallment.findOne({ 
+    where: { enrollment_id: enrollment.id },
+    transaction
+  });
+  if (existingInstallmentRecord) return;
 
-      const noOfInstallments = group.no_of_installments || 1;
-      const initialDateStr = group.chit_start_date || group.commencement_date || new Date().toISOString().split('T')[0];
-      const chitAmount = parseFloat(group.chit_amount) || 0;
-      const payableAmount = parseFloat((chitAmount / noOfInstallments).toFixed(2));
+  const modeName = enrollment.payment_mode ? enrollment.payment_mode.dropdown_name : 'Unknown';
+  let mappedType = null;
+  if (modeName.toLowerCase() === 'monthly') mappedType = 1;
+  else if (modeName.toLowerCase() === 'weekly') mappedType = 2;
+  else if (modeName.toLowerCase() === 'daily') mappedType = 3;
+  else mappedType = 1; // Default to 1
 
-      const schemeConfig = group.scheme_configuration_id
-        ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id)
-        : null;
+  // Find a peer that has instalments and the same payment frequency
+  const peerInstallmentRows = await sequelize.query(`
+    SELECT ci.enrollment_id 
+    FROM chits_installments ci
+    JOIN enrollments e ON e.id = ci.enrollment_id
+    WHERE e.group_id = :groupId 
+      AND e.delete_status = 0 
+      AND e.id != :enrollmentId
+      AND ci.type = :mappedType
+    LIMIT 1
+  `, {
+    replacements: { groupId: group.id, enrollmentId: enrollment.id, mappedType },
+    type: sequelize.QueryTypes.SELECT,
+    transaction
+  });
 
-      const pricesArray = schemeConfig && schemeConfig.prices
-        ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
-        : [];
-
-      for (const e of enrollments) {
-        const data = e.toJSON();
-        const modeName = data.payment_mode ? data.payment_mode.dropdown_name : 'Unknown';
-
-        let mappedType = null;
-        if (modeName.toLowerCase() === 'monthly') mappedType = 1;
-        else if (modeName.toLowerCase() === 'weekly') mappedType = 2;
-        else if (modeName.toLowerCase() === 'daily') mappedType = 3;
-
-        // Skip if installments data already generated for this enrollment
-        const existingInstallmentRecord = await ChitsInstallment.findOne({ where: { enrollment_id: data.id } });
-        if (existingInstallmentRecord) continue;
-
-        const dueDayOfMonth = group.due_date_number_count;
-        const daysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-        
-        const dateIterator = new Date(initialDateStr);
-        
-        if (mappedType === 1 || !mappedType) { // Monthly (default)
-          dateIterator.setMonth(dateIterator.getMonth() + 1);
-          if (dueDayOfMonth && dueDayOfMonth >= 1 && dueDayOfMonth <= 31) {
-            dateIterator.setDate(Math.min(dueDayOfMonth, daysInMonth(dateIterator)));
-          }
-        } else if (mappedType === 2) { // Weekly
-          dateIterator.setDate(dateIterator.getDate() + 7);
-        } else if (mappedType === 3) { // Daily
-          dateIterator.setDate(dateIterator.getDate() + 1);
-        }
-
-        const installmentsJsonArray = [];
-
-        // Generate JSON data array directly
-        for (let i = 1; i <= noOfInstallments; i++) {
-          let currentPayableAmount = payableAmount; // fallback flat amount
-
-          if (schemeConfig) {
-            if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) {
-              const row = pricesArray[i - 1];
-              currentPayableAmount = parseFloat(row?.installment) || 0;
-            } else if (schemeConfig.scheme_type === 62) {
-              const row = pricesArray[i - 1];
-              currentPayableAmount = parseFloat(row?.not_withdrawn) || 0;
-            } else if (schemeConfig.scheme_type === 63) {
-              currentPayableAmount = parseFloat(schemeConfig.installment) || 0;
-            }
-          }
-
-          installmentsJsonArray.push({
-            enrollment_id: data.id,
-            group_id: chits_group_id,
-            type: mappedType || 1, // Fallback to 1
-            installment_no: i,
-            due_date: new Date(dateIterator.getTime() - (dateIterator.getTimezoneOffset() * 60000)).toISOString().split('T')[0],
-            over_due_days_count: 0,
-            penalty_amount: 0.00,
-            payable_amount: currentPayableAmount
-          });
-
-          // Move iterator forward to the next due date based on schedule type
-          if (mappedType === 1 || !mappedType) {
-            dateIterator.setMonth(dateIterator.getMonth() + 1); // 1 = Monthly
-            if (dueDayOfMonth && dueDayOfMonth >= 1 && dueDayOfMonth <= 31) {
-              dateIterator.setDate(Math.min(dueDayOfMonth, daysInMonth(dateIterator)));
-            }
-          } else if (mappedType === 2) {
-            dateIterator.setDate(dateIterator.getDate() + 7); // 2 = Weekly
-          } else if (mappedType === 3) {
-            dateIterator.setDate(dateIterator.getDate() + 1); // 3 = Daily
-          }
-        }
-
-        // Create individual relational rows for each installment month/week
-        await ChitsInstallment.bulkCreate(installmentsJsonArray);
-      }
-
-      console.log(`\n--- Set up Installments data in DB for Chits Group ${chits_group_id} (Status: 1) ---`);
+  let copiedSchedule = null;
+  if (peerInstallmentRows && peerInstallmentRows.length > 0) {
+    const peerEnrollmentId = peerInstallmentRows[0].enrollment_id;
+    const peerInstallments = await ChitsInstallment.findAll({
+      where: { enrollment_id: peerEnrollmentId },
+      order: [['installment_no', 'ASC']],
+      transaction
+    });
+    if (peerInstallments && peerInstallments.length > 0) {
+      copiedSchedule = peerInstallments;
     }
-  } catch (error) {
-    console.error('Error in createInstallaments:', error);
+  }
+
+  const noOfInstallments = group.no_of_installments || 1;
+  const installmentsJsonArray = [];
+
+  if (copiedSchedule) {
+    for (const peerInst of copiedSchedule) {
+      installmentsJsonArray.push({
+        enrollment_id: enrollment.id,
+        group_id: group.id,
+        type: peerInst.type,
+        installment_no: peerInst.installment_no,
+        due_date: peerInst.due_date,
+        over_due_days_count: 0,
+        penalty_amount: 0.00,
+        payable_amount: peerInst.payable_amount,
+        penalty_from_date: null,
+        penalty_last_applied_date: null
+      });
+    }
+  } else {
+    const startDateStr = getGroupStartDate(group);
+    const initialDateStr = startDateStr || new Date().toISOString().split('T')[0];
+    const chitAmount = parseFloat(group.chit_amount) || 0;
+    const payableAmount = parseFloat((chitAmount / noOfInstallments).toFixed(2));
+
+    const schemeConfig = group.scheme_configuration_id
+      ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
+      : null;
+
+    const pricesArray = schemeConfig && schemeConfig.prices
+      ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
+      : [];
+
+    let dueDayOfMonth = group.due_date_number_count;
+    const daysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    
+    const dateIterator = new Date(initialDateStr);
+    if (!dueDayOfMonth) {
+      dueDayOfMonth = dateIterator.getDate();
+    }
+
+    for (let i = 1; i <= noOfInstallments; i++) {
+      let currentPayableAmount = payableAmount;
+
+      if (schemeConfig) {
+        if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) {
+          const row = pricesArray[i - 1];
+          currentPayableAmount = parseFloat(row?.installment) || 0;
+        } else if (schemeConfig.scheme_type === 62) {
+          const row = pricesArray[i - 1];
+          currentPayableAmount = parseFloat(row?.not_withdrawn) || 0;
+        } else if (schemeConfig.scheme_type === 63) {
+          currentPayableAmount = parseFloat(schemeConfig.installment) || 0;
+        }
+      }
+
+      let dueDateStr = '';
+      if (i === 1) {
+        dueDateStr = new Date(dateIterator.getTime() - (dateIterator.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+      } else {
+        if (mappedType === 1) {
+          const newDate = new Date(initialDateStr);
+          newDate.setDate(1);
+          newDate.setMonth(newDate.getMonth() + (i - 1));
+          newDate.setDate(Math.min(dueDayOfMonth, daysInMonth(newDate)));
+          dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+        } else if (mappedType === 2) {
+          const newDate = new Date(initialDateStr);
+          newDate.setDate(newDate.getDate() + 7 * (i - 1));
+          dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+        } else if (mappedType === 3) {
+          const newDate = new Date(initialDateStr);
+          newDate.setDate(newDate.getDate() + (i - 1));
+          dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+        }
+      }
+
+      installmentsJsonArray.push({
+        enrollment_id: enrollment.id,
+        group_id: group.id,
+        type: mappedType,
+        installment_no: i,
+        due_date: dueDateStr,
+        over_due_days_count: 0,
+        penalty_amount: 0.00,
+        payable_amount: currentPayableAmount,
+        penalty_from_date: null,
+        penalty_last_applied_date: null
+      });
+    }
+  }
+
+  await ChitsInstallment.bulkCreate(installmentsJsonArray, { transaction });
+};
+
+const createInstallmentsForGroup = async (group_id, options = {}) => {
+  const transaction = options.transaction;
+  const group = await ChitsGroup.findByPk(group_id, { transaction });
+  if (!group) return;
+
+  const enrollments = await Enrollment.findAll({
+    where: { group_id: group.id, delete_status: 0 },
+    include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+    transaction
+  });
+
+  for (const enrollment of enrollments) {
+    await createInstallmentsForEnrollment(enrollment, group, { transaction });
   }
 };
 
 const storeOrUpdateChitsGroupService = async (res, data = {}) => {
   try {
-    const { id, ...chitsGroupData } = data;
+    const { id, chits_group_status, ...chitsGroupData } = data; // ignore client status
+    
+    if (chitsGroupData.commencement_date !== undefined) {
+      chitsGroupData.chit_start_date = chitsGroupData.commencement_date;
+    }
+
     if (id) {
       const chitsGroup = await ChitsGroup.findByPk(id);
       if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
-      if (chitsGroupData.chits_group_status !== undefined && Number(chitsGroupData.chits_group_status) === 1 && chitsGroup.chits_group_status !== 1) {
-        const enrollmentsCount = await Enrollment.count({ where: { group_id: id, delete_status: 0 } });
-        const totalTaken = enrollmentsCount;
-        const requiredPositions = parseInt(chitsGroup.no_of_installments) || 0;
 
-        if (totalTaken < requiredPositions) {
-          return errorResponse(res, statusCodes.BAD_REQUEST, `Cannot start group. All positions must be filled (${totalTaken}/${requiredPositions} filled).`);
+      // Schedule change detection
+      const scheduleFieldsChanged = 
+        (chitsGroupData.commencement_date && chitsGroupData.commencement_date !== chitsGroup.commencement_date) ||
+        (chitsGroupData.chit_start_date && chitsGroupData.chit_start_date !== chitsGroup.chit_start_date) ||
+        (chitsGroupData.due_date_number_count !== undefined && String(chitsGroupData.due_date_number_count) !== String(chitsGroup.due_date_number_count)) ||
+        (chitsGroupData.no_of_installments !== undefined && String(chitsGroupData.no_of_installments) !== String(chitsGroup.no_of_installments)) ||
+        (chitsGroupData.chit_amount !== undefined && String(chitsGroupData.chit_amount) !== String(chitsGroup.chit_amount)) ||
+        (chitsGroupData.scheme_configuration_id !== undefined && String(chitsGroupData.scheme_configuration_id) !== String(chitsGroup.scheme_configuration_id));
+
+      if (scheduleFieldsChanged) {
+        const hasPayments = await CustomerPayment.count({
+          where: { payment_status: { [Op.in]: [0, 1] } },
+          include: [{
+            model: ChitsInstallment,
+            as: 'installment',
+            where: { group_id: id },
+            required: true
+          }]
+        });
+        if (hasPayments > 0) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'The schedule can\'t change after payments are recorded.');
         }
+
+        // Apply changes and recreate schedule inside transaction
+        const updatedGroupData = { ...chitsGroupData, chits_group_status: await computeGroupStatus({ ...chitsGroup.toJSON(), ...chitsGroupData }) };
+
+        await sequelize.transaction(async (t) => {
+          await ChitsInstallment.destroy({ where: { group_id: id }, transaction: t });
+          await chitsGroup.update(updatedGroupData, { transaction: t });
+          await createInstallmentsForGroup(chitsGroup.id, { transaction: t });
+        });
+      } else {
+        const updatedGroupData = { ...chitsGroupData, chits_group_status: await computeGroupStatus({ ...chitsGroup.toJSON(), ...chitsGroupData }) };
+        await chitsGroup.update(updatedGroupData);
       }
-
-      await chitsGroup.update(chitsGroupData);
-
-      // Step case: Trigger createInstallaments on update
-      await createInstallaments(chitsGroup.id, chitsGroup.chits_group_status);
 
       return successResponse(res, statusCodes.OK, 'Chits group updated successfully', chitsGroup);
     } else {
       console.log('Creating new ChitsGroup with data:', chitsGroupData);
-      const newChitsGroup = await ChitsGroup.create(chitsGroupData);
+      const tempGroupData = { ...chitsGroupData, chits_group_status: 0 };
+      const statusToSet = await computeGroupStatus(tempGroupData);
+      tempGroupData.chits_group_status = statusToSet;
+
+      const newChitsGroup = await ChitsGroup.create(tempGroupData);
       console.log('New ChitsGroup created:', newChitsGroup.toJSON());
 
       // Auto-enroll company if company_chit_number is provided
@@ -981,17 +1069,26 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
           }
 
           if (companyMember) {
-            const enrollment = await Enrollment.create({
-              company_id: targetCompanyId,
-              group_id: newChitsGroup.id,
-              group_position_number: chitsGroupData.company_chit_number,
-              subscriber_id: companyMember.id,
-              enrollment_date: chitsGroupData.commencement_date || new Date().toISOString().split('T')[0],
-              address_type: 1, // Default to home
-              business_type_id: 1, // Default to direct
-              delete_status: 0
+            await sequelize.transaction(async (t) => {
+              const enrollment = await Enrollment.create({
+                company_id: targetCompanyId,
+                group_id: newChitsGroup.id,
+                group_position_number: chitsGroupData.company_chit_number,
+                subscriber_id: companyMember.id,
+                enrollment_date: chitsGroupData.commencement_date || new Date().toISOString().split('T')[0],
+                address_type: 1, // Default to home
+                business_type_id: 1, // Default to direct
+                delete_status: 0
+              }, { transaction: t });
+              
+              const loadedEnrollment = await Enrollment.findByPk(enrollment.id, {
+                include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+                transaction: t
+              });
+
+              await createInstallmentsForEnrollment(loadedEnrollment, newChitsGroup, { transaction: t });
+              console.log('Enrollment created:', enrollment.id);
             });
-            console.log('Enrollment created:', enrollment.id);
 
             const selfChit = await SelfChit.create({
               company_id: targetCompanyId,
@@ -1007,9 +1104,6 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
           console.log('Skipping enrollment: targetCompanyId is missing');
         }
       }
-
-      // Step case: Trigger createInstallaments on create
-      await createInstallaments(newChitsGroup.id, newChitsGroup.chits_group_status);
 
       // Trigger FCM Notification for Marketing (New Group)
       try {
@@ -1037,7 +1131,7 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search,
       limit, offset, where: {
         is_deleted_status: 0,
         ...(not_status === 1 ? { chits_group_status: { [Op.ne]: 0 } } : {}),
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        ...(enrollment_status === 1 ? { is_chit_full_status: 0, chits_group_status: { [Op.ne]: 2 } } : {}),
         ...(company_id && company_id !== '' ? { company_id } : {}),
         ...(search && {
           [Op.or]: [
@@ -1085,26 +1179,16 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
     const chitsGroup = await ChitsGroup.findByPk(id);
     if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
 
-    const updateData = {};
     if (chits_group_status !== undefined && chits_group_status !== null) {
-      if (Number(chits_group_status) === 1 && chitsGroup.chits_group_status !== 1) {
-        const enrollmentsCount = await Enrollment.count({ where: { group_id: id, delete_status: 0 } });
-        const selfChitsCount = await SelfChit.count({ where: { group_id: id, is_deleted_status: 0 } });
-        const totalTaken = enrollmentsCount + selfChitsCount;
-        const requiredPositions = parseInt(chitsGroup.no_of_installments) || 0;
-
-        if (totalTaken < requiredPositions) {
-          return errorResponse(res, statusCodes.BAD_REQUEST, `Cannot start group. All positions must be filled (${totalTaken}/${requiredPositions} filled).`);
-        }
+      if (Number(chits_group_status) !== 2) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'A group\'s status follows its start date.');
       }
-      updateData.chits_group_status = chits_group_status;
-    }
-
-    await chitsGroup.update(updateData);
-
-    if (updateData.chits_group_status !== undefined) {
-      await createInstallaments(chitsGroup.id, updateData.chits_group_status);
-
+      if (Number(chitsGroup.chits_group_status) !== 1) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Only a Running group can be marked completed.');
+      }
+      
+      await chitsGroup.update({ chits_group_status: 2 });
+      
       // Trigger FCM Notifications
       try {
         const enrollments = await Enrollment.findAll({
@@ -1114,11 +1198,7 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
         const members = enrollments.map(e => e.subscriber);
 
         if (members.length > 0) {
-          if (Number(updateData.chits_group_status) === 1) {
-            fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Commenced!', `The Chit Group ${chitsGroup.chit_group_name} has officially commenced.`, { type: 'GROUP_STARTED', group_id: String(chitsGroup.id) });
-          } else if (Number(updateData.chits_group_status) === 2) {
-            fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Completed', `Congratulations! The Chit Group ${chitsGroup.chit_group_name} has successfully completed its term.`, { type: 'GROUP_COMPLETED', group_id: String(chitsGroup.id) });
-          }
+          fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Completed', `Congratulations! The Chit Group ${chitsGroup.chit_group_name} has successfully completed its term.`, { type: 'GROUP_COMPLETED', group_id: String(chitsGroup.id) });
         }
       } catch (pushErr) {
         console.error('Error sending FCM push for group status:', pushErr);
@@ -1340,6 +1420,14 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
     if (id) {
       const enrollment = await Enrollment.findByPk(id);
       if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+
+      if (enrollmentData.group_id && String(enrollmentData.group_id) !== String(enrollment.group_id)) {
+        const hasInstalments = await ChitsInstallment.count({ where: { enrollment_id: id } });
+        if (hasInstalments > 0) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot change group once instalments are generated.');
+        }
+      }
+
       await enrollment.update(enrollmentData);
       await checkAndUpdateChitFullStatus(enrollment.group_id);
       return successResponse(res, statusCodes.OK, 'Enrollment updated successfully', enrollment);
@@ -1349,34 +1437,42 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Subscriber must be verified before enrollment');
       }
 
-      // A group cannot take more members than it has positions. Lock the group row
-      // so two enrollments saved at the same moment cannot both pass this check.
-      const capacity = await sequelize.transaction(async (t) => {
+      const result = await sequelize.transaction(async (t) => {
         const group = await ChitsGroup.findByPk(enrollmentData.group_id, {
-          attributes: ['id', 'no_of_installments'],
           lock: t.LOCK.UPDATE,
           transaction: t,
         });
-        if (!group) return { missing: true };
+        if (!group) return { error: 'NOT_FOUND', msg: 'Chits group not found' };
+        if (Number(group.chits_group_status) === 2) {
+          return { error: 'BAD_REQUEST', msg: 'This chit group is completed; members can\'t join it.' };
+        }
+
         const taken = await Enrollment.count({ where: { group_id: group.id, delete_status: 0 }, transaction: t })
           + await SelfChit.count({ where: { group_id: group.id, is_deleted_status: 0 }, transaction: t });
         const positions = parseInt(group.no_of_installments) || 0;
-        return { taken, positions, isFull: taken >= positions };
-      });
-      if (capacity.missing) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
-      if (capacity.isFull) {
-        return errorResponse(res, statusCodes.BAD_REQUEST, `This chit group is full (${capacity.taken}/${capacity.positions} positions taken).`);
-      }
+        if (taken >= positions) {
+          return { error: 'BAD_REQUEST', msg: `This chit group is full (${taken}/${positions} positions taken).` };
+        }
 
-      const newEnrollment = await Enrollment.create(enrollmentData);
+        const newEnrollment = await Enrollment.create(enrollmentData, { transaction: t });
+        
+        const loadedEnrollment = await Enrollment.findByPk(newEnrollment.id, {
+          include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+          transaction: t
+        });
+
+        await createInstallmentsForEnrollment(loadedEnrollment, group, { transaction: t });
+
+        return { newEnrollment, group };
+      });
+
+      if (result.error === 'NOT_FOUND') return errorResponse(res, statusCodes.NOT_FOUND, result.msg);
+      if (result.error === 'BAD_REQUEST') return errorResponse(res, statusCodes.BAD_REQUEST, result.msg);
+
+      const { newEnrollment, group: chitGroup } = result;
+
       await checkAndUpdateChitFullStatus(newEnrollment.group_id);
 
-      const chitGroup = await ChitsGroup.findByPk(newEnrollment.group_id);
-      if (chitGroup && Number(chitGroup.chits_group_status) === 1) {
-        await createInstallaments(newEnrollment.group_id, chitGroup.chits_group_status);
-      }
-
-      // Send push notification
       if (subscriber && chitGroup) {
         fcmService.sendPushToMember(subscriber, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${chitGroup.chit_group_name}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
       }
@@ -6286,6 +6382,8 @@ const updateBusinessDateService = async (res, userPayload, body) => {
       remarks: body.remarks,
       changedBy: userPayload.id
     });
+    const { runGroupStatusJob } = require('../utils/cronJobs');
+    await runGroupStatusJob();
     return successResponse(res, statusCodes.OK, 'Business date updated successfully', settings);
   } catch (error) {
     console.error('Error in updateBusinessDateService:', error);
@@ -6831,7 +6929,12 @@ const applyAdvanceService = async (res, member_advance_id, chits_installment_id,
   }
 };
 
+const getGroupStartDate = (group) => {
+  return group.commencement_date || group.chit_start_date || null;
+};
+
 module.exports = {
+  getGroupStartDate,
   storeOrUpdateFAQService,
   getAllFAQService,
   getFAQByIdService,
@@ -6988,5 +7091,8 @@ module.exports = {
   updateMemberReferralStatusService,
   getAppSupportedCountriesService,
   getAdvancesByMemberService,
-  applyAdvanceService
+  applyAdvanceService,
+  computeGroupStatus,
+  createInstallmentsForEnrollment,
+  createInstallmentsForGroup
 };

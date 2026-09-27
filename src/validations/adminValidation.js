@@ -354,7 +354,14 @@ const chitsGroupValidator = Joi.object({
   pso_date: Joi.date().iso().allow('', null).optional(),
   pso_number: Joi.string().allow('', null).optional(),
   ca_date: Joi.date().iso().allow('', null).optional(),
-  commencement_date: Joi.date().iso().allow('', null).optional(),
+  commencement_date: Joi.date().iso().when('id', {
+    is: Joi.exist().not(null),
+    then: Joi.optional(),
+    otherwise: Joi.required().messages({
+      'any.required': 'Commencement date is required',
+      'date.base': 'Commencement date must be a valid date'
+    })
+  }),
   term_date: Joi.date().iso().allow('', null).optional(),
   enrollment_fee: Joi.number().precision(2).allow(null).optional(),
   company_chit_number: Joi.number().integer().allow(null).optional(),

@@ -21,6 +21,7 @@ const {
   MemberAdvance,
   sequelize,
 } = require('../models');
+const { getGroupStartDate } = require('./adminService');
 const { Op } = require('sequelize');
 
 // CustomerPayment has no company_id column; scope it through installment -> enrollment.
@@ -896,8 +897,8 @@ class ReportService {
         company_chit_number: group.company_chit_number || '',
         pso_date: group.pso_date || null,
         pso_number: group.pso_number || '',
-        commencement_date: group.commencement_date || null,
-        start_date: group.chit_start_date || null,
+        commencement_date: getGroupStartDate(group) || null,
+        start_date: getGroupStartDate(group) || null,
         end_date: group.chit_end_date || null,
         auction_date: group.auction_date || null,
         status: group.chits_group_status,

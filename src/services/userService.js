@@ -11,10 +11,11 @@ const {
 } = require('../models');
 const { Op } = require('sequelize');
 
-const { getSimulatedNow } = require('../utils/timeSimulator');
+const SystemSettingsService = require('./systemSettingsService');
 const { isCollectionAgent, isBusinessAgent } = require('../utils/authHelpers');
 const { calculateMemberRating } = require('../utils/ratingHelper');
 const fcmService = require('./fcmService');
+const { getGroupStartDate } = require('./adminService');
 
 const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) => {
     const subscriber_id = (userPayload && userPayload.id) ? userPayload.id : reqSubscriberId;
@@ -146,7 +147,7 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
         // 7. Fetch active regular banners (banner_type: 1)
         let banners = [];
         try {
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             const todayStr = simulatedNow.toISOString().split('T')[0];
             const company_id = member ? member.company_id : (userPayload ? userPayload.company_id : null);
 
@@ -470,7 +471,7 @@ const submitChitInterestService = async (res, userPayload, upcoming_chit_id, sho
 
 const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min = 0, max = 10) => {
     try {
-        const globalSimulatedNow = await getSimulatedNow();
+        const globalSimulatedNow = new Date(await SystemSettingsService.getBusinessDate());
         let subscriber_id = bodySubscriberId;
 
         if (!subscriber_id) {
@@ -717,7 +718,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
 
 const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
     try {
-        const globalSimulatedNow = await getSimulatedNow();
+        const globalSimulatedNow = new Date(await SystemSettingsService.getBusinessDate());
         if (!userPayload) {
             return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
         }
@@ -1110,7 +1111,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         // 5. Calculate Dates, Installments & Counts
         const totalMonthsCount = parseInt(group.no_of_installments, 10) || 12;
 
-        let startDateVal = group.chit_start_date || group.commencement_date || (group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null);
+        let startDateVal = getGroupStartDate(group) || (group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null);
         let endDateVal = group.chit_end_date || group.term_date || group.maturity_date;
 
         if (!endDateVal && startDateVal) {
@@ -1178,7 +1179,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 ? (parseFloat(group.penality_for_ps) || 0.00)
                 : (parseFloat(group.penality_for_nps) || 0.00);
 
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             simulatedNow.setHours(0, 0, 0, 0);
             const dueDate = new Date(upcomingInstallment.due_date);
             dueDate.setHours(0, 0, 0, 0);
@@ -1426,7 +1427,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 if (geInstallment && ticketPending > 0) {
                     const dueDate = geInstallment.due_date ? new Date(geInstallment.due_date) : null;
                     if (dueDate) {
-                        const simulatedNow = await getSimulatedNow();
+                        const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
                         simulatedNow.setHours(0, 0, 0, 0);
                         dueDate.setHours(0, 0, 0, 0);
 
@@ -2078,7 +2079,7 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
             dateStrFrom = new Date(from_date).toISOString().split('T')[0];
             dateStrTo = dateStrFrom;
         } else {
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             startOfPeriod = new Date(simulatedNow);
             startOfPeriod.setHours(0, 0, 0, 0);
             endOfPeriod = new Date(simulatedNow);
@@ -2291,7 +2292,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
         let overdue_members_set = new Set();
         const memberMap = {};
 
-        const simulatedNow = await getSimulatedNow();
+        const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
         allInstallments.forEach(inst => {
             let thresholdDate = new Date(simulatedNow);
             if (inst.type === 2) {
@@ -2580,7 +2581,7 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             const e = enrollments.find(en => en.id === inst.enrollment_id);
             const group = e ? e.group : null;
 
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             simulatedNow.setHours(0, 0, 0, 0);
             const dueDate = new Date(inst.due_date);
             dueDate.setHours(0, 0, 0, 0);
@@ -2813,7 +2814,7 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
 
             let pending_penalty = 0;
             const group = enrollments.find(e => e.id === inst.enrollment_id)?.group;
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             if (pending_installment > 0 && new Date(inst.due_date) < simulatedNow) {
                 const expected_penalty = parseFloat(inst.penalty_amount) || 0;
                 pending_penalty = Math.max(0, expected_penalty - penaltyAlreadyPaid);
