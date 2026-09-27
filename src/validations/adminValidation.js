@@ -634,6 +634,11 @@ module.exports = {
     }),
     search: Joi.string().allow('', null).optional()
   }),
+  lateJoinPreviewSchema: Joi.object({
+    group_id: Joi.string().uuid().required(),
+    enrollment_date: Joi.date().required(),
+    payment_mode_id: Joi.string().allow(null, '').optional()
+  }),
   enrollmentValidator: Joi.object({
     id: Joi.number().integer().optional(),
     company_id: Joi.string().uuid().allow('', null).optional(),
@@ -657,7 +662,9 @@ module.exports = {
     nominee_address: Joi.string().allow('', null).optional(),
     nominee_mobile_number: Joi.string().allow('', null).optional(),
     nominee_pincode: Joi.string().allow('', null).optional(),
-    fill_subscriber_address_status: Joi.number().integer().valid(0, 1).optional()
+    fill_subscriber_address_status: Joi.number().integer().valid(0, 1).optional(),
+    late_join_penalty_type: Joi.number().integer().valid(0, 1, 2).allow(null).optional(),
+    late_join_penalty_amount: Joi.number().min(0).allow(null).optional()
   }),
   getEnrollmentSchema: Joi.object({
     company_id: Joi.string().uuid().allow('', null).optional(),
@@ -1267,6 +1274,7 @@ module.exports = {
     enrollment_charges: Joi.number().precision(2).allow(null).optional(),
     notice_charges: Joi.number().precision(2).allow(null).optional(),
     transaction_lock_days: Joi.number().integer().min(0).allow(null).optional(),
+    late_join_grace_days: Joi.number().integer().min(0).allow(null).optional(),
     rect_print_format: Joi.number().integer().allow(null).optional(),
     latitude: Joi.string().allow('', null).optional(),
     longitude: Joi.string().allow('', null).optional(),

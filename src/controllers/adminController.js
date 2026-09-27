@@ -390,6 +390,17 @@ const getDistrictsList = async (req, res) => {
   }
 };
 
+const lateJoinPreview = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    data.company_id = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.lateJoinPreviewService(res, data, req.user);
+  } catch (error) {
+    console.error('Error in lateJoinPreview:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const storeOrUpdateEnrollment = async (req, res) => {
   try {
     const data = { ...req.body };
@@ -1733,6 +1744,7 @@ module.exports = {
   getDistrictsList,
   deleteCity,
   fetchStaticDropdown,
+  lateJoinPreview,
   storeOrUpdateEnrollment,
   getAllEnrollmentDetails,
   deleteEnrollment,

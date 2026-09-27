@@ -962,6 +962,50 @@ const createInstallmentsForEnrollment = async (enrollment, group, options = {}) 
     }
   }
 
+  if (enrollment.enrollment_date) {
+    const enrollmentDateObj = new Date(enrollment.enrollment_date);
+    enrollmentDateObj.setUTCHours(23, 59, 59, 999);
+    const latePenaltyType = parseInt(enrollment.late_join_penalty_type);
+    const latePenaltyAmount = parseFloat(enrollment.late_join_penalty_amount) || 0;
+
+    const catchUpInstalments = installmentsJsonArray.filter(i => new Date(i.due_date) <= enrollmentDateObj);
+
+    if (catchUpInstalments.length > 0) {
+      let companyId = enrollment.company_id || group.company_id;
+      let graceDays = 15;
+      if (companyId) {
+        const company = await Company.findByPk(companyId, { transaction });
+        if (company && company.late_join_grace_days !== undefined && company.late_join_grace_days !== null) {
+          graceDays = parseInt(company.late_join_grace_days);
+        }
+      }
+
+      const penaltyFromDateObj = new Date(enrollmentDateObj);
+      penaltyFromDateObj.setDate(penaltyFromDateObj.getDate() + graceDays);
+      const penaltyFromDateStr = penaltyFromDateObj.toISOString().split('T')[0];
+
+      let type1Share = 0;
+      let type1Remainder = 0;
+      if (latePenaltyType === 1 && latePenaltyAmount > 0) {
+        type1Share = parseFloat((latePenaltyAmount / catchUpInstalments.length).toFixed(2));
+        const totalType1 = type1Share * catchUpInstalments.length;
+        type1Remainder = parseFloat((latePenaltyAmount - totalType1).toFixed(2));
+      }
+
+      for (let idx = 0; idx < catchUpInstalments.length; idx++) {
+        const inst = catchUpInstalments[idx];
+        inst.penalty_from_date = penaltyFromDateStr;
+        if (latePenaltyType === 1) {
+          let toAdd = type1Share;
+          if (idx === catchUpInstalments.length - 1) toAdd += type1Remainder;
+          inst.penalty_amount = parseFloat(toAdd.toFixed(2));
+        } else if (latePenaltyType === 2) {
+          inst.penalty_amount = latePenaltyAmount;
+        }
+      }
+    }
+  }
+
   await ChitsInstallment.bulkCreate(installmentsJsonArray, { transaction });
 };
 
@@ -4311,7 +4355,10 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
     const companyId = await resolveCompanyIdForAuth(userToken);
     const submission = await CollectionAgentAmount.findOne({ 
       where: { id },
-      include: [{ model: Member, as: 'member', where: { company_id: companyId } }],
+      include: [
+        { model: Member, as: 'member', where: { company_id: companyId } },
+        { model: Member, as: 'collection_agent' }
+      ],
       transaction
     });
     if (!submission) {
@@ -4457,7 +4504,7 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
       }, { transaction });
 
     } else if (status === 3) {
-      await CustomerPayment.destroy({
+      await CustomerPayment.update({ payment_status: 2 }, {
         where: { collection_agent_amount_id: id, payment_status: 0 },
         transaction
       });
@@ -4475,6 +4522,20 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
         );
       } catch (fcmErr) {
         console.error('Failed to send payment verified push:', fcmErr.message);
+      }
+    } else if (status === 3 && submission.member) {
+      try {
+        const agentName = submission.collection_agent ? submission.collection_agent.name : 'an agent';
+        const collectionDate = submission.paid_date ? new Date(submission.paid_date).toLocaleDateString('en-IN') : 'recently';
+
+        fcmService.sendPushToMember(
+          submission.member,
+          'Payment not confirmed',
+          `Your payment of ₹${submission.received_amount} collected by ${agentName} on ${collectionDate} was not confirmed by the office. Please contact the office.`,
+          { type: 'PAYMENT_REJECTED', submission_id: String(id), amount: String(submission.received_amount) }
+        );
+      } catch (fcmErr) {
+        console.error('Failed to send payment rejected push:', fcmErr.message);
       }
     }
 
@@ -6634,7 +6695,7 @@ const getLedgerReportService = async (res, reqBody) => {
 const SETUP_FIELDS = [
   'company_name', 'company_address', 'bank_name', 'gst_percentage', 'gst_number', 'gst_type',
   'pan_number', 'sac_code', 'cheque_return_charges', 'enrollment_charges', 'notice_charges',
-  'transaction_lock_days', 'rect_print_format', 'latitude', 'longitude', 'location',
+  'transaction_lock_days', 'late_join_grace_days', 'rect_print_format', 'latitude', 'longitude', 'location',
   'foreman_name', 'foreman_father_name', 'foreman_address', 'cin', 'place', 'registrar_office_address',
 ];
 
@@ -6933,7 +6994,116 @@ const getGroupStartDate = (group) => {
   return group.commencement_date || group.chit_start_date || null;
 };
 
+const lateJoinPreviewService = async (res, payload, userPayload) => {
+  try {
+    const { group_id, enrollment_date, payment_mode_id, company_id } = payload;
+    const group = await ChitsGroup.findByPk(group_id);
+    if (!group) return errorResponse(res, 404, 'Group not found');
+    if (company_id && group.company_id && String(group.company_id) !== String(company_id)) {
+      return errorResponse(res, 404, 'Group not found in this company');
+    }
+
+    let mappedType = 1;
+    if (payment_mode_id) {
+      const mode = await StaticDropdownsList.findByPk(payment_mode_id);
+      if (mode) {
+        const name = mode.dropdown_name.toLowerCase();
+        if (name === 'monthly') mappedType = 1;
+        else if (name === 'weekly') mappedType = 2;
+        else if (name === 'daily') mappedType = 3;
+      }
+    }
+
+    const peerRows = await sequelize.query("SELECT ci.enrollment_id FROM chits_installments ci JOIN enrollments e ON e.id = ci.enrollment_id WHERE e.group_id = :groupId AND e.delete_status = 0 AND ci.type = :mappedType LIMIT 1", {
+      replacements: { groupId: group.id, mappedType }, type: sequelize.QueryTypes.SELECT
+    });
+
+    let copiedSchedule = null;
+    if (peerRows && peerRows.length > 0) {
+      copiedSchedule = await ChitsInstallment.findAll({ where: { enrollment_id: peerRows[0].enrollment_id }, order: [['installment_no', 'ASC']] });
+    }
+
+    const noOfInstallments = group.no_of_installments || 1;
+    const installments = [];
+    if (copiedSchedule && copiedSchedule.length > 0) {
+      for (const peerInst of copiedSchedule) {
+        installments.push({ installment_no: peerInst.installment_no, due_date: peerInst.due_date, payable_amount: peerInst.payable_amount });
+      }
+    } else {
+      const initialDateStr = getGroupStartDate(group) || new Date().toISOString().split('T')[0];
+      const payableAmount = parseFloat((parseFloat(group.chit_amount || 0) / noOfInstallments).toFixed(2));
+      const schemeConfig = group.scheme_configuration_id ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id) : null;
+      const pricesArray = schemeConfig && schemeConfig.prices ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices) : [];
+
+      let dueDayOfMonth = group.due_date_number_count;
+      const dateIterator = new Date(initialDateStr);
+      if (!dueDayOfMonth) dueDayOfMonth = dateIterator.getDate();
+
+      for (let i = 1; i <= noOfInstallments; i++) {
+        let currentPayableAmount = payableAmount;
+        if (schemeConfig) {
+          if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) currentPayableAmount = parseFloat(pricesArray[i - 1]?.installment || 0);
+          else if (schemeConfig.scheme_type === 62) currentPayableAmount = parseFloat(pricesArray[i - 1]?.not_withdrawn || 0);
+          else if (schemeConfig.scheme_type === 63) currentPayableAmount = parseFloat(schemeConfig.installment || 0);
+        }
+        let dueDateStr = '';
+        if (i === 1) dueDateStr = new Date(dateIterator.getTime() - (dateIterator.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+        else {
+          if (mappedType === 1) {
+            const newDate = new Date(initialDateStr); newDate.setDate(1); newDate.setMonth(newDate.getMonth() + (i - 1));
+            newDate.setDate(Math.min(dueDayOfMonth, new Date(newDate.getFullYear(), newDate.getMonth() + 1, 0).getDate()));
+            dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+          } else if (mappedType === 2) {
+            const newDate = new Date(initialDateStr); newDate.setDate(newDate.getDate() + 7 * (i - 1)); dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+          } else {
+            const newDate = new Date(initialDateStr); newDate.setDate(newDate.getDate() + (i - 1)); dueDateStr = new Date(newDate.getTime() - (newDate.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+          }
+        }
+        installments.push({ installment_no: i, due_date: dueDateStr, payable_amount: currentPayableAmount });
+      }
+    }
+
+    const enrollmentDateObj = new Date(enrollment_date);
+    enrollmentDateObj.setUTCHours(23, 59, 59, 999);
+
+    const dueInstallments = installments.filter(i => new Date(i.due_date) <= enrollmentDateObj);
+    let totalDue = 0;
+    let suggestedPenalty = 0;
+    const { dailyPenaltyFor } = require('./userService');
+
+    for (const inst of dueInstallments) {
+      const dDate = new Date(inst.due_date);
+      dDate.setUTCHours(23, 59, 59, 999);
+      let diffMs = enrollmentDateObj - dDate;
+      let daysOverdue = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+      inst.days_overdue = daysOverdue;
+      totalDue += parseFloat(inst.payable_amount || 0);
+      if (daysOverdue > 0) {
+        const penaltyPerDay = dailyPenaltyFor(parseFloat(group.chit_amount || 0), group.total_months || group.no_of_installments, parseFloat(inst.payable_amount || 0), false);
+        suggestedPenalty += daysOverdue * penaltyPerDay;
+      }
+    }
+
+    const company = await Company.findByPk(company_id);
+    const graceDays = company?.late_join_grace_days ?? 15;
+
+    return successResponse(res, statusCodes.OK, 'Preview generated', {
+      is_late: dueInstallments.length > 0,
+      installments_due: dueInstallments,
+      count: dueInstallments.length,
+      total_due: parseFloat(totalDue.toFixed(2)),
+      daily_rate: 0,
+      suggested_penalty: Math.round(suggestedPenalty),
+      grace_days: graceDays
+    });
+  } catch (err) {
+    console.error('Error in lateJoinPreviewService:', err);
+    return errorResponse(res, 500, 'Internal server error');
+  }
+};
+
 module.exports = {
+  lateJoinPreviewService,
   getGroupStartDate,
   storeOrUpdateFAQService,
   getAllFAQService,
