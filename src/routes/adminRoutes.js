@@ -289,8 +289,12 @@ router.post('/payment-account/store-or-update', authMiddleware.authenticateToken
 router.post('/payment-account/get-all', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(PAYMENT_ACCOUNT_READERS), paymentAccountController.getAllPaymentAccounts);
 router.post('/payment-account/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_PAYMENT_ACCOUNTS), paymentAccountController.deletePaymentAccount);
 
-// dashboard route
+// dashboard, financials & leaderboards routes
 router.post('/dashboard/summary', authMiddleware.authenticateToken, adminController.getDashboardSummary);
+router.post('/financials/commission-earned', authMiddleware.authenticateToken, validate(adminValidation.getFinancialsDetailSchema), adminController.getCommissionEarnedDetails);
+router.post('/financials/dividend-distributed', authMiddleware.authenticateToken, validate(adminValidation.getFinancialsDetailSchema), adminController.getDividendDistributedDetails);
+router.post('/agents/leaderboard/collection', authMiddleware.authenticateToken, validate(adminValidation.getAgentLeaderboardSchema), adminController.getTopCollectionAgents);
+router.post('/agents/leaderboard/business', authMiddleware.authenticateToken, validate(adminValidation.getAgentLeaderboardSchema), adminController.getTopBusinessAgents);
 
 // fcm notifications routes
 router.post('/admin/notifications/register-token', authMiddleware.authenticateToken, validate(adminValidation.registerTokenSchema), adminController.registerAdminToken);

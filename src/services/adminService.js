@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, EnrollmentJointHolder, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, EnrollmentJointHolder, SelfTransfer, BorrowRepay, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
@@ -23,6 +23,42 @@ const formatDateDDMMYYYY = (dateVal) => {
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const year = d.getFullYear();
   return `${day}/${month}/${year}`;
+};
+
+const safeDateRange = (from_date, to_date) => {
+  if (!from_date || !to_date) return null;
+
+  const extractDateStr = (d) => {
+    if (!d) return null;
+    if (d instanceof Date) {
+      if (isNaN(d.getTime())) return null;
+      return d.toISOString().split('T')[0];
+    }
+    if (typeof d === 'string') {
+      const match = d.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (match) return match[1];
+    }
+    const dt = new Date(d);
+    if (isNaN(dt.getTime())) return null;
+    return dt.toISOString().split('T')[0];
+  };
+
+  const fromStr = extractDateStr(from_date);
+  const toStr = extractDateStr(to_date);
+
+  if (!fromStr || !toStr) return null;
+
+  const startDate = new Date(`${fromStr}T00:00:00.000Z`);
+  const endDate = new Date(`${toStr}T23:59:59.999Z`);
+
+  if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return null;
+
+  return {
+    fromStr,
+    toStr,
+    startDate,
+    endDate
+  };
 };
 
 const getPayoutStatus = (total_paid, total_pending) => {
@@ -281,9 +317,9 @@ const forgotPasswordService = async (res, user_code, type) => {
     }
 
     const maskedMobile = targetMobile ? targetMobile.replace(/.(?=.{2})/g, 'x') : null;
-    return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP sent successfully', { 
-      user_code, 
-      type, 
+    return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP sent successfully', {
+      user_code,
+      type,
       is_static_otp: isStatic,
       static_otp: isStatic ? '123456' : undefined,
       mobile_number_masked: maskedMobile,
@@ -315,7 +351,7 @@ const verifyOtpService = async (res, user_code, type, otp) => {
 
     const maxAttempts = 3;
     const now = new Date();
-    
+
     let dbOtp, dbExpiresAt, dbAttempts;
     if (role === 'staff') {
       dbOtp = user.otp;
@@ -467,7 +503,7 @@ const refreshTokenService = async (res, refresh_token) => {
 
 const storeOrUpdateCompanyService = async (res, data = {}) => {
   const { id, ...companyData } = data;
-  
+
   if (companyData.company_password) {
     companyData.company_password = await bcrypt.hash(companyData.company_password, 10);
   } else {
@@ -479,13 +515,13 @@ const storeOrUpdateCompanyService = async (res, data = {}) => {
     if (!company) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
     delete companyData.company_id; // prevent updating generated field
     await company.update(companyData);
-    
+
     const { company_password, ...safeCompany } = company.toJSON();
     return successResponse(res, statusCodes.OK, 'Company updated successfully', safeCompany);
   } else {
     delete companyData.company_id; // model hook will handle creation
     const newCompany = await Company.create(companyData);
-    
+
     const { company_password, ...safeCompany } = newCompany.toJSON();
     return successResponse(res, statusCodes.CREATED, 'Company registered successfully', safeCompany);
   }
@@ -536,7 +572,7 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       if (!member) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
       }
-      
+
       if (memberData.mobile_number) {
         const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number, id: { [Op.ne]: id } } });
         if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
@@ -590,7 +626,7 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       if (memberData.other_info_user_password) {
         memberData.other_info_user_password = await bcrypt.hash(memberData.other_info_user_password, 10);
       }
-      
+
       memberData.is_verified = false;
       const newMember = await Member.create(memberData);
       const { other_info_user_password, password, ...safeMember } = newMember.toJSON();
@@ -609,8 +645,8 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
 
     const where = {
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' ? { company_id } : {}),
+
+      ...(company_id && company_id !== '' ? { company_id } : {}),
       ...(introduced_as && introduced_as !== '' ? { introduced_as: { [Op.contains]: [introduced_as] } } : {}),
       [Op.or]: [
         { name: { [Op.like]: `%${search || ''}%` } },
@@ -724,16 +760,16 @@ const getAllRouteDetailsService = async (res, company_id, min, max, search) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' && { company_id }),
+
+      ...(company_id && company_id !== '' && { company_id }),
       ...(search && { route_name: { [Op.like]: `%${search}%` } })
     };
-    const routes = await Route.findAndCountAll({ 
-      limit, 
-      offset, 
-      where, 
+    const routes = await Route.findAndCountAll({
+      limit,
+      offset,
+      where,
       include: [{ model: City, as: 'city', attributes: ['city_name'] }],
-      order: [['createdAt', 'DESC']] 
+      order: [['createdAt', 'DESC']]
     });
 
     const formattedRows = routes.rows.map(route => {
@@ -785,8 +821,8 @@ const getAllAreaDetailsService = async (res, company_id, min, max, search) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' && { company_id }),
+
+      ...(company_id && company_id !== '' && { company_id }),
       ...(search && { area_name: { [Op.like]: `%${search}%` } })
     };
     const areas = await Area.findAndCountAll({
@@ -1020,7 +1056,7 @@ const createInstallmentsForGroup = async (group_id, options = {}) => {
 const storeOrUpdateChitsGroupService = async (res, data = {}) => {
   try {
     const { id, chits_group_status, ...chitsGroupData } = data; // ignore client status
-    
+
     if (chitsGroupData.commencement_date !== undefined) {
       chitsGroupData.chit_start_date = chitsGroupData.commencement_date;
     }
@@ -1030,7 +1066,7 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
       if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
 
       // Schedule change detection
-      const scheduleFieldsChanged = 
+      const scheduleFieldsChanged =
         (chitsGroupData.commencement_date && chitsGroupData.commencement_date !== chitsGroup.commencement_date) ||
         (chitsGroupData.chit_start_date && chitsGroupData.chit_start_date !== chitsGroup.chit_start_date) ||
         (chitsGroupData.due_date_number_count !== undefined && String(chitsGroupData.due_date_number_count) !== String(chitsGroup.due_date_number_count)) ||
@@ -1116,7 +1152,7 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
                 business_type_id: 1, // Default to direct
                 delete_status: 0
               }, { transaction: t });
-              
+
               const loadedEnrollment = await Enrollment.findByPk(enrollment.id, {
                 include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
                 transaction: t
@@ -1159,38 +1195,98 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
   }
 };
 
-const getAllChitsGroupDetailsService = async (res, company_id, min, max, search, enrollment_status, not_status) => {
+const getAllChitsGroupDetailsService = async (res, company_id, min, max, search, enrollment_status, not_status, chits_group_status, from_date, to_date) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
-    const chitsGroups = await ChitsGroup.findAndCountAll({
-      limit, offset, where: {
-        is_deleted_status: 0,
-        ...(not_status === 1 ? { chits_group_status: { [Op.ne]: 0 } } : {}),
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0, chits_group_status: { [Op.ne]: 2 } } : {}),
-        ...(company_id && company_id !== '' ? { company_id } : {}),
-        ...(search && {
+
+    const whereClause = {
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' ? { company_id } : {}),
+      ...(not_status === 1 ? { chits_group_status: { [Op.ne]: 0 } } : {}),
+      ...(enrollment_status === 1 ? { is_chit_full_status: 0, chits_group_status: { [Op.ne]: 2 } } : {}),
+      ...(chits_group_status !== undefined && chits_group_status !== null && chits_group_status !== '' ? { chits_group_status: Number(chits_group_status) } : {}),
+      ...(() => {
+        const dateRange = safeDateRange(from_date, to_date);
+        if (!dateRange) return {};
+        return {
           [Op.or]: [
-            { group_name: { [Op.like]: `%${search}%` } },
-            { chit_agreement_number: { [Op.like]: `%${search}%` } },
-            sequelize.where(sequelize.cast(sequelize.col('company_chit_number'), 'varchar'), { [Op.like]: `%${search}%` }),
-            { fdr_number: { [Op.like]: `%${search}%` } }
+            { commencement_date: { [Op.between]: [dateRange.fromStr, dateRange.toStr] } },
+            { chit_start_date: { [Op.between]: [dateRange.fromStr, dateRange.toStr] } },
+            { createdAt: { [Op.between]: [dateRange.startDate, dateRange.endDate] } }
           ]
-        })
-      },
+        };
+      })(),
+      ...(search && {
+        [Op.or]: [
+          { group_name: { [Op.like]: `%${search}%` } },
+          { chit_agreement_number: { [Op.like]: `%${search}%` } },
+          sequelize.where(sequelize.cast(sequelize.col('company_chit_number'), 'varchar'), { [Op.like]: `%${search}%` }),
+          { fdr_number: { [Op.like]: `%${search}%` } }
+        ]
+      })
+    };
+
+    const chitsGroups = await ChitsGroup.findAndCountAll({
+      limit, offset,
+      where: whereClause,
       order: [['createdAt', 'DESC']]
     });
 
     const rowsWithCounts = await Promise.all(chitsGroups.rows.map(async (group) => {
       const groupData = group.toJSON();
       const enrollmentsCount = await Enrollment.count({ where: { group_id: groupData.id, delete_status: 0 } });
-      groupData.slot_filled_count = enrollmentsCount;
+      const selfChitsCount = await SelfChit.count({ where: { group_id: groupData.id, is_deleted_status: 0 } });
+      groupData.slot_filled_count = enrollmentsCount + selfChitsCount;
+      groupData.active_members_count = enrollmentsCount;
       return groupData;
     }));
 
+    // Aggregate summary stats for the current filter/company
+    const allGroups = await ChitsGroup.findAll({
+      where: {
+        is_deleted_status: 0,
+        ...(company_id && company_id !== '' ? { company_id } : {})
+      },
+      attributes: ['id', 'chits_group_status', 'chit_amount', 'no_of_installments']
+    });
+
+    let totalGroups = allGroups.length;
+    let activeGroups = 0;
+    let upcomingGroups = 0;
+    let completedGroups = 0;
+    let totalChitValue = 0;
+    let totalCapacity = 0;
+
+    allGroups.forEach(g => {
+      const status = Number(g.chits_group_status);
+      if (status === 1) activeGroups++;
+      else if (status === 0) upcomingGroups++;
+      else if (status === 2) completedGroups++;
+      totalChitValue += parseFloat(g.chit_amount) || 0;
+      totalCapacity += parseInt(g.no_of_installments) || 0;
+    });
+
+    const totalFilledSlots = await Enrollment.count({
+      where: {
+        delete_status: 0,
+        ...(company_id && company_id !== '' ? { company_id } : {})
+      }
+    });
+
     return successResponse(res, statusCodes.OK, 'Chits groups retrieved successfully', {
       count: chitsGroups.count,
-      rows: rowsWithCounts
+      rows: rowsWithCounts,
+      stats: {
+        total_groups: totalGroups,
+        active_groups: activeGroups,
+        upcoming_groups: upcomingGroups,
+        completed_groups: completedGroups,
+        total_chit_value: totalChitValue,
+        total_capacity: totalCapacity,
+        filled_slots: totalFilledSlots,
+        fill_percentage: totalCapacity > 0 ? parseFloat(((totalFilledSlots / totalCapacity) * 100).toFixed(1)) : 0
+      }
     });
   } catch (error) {
     console.error('Error in getAllChitsGroupDetailsService:', error);
@@ -1222,9 +1318,9 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
       if (Number(chitsGroup.chits_group_status) !== 1) {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Only a Running group can be marked completed.');
       }
-      
+
       await chitsGroup.update({ chits_group_status: 2 });
-      
+
       // Trigger FCM Notifications
       try {
         const enrollments = await Enrollment.findAll({
@@ -1337,8 +1433,8 @@ const getAllDistrictDetailsService = async (res, company_id, min, max, search) =
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' && { company_id }),
+
+      ...(company_id && company_id !== '' && { company_id }),
       ...(search && { district_name: { [Op.like]: `%${search}%` } })
     };
     const districts = await District.findAndCountAll({ limit, offset, where, include: [{ model: Country, attributes: ['country_name'] }, { model: State, attributes: ['state_name'] }], order: [['createdAt', 'DESC']] });
@@ -1374,8 +1470,8 @@ const getAllCityDetailsService = async (res, company_id, min, max, search) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' && { company_id }),
+
+      ...(company_id && company_id !== '' && { company_id }),
       ...(search && { city_name: { [Op.like]: `%${search}%` } })
     };
     const cities = await City.findAndCountAll({ limit, offset, where, include: [{ model: Country, attributes: ['country_name'] }, { model: State, attributes: ['state_name'] }, { model: District, attributes: ['district_name'] }], order: [['createdAt', 'DESC']] });
@@ -1391,8 +1487,8 @@ const getDistrictsListService = async (res, company_id, state_id, search) => {
     const where = {
       state_id,
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' && { company_id }),
+
+      ...(company_id && company_id !== '' && { company_id }),
       ...(search && { district_name: { [Op.like]: `%${search}%` } })
     };
     const districts = await District.findAll({ where, order: [['district_name', 'ASC']] });
@@ -1629,7 +1725,7 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
             added_on: addedOn
           })), { transaction: t });
         }
-        
+
         const loadedEnrollment = await Enrollment.findByPk(newEnrollment.id, {
           include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
           transaction: t
@@ -1661,35 +1757,93 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
   }
 };
 
-const getAllEnrollmentDetailsService = async (res, company_id, min, max, search) => {
+const getAllEnrollmentDetailsService = async (res, company_id, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      ...(company_id && company_id !== '' ? { company_id } : {}),
+      delete_status: 0,
+      ...(group_id ? { group_id } : {}),
+      ...(business_agent_id ? { business_agent_id } : {}),
+      ...(collection_agent_id ? { collection_agent_id } : {})
+    };
+
+    // Date / month filtering
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      whereClause[Op.or] = [
+        { enrollment_date: { [Op.between]: [dateRange.fromStr, dateRange.toStr] } },
+        { createdAt: { [Op.between]: [dateRange.startDate, dateRange.endDate] } }
+      ];
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = new Date(Date.UTC(currentYear, monthNum - 1, 1, 0, 0, 0, 0));
+        const endOfMonth = new Date(Date.UTC(currentYear, monthNum, 0, 23, 59, 59, 999));
+        whereClause.createdAt = { [Op.between]: [startOfMonth, endOfMonth] };
+      }
+    }
+
+    const subscriberWhere = search ? {
+      [Op.or]: [
+        { name: { [Op.like]: `%${search}%` } },
+        { mobile_number: { [Op.like]: `%${search}%` } },
+        { member_id: { [Op.like]: `%${search}%` } }
+      ]
+    } : undefined;
+
     const enrollments = await Enrollment.findAndCountAll({
       limit, offset,
-      where: {
-        ...(company_id && company_id !== '' ? { company_id } : {}),
-        delete_status: 0,
-        [Op.or]: [
-          { nominee_name: { [Op.like]: `%${search || ''}%` } },
-          sequelize.where(sequelize.cast(sequelize.col('group_position_number'), 'varchar'), { [Op.like]: `%${search || ''}%` })
-        ]
-      },
+      where: whereClause,
       include: [
         { model: Company, as: 'company', attributes: ['company_name'] },
-        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
-        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] },
-        { model: EnrollmentJointHolder, as: 'joint_holders', separate: true, where: { removed_on: null }, attributes: ['id', 'member_id', 'share_percent', 'added_on'], include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }] },
-        { model: Member, as: 'business_agent', attributes: ['name', 'member_id'] },
-        { model: Member, as: 'collection_agent', attributes: ['name', 'member_id'] },
-        { model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] },
-        { model: StaticDropdownsList, as: 'intimation_card', attributes: ['dropdown_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'chits_group_status'] },
+        {
+          model: Member,
+          as: 'subscriber',
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image', 'email', 'date_of_birth'],
+          where: subscriberWhere,
+          required: search ? true : false
+        },
+        { model: EnrollmentJointHolder, as: 'joint_holders', separate: true, where: { removed_on: null }, attributes: ['id', 'member_id', 'share_percent', 'added_on'], include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'mobile_number'] }] },
+        { model: Member, as: 'business_agent', attributes: ['id', 'name', 'member_id', 'mobile_number'] },
+        { model: Member, as: 'collection_agent', attributes: ['id', 'name', 'member_id', 'mobile_number'] },
+        { model: StaticDropdownsList, as: 'payment_mode', attributes: ['id', 'dropdown_name'] },
+        { model: StaticDropdownsList, as: 'intimation_card', attributes: ['id', 'dropdown_name'] },
         { model: Area, as: 'area', attributes: ['area_name'] },
         { model: City, as: 'nominee_city', attributes: ['city_name'] }
       ],
       order: [['createdAt', 'DESC']]
     });
-    return successResponse(res, statusCodes.OK, 'Enrollments retrieved successfully', enrollments);
+
+    // Compute stats for current filter
+    const allFiltered = await Enrollment.findAll({
+      where: whereClause,
+      attributes: ['id', 'subscriber_id', 'group_id'],
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['chit_amount'], required: true }
+      ]
+    });
+
+    let totalChitValue = 0;
+    const uniqueSubscribers = new Set();
+    allFiltered.forEach(e => {
+      totalChitValue += (parseFloat(e.group?.chit_amount) || 0);
+      if (e.subscriber_id) uniqueSubscribers.add(e.subscriber_id);
+    });
+
+    return successResponse(res, statusCodes.OK, 'Enrollments retrieved successfully', {
+      count: enrollments.count,
+      rows: enrollments.rows,
+      stats: {
+        total_enrollments: enrollments.count,
+        total_chit_value: totalChitValue,
+        unique_subscribers: uniqueSubscribers.size
+      }
+    });
   } catch (error) {
     console.error('Error in getAllEnrollmentDetailsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -2110,7 +2264,7 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
   const transaction = await sequelize.transaction();
   try {
     const { id, ...inputData } = data;
-    
+
     // Strip client-supplied financial fields
     delete inputData.bid_loss;
     delete inputData.bid_payable;
@@ -2124,7 +2278,7 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
     let auctionData = { ...inputData };
     let auctionResult = null;
     let isNew = false;
-    
+
     const targetGroupId = auctionData.group_id || (id ? (await Auction.findByPk(id)).group_id : null);
     const groupForMath = targetGroupId ? await ChitsGroup.findOne({
       where: { id: targetGroupId, company_id: safeCompanyId },
@@ -2136,7 +2290,7 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       const chitAmount = parseFloat(groupForMath.chit_amount) || 0;
       const installments = parseInt(groupForMath.no_of_installments, 10) || 1;
       const companyCommissionPct = parseFloat(groupForMath.company_commission) || 0;
-      
+
       const totalEnrollments = await Enrollment.count({ where: { group_id: targetGroupId, delete_status: 0 }, transaction });
       const memberCount = totalEnrollments > 0 ? totalEnrollments : installments;
 
@@ -2417,7 +2571,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     if (parseInt(auctionData.auction_number, 10) >= parseInt(group.no_of_installments, 10)) {
       updates.chits_group_status = 2;
     }
-    
+
     if (Object.keys(updates).length > 0) {
       await group.update(updates, { transaction });
     }
@@ -2438,7 +2592,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
         attributes: ['id']
       });
       const groupMembers = (await holderMembersOf(allEnrollments.map((e) => e.id))).filter((m) => m.fcm_token && !winnerIds.has(m.id));
-      
+
       let dividendText = '';
       if (schemeConfig && schemeConfig.scheme_type !== 63 && schemeConfig.scheme_type !== 64) {
         const dividend = auctionData.net_payable > 0 ? (group.chit_value - auctionData.net_payable) / group.no_of_members : 0;
@@ -2555,8 +2709,8 @@ const getAgentByAgentTypeService = async (res, company_id, agent_type_id, min, m
 
     const where = {
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' && { company_id }),
+
+      ...(company_id && company_id !== '' && { company_id }),
       ...(search && {
         [Op.or]: [
           { name: { [Op.like]: `%${search}%` } },
@@ -2819,7 +2973,7 @@ const getAllAgentTargetEntryService = async (res, company_id, agent_type_id, min
       ...(company_id ? { company_id } : {}),
       ...(agent_type_id ? { agent_type_id } : {})
     };
-    
+
     let includeAgentWhere = {};
     if (search) {
       includeAgentWhere = {
@@ -3573,8 +3727,8 @@ const getAllSelfChitDetailsService = async (res, company_id, min, max) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' && { company_id })
+
+      ...(company_id && company_id !== '' && { company_id })
     };
     const selfChits = await SelfChit.findAndCountAll({
       limit, offset, where,
@@ -3961,9 +4115,9 @@ const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, 
       },
       include: [
         { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
-        { 
-          model: Member, 
-          as: 'member', 
+        {
+          model: Member,
+          as: 'member',
           attributes: ['id', 'name', 'member_id', 'gender', 'other_info_user_code', 'createdAt', 'upload_image'],
           include: [
             { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
@@ -4202,9 +4356,9 @@ const getHistoryByGroupIdService = async (res, group_id, min, max, business_agen
       where: enrollmentWhere,
       include: [
         { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status', 'createdAt'] },
-        { 
-          model: Member, 
-          as: 'subscriber', 
+        {
+          model: Member,
+          as: 'subscriber',
           attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code', 'createdAt'],
           include: [
             { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
@@ -4490,7 +4644,7 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
   const transaction = await sequelize.transaction();
   try {
     const companyId = await resolveCompanyIdForAuth(userToken);
-    const submission = await CollectionAgentAmount.findOne({ 
+    const submission = await CollectionAgentAmount.findOne({
       where: { id },
       include: [
         { model: Member, as: 'member', where: { company_id: companyId } },
@@ -4567,8 +4721,8 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
         }
         const expectedType = submission.payment_type === 2 ? 'UPI' : 'BANK';
         if (targetAccount.account_type !== expectedType) {
-           await transaction.rollback();
-           return errorResponse(res, statusCodes.BAD_REQUEST, `Selected account must be of type ${expectedType}`);
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, `Selected account must be of type ${expectedType}`);
         }
       }
 
@@ -4593,7 +4747,7 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
         if (companyId) {
           newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId, transaction);
         }
-        
+
         let splitUpdate = {
           payment_status: 1,
           receipt_number: newReceiptNumber,
@@ -4687,13 +4841,13 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
 const storeDirectPaymentService = async (res, user, data) => {
   const transaction = await sequelize.transaction();
   try {
-    const { 
-      chits_installment_id, received_amount, penalty_paid, payment_date, 
+    const {
+      chits_installment_id, received_amount, penalty_paid, payment_date,
       payment_mode, transaction_reference,
       cash_amount, upi_amount, upi_account_id, bank_amount, bank_account_id,
       cheque_number, cheque_date, narration
     } = data;
-    
+
     if (!chits_installment_id || received_amount === undefined) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Missing required payment fields');
@@ -4754,10 +4908,10 @@ const storeDirectPaymentService = async (res, user, data) => {
     const { getInstallmentBalance } = require('./installmentBalanceHelper');
     const paidSoFar = await getInstallmentBalance(chits_installment_id);
     const dueAmount = Math.max(0, parseFloat(installmentInfo.payable_amount || 0) - paidSoFar);
-    
+
     const receivedAmountFloat = parseFloat(received_amount) || 0;
     const penaltyPaidFloat = parseFloat(penalty_paid) || 0;
-    
+
     // The instalment part may not exceed what is still due on the instalment.
     if (receivedAmountFloat > dueAmount + 0.01) {
       await transaction.rollback();
@@ -4825,7 +4979,7 @@ const storeDirectPaymentService = async (res, user, data) => {
         }, { transaction });
       }
     }
-    
+
     if (cash > 0) {
       // Find cash account to update
       // Must match reportService's cash attribution: lowest-id active CASH account.
@@ -4979,7 +5133,8 @@ const getRouteByIdService = async (res, id, companyId) => {
 
 const getAreaByIdService = async (res, id, companyId) => {
   try {
-    const area = await Area.findOne({ where: { id, company_id: companyId },
+    const area = await Area.findOne({
+      where: { id, company_id: companyId },
       include: [{ model: Route, as: 'route' }]
     });
     if (!area) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
@@ -5014,7 +5169,8 @@ const getCountryByIdService = async (res, id, companyId) => {
 
 const getStateByIdService = async (res, id, companyId) => {
   try {
-    const state = await State.findOne({ where: { id },
+    const state = await State.findOne({
+      where: { id },
       include: [{ model: Country }]
     });
     if (!state) return errorResponse(res, statusCodes.NOT_FOUND, 'State not found');
@@ -5027,7 +5183,8 @@ const getStateByIdService = async (res, id, companyId) => {
 
 const getDistrictByIdService = async (res, id, companyId) => {
   try {
-    const district = await District.findOne({ where: { id, company_id: companyId },
+    const district = await District.findOne({
+      where: { id, company_id: companyId },
       include: [{ model: State }]
     });
     if (!district) return errorResponse(res, statusCodes.NOT_FOUND, 'District not found');
@@ -5040,7 +5197,8 @@ const getDistrictByIdService = async (res, id, companyId) => {
 
 const getCityByIdService = async (res, id, companyId) => {
   try {
-    const city = await City.findOne({ where: { id, company_id: companyId },
+    const city = await City.findOne({
+      where: { id, company_id: companyId },
       include: [{ model: District }]
     });
     if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
@@ -5053,7 +5211,8 @@ const getCityByIdService = async (res, id, companyId) => {
 
 const getEnrollmentByIdService = async (res, id, companyId) => {
   try {
-    const enrollment = await Enrollment.findOne({ where: { id, company_id: companyId },
+    const enrollment = await Enrollment.findOne({
+      where: { id, company_id: companyId },
       include: [
         { model: ChitsGroup, as: 'group' },
         { model: Member, as: 'subscriber' },
@@ -5083,7 +5242,8 @@ const getUpcomingChitByIdService = async (res, id, companyId) => {
 
 const getSuitFileInformationByIdService = async (res, id, companyId) => {
   try {
-    const info = await SuitFileInformation.findOne({ where: { id, company_id: companyId },
+    const info = await SuitFileInformation.findOne({
+      where: { id, company_id: companyId },
       include: [
         { model: Member, as: 'subscriber' },
         { model: ChitsGroup, as: 'group' }
@@ -5099,7 +5259,8 @@ const getSuitFileInformationByIdService = async (res, id, companyId) => {
 
 const getAuctionByIdService = async (res, id, companyId) => {
   try {
-    const auction = await Auction.findOne({ where: { id, company_id: companyId },
+    const auction = await Auction.findOne({
+      where: { id, company_id: companyId },
       include: [
         { model: ChitsGroup, as: 'group' },
         { model: Member, as: 'bidder' }
@@ -5173,8 +5334,8 @@ const getAllContactUsService = async (res, company_id, min, max, search) => {
 
     const where = {
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' && { company_id }),
+
+      ...(company_id && company_id !== '' && { company_id }),
       ...(search && {
         [Op.or]: [
           { address: { [Op.like]: `%${search}%` } },
@@ -5251,8 +5412,8 @@ const getAllFAQService = async (res, company_id, min, max, search) => {
     const offset = parseInt(min, 10) || 0;
     const where = {
       is_deleted_status: 0,
-        
-        ...(company_id && company_id !== '' && { company_id }),
+
+      ...(company_id && company_id !== '' && { company_id }),
       ...(search && {
         [Op.or]: [
           { question: { [Op.like]: `%${search}%` } },
@@ -5346,7 +5507,7 @@ const logoutService = async (req, res, userPayload) => {
   try {
     const { id, role } = userPayload;
     const companyId = await resolveCompanyIdForAuth(userPayload);
-    
+
     if (role === 'company') {
       const user = await Company.findOne({ where: { id } });
       if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
@@ -5425,8 +5586,8 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
       where: whereClause,
       include: [
         { model: Member, as: 'member' },
-        { 
-          model: Member, 
+        {
+          model: Member,
           as: 'collection_agent',
           where: companyId ? { company_id: companyId } : undefined,
           required: !!companyId
@@ -5736,8 +5897,8 @@ const sendMemberVerificationOtpService = async (res, member_id) => {
     }
 
     const maskedMobile = targetMobile ? targetMobile.replace(/.(?=.{2})/g, 'x') : null;
-    return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP sent successfully', { 
-      member_id, 
+    return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP sent successfully', {
+      member_id,
       is_static_otp: isStatic,
       static_otp: isStatic ? '123456' : undefined,
       mobile_number_masked: maskedMobile,
@@ -5999,7 +6160,7 @@ const deleteRoleService = async (res, id, companyId, userToken) => {
     }
     const role = await Role.findOne({ where: { id, company_id: companyId } });
     if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
-    
+
     const assignedStaffCount = await StaffUser.count({ where: { role_id: id, is_deleted_status: 0 } });
     if (assignedStaffCount > 0) {
       return errorResponse(res, statusCodes.BAD_REQUEST, `Cannot delete this role — ${assignedStaffCount} staff user(s) are still assigned to it`);
@@ -6070,12 +6231,12 @@ const getDashboardSummaryService = async (res, companyId) => {
 
     let outstandingDues = 0;
     const defaulterMembers = new Set();
-    
+
     pendingInstallments.forEach(inst => {
       outstandingDues += (parseFloat(inst.payable_amount) || 0);
       if (inst.due_date) {
         const dueDate = new Date(inst.due_date);
-        dueDate.setHours(0,0,0,0);
+        dueDate.setHours(0, 0, 0, 0);
         if (dueDate < today) {
           defaulterMembers.add(inst.enrollment.subscriber_id);
         }
@@ -6116,13 +6277,15 @@ const getDashboardSummaryService = async (res, companyId) => {
       include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId, delete_status: 0 }, required: true }]
     });
 
-    // 6. Leaderboards
+    // 6. Leaderboards (Collection Agents & Business Agents)
     const topCollectionAgents = await CustomerPayment.findAll({
       attributes: [
         [sequelize.col('collection_submission.collection_agent_id'), 'collection_agent_id'],
         [sequelize.fn('sum', sequelize.col('CustomerPayment.received_amount')), 'collected_amount'],
         [sequelize.col('collection_submission->collection_agent.id'), 'agent_id'],
-        [sequelize.col('collection_submission->collection_agent.name'), 'agent_name']
+        [sequelize.col('collection_submission->collection_agent.name'), 'agent_name'],
+        [sequelize.col('collection_submission->collection_agent.mobile_number'), 'mobile_number'],
+        [sequelize.col('collection_submission->collection_agent.upload_image'), 'upload_image']
       ],
       where: {
         payment_status: 1,
@@ -6144,7 +6307,9 @@ const getDashboardSummaryService = async (res, companyId) => {
       group: [
         'collection_submission.collection_agent_id',
         'collection_submission->collection_agent.id',
-        'collection_submission->collection_agent.name'
+        'collection_submission->collection_agent.name',
+        'collection_submission->collection_agent.mobile_number',
+        'collection_submission->collection_agent.upload_image'
       ],
       order: [[sequelize.literal('collected_amount'), 'DESC']],
       limit: 5,
@@ -6153,8 +6318,47 @@ const getDashboardSummaryService = async (res, companyId) => {
 
     const topAgents = topCollectionAgents.map(a => ({
       collection_agent_id: a.collection_agent_id || a.agent_id,
+      agent_id: a.agent_id || a.collection_agent_id,
       agent_name: a.agent_name || 'Unknown',
+      mobile_number: a.mobile_number || '',
+      profile_image: a.upload_image || null,
       collected_amount: parseFloat(a.collected_amount || 0)
+    }));
+
+    const topBusinessAgents = await Enrollment.findAll({
+      attributes: [
+        'business_agent_id',
+        [sequelize.fn('sum', sequelize.col('group.chit_amount')), 'business_amount'],
+        [sequelize.fn('count', sequelize.col('Enrollment.id')), 'enrollments_count'],
+        [sequelize.col('business_agent.id'), 'agent_id'],
+        [sequelize.col('business_agent.name'), 'agent_name'],
+        [sequelize.col('business_agent.mobile_number'), 'mobile_number'],
+        [sequelize.col('business_agent.upload_image'), 'upload_image']
+      ],
+      where: {
+        company_id: companyId,
+        delete_status: 0,
+        business_agent_id: { [Op.ne]: null },
+        createdAt: { [Op.gte]: firstDayOfMonth }
+      },
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: [], required: true },
+        { model: Member, as: 'business_agent', attributes: [], required: true }
+      ],
+      group: ['Enrollment.business_agent_id', 'business_agent.id', 'business_agent.name', 'business_agent.mobile_number', 'business_agent.upload_image'],
+      order: [[sequelize.literal('business_amount'), 'DESC']],
+      limit: 5,
+      raw: true
+    });
+
+    const topBusinessList = topBusinessAgents.map(a => ({
+      agent_id: a.agent_id || a.business_agent_id,
+      business_agent_id: a.business_agent_id || a.agent_id,
+      agent_name: a.agent_name || 'Unknown',
+      mobile_number: a.mobile_number || '',
+      profile_image: a.upload_image || null,
+      business_amount: parseFloat(a.business_amount || 0),
+      enrollments_count: parseInt(a.enrollments_count || 0, 10)
     }));
 
     // 7. Charts
@@ -6221,7 +6425,7 @@ const getDashboardSummaryService = async (res, companyId) => {
       financials: {
         collection_today: collectionToday || 0,
         collection_month: collectionMonth || 0,
-        outstanding_dues: outstandingDues, 
+        outstanding_dues: outstandingDues,
         commission_earned: commissionEarned || 0,
         dividend_distributed: dividendDistributed || 0,
         self_transfer_total: selfTransferTotal || 0,
@@ -6245,7 +6449,7 @@ const getDashboardSummaryService = async (res, companyId) => {
       },
       leaderboards: {
         top_collection_agents: topAgents || [],
-        top_business_agents: [] 
+        top_business_agents: topBusinessList || []
       },
       charts: {
         monthly_collections: monthlyCollections.map(m => ({ month: m.get('month'), year: m.get('year'), amount: parseFloat(m.get('amount') || 0) })),
@@ -6259,6 +6463,434 @@ const getDashboardSummaryService = async (res, companyId) => {
     });
   } catch (error) {
     console.error('Error in getDashboardSummaryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTopCollectionAgentsService = async (res, companyId, query = {}) => {
+  try {
+    const { from_date, to_date, month, year, search, min, max } = query;
+    const limit = parseInt(max, 10) || 50;
+    const offset = parseInt(min, 10) || 0;
+
+    let dateWhere = {};
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      dateWhere = { createdAt: { [Op.between]: [dateRange.startDate, dateRange.endDate] } };
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = new Date(Date.UTC(currentYear, monthNum - 1, 1, 0, 0, 0, 0));
+        const endOfMonth = new Date(Date.UTC(currentYear, monthNum, 0, 23, 59, 59, 999));
+        dateWhere = { createdAt: { [Op.between]: [startOfMonth, endOfMonth] } };
+      }
+    } else {
+      const today = new Date();
+      const firstDayOfMonth = new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1, 0, 0, 0, 0));
+      dateWhere = { createdAt: { [Op.gte]: firstDayOfMonth } };
+    }
+
+    const results = await CustomerPayment.findAll({
+      attributes: [
+        [sequelize.col('collection_submission.collection_agent_id'), 'collection_agent_id'],
+        [sequelize.fn('sum', sequelize.col('CustomerPayment.received_amount')), 'collected_amount'],
+        [sequelize.fn('count', sequelize.col('CustomerPayment.id')), 'receipts_count'],
+        [sequelize.col('collection_submission->collection_agent.id'), 'agent_id'],
+        [sequelize.col('collection_submission->collection_agent.name'), 'agent_name'],
+        [sequelize.col('collection_submission->collection_agent.member_id'), 'agent_code'],
+        [sequelize.col('collection_submission->collection_agent.mobile_number'), 'mobile_number'],
+        [sequelize.col('collection_submission->collection_agent.upload_image'), 'upload_image']
+      ],
+      where: {
+        payment_status: 1,
+        ...dateWhere
+      },
+      include: [{
+        model: CollectionAgentAmount,
+        as: 'collection_submission',
+        required: true,
+        attributes: [],
+        include: [{
+          model: Member,
+          as: 'collection_agent',
+          where: {
+            company_id: companyId,
+            ...(search ? {
+              [Op.or]: [
+                { name: { [Op.like]: `%${search}%` } },
+                { mobile_number: { [Op.like]: `%${search}%` } },
+                { member_id: { [Op.like]: `%${search}%` } }
+              ]
+            } : {})
+          },
+          required: true,
+          attributes: []
+        }]
+      }],
+      group: [
+        'collection_submission.collection_agent_id',
+        'collection_submission->collection_agent.id',
+        'collection_submission->collection_agent.name',
+        'collection_submission->collection_agent.member_id',
+        'collection_submission->collection_agent.mobile_number',
+        'collection_submission->collection_agent.upload_image'
+      ],
+      order: [[sequelize.literal('collected_amount'), 'DESC']],
+      raw: true
+    });
+
+    let totalCollected = 0;
+    let totalReceipts = 0;
+
+    const list = results.map((a, idx) => {
+      const collected = parseFloat(a.collected_amount || 0);
+      const receipts = parseInt(a.receipts_count || 0, 10);
+      totalCollected += collected;
+      totalReceipts += receipts;
+      return {
+        rank: idx + 1,
+        agent_id: a.agent_id || a.collection_agent_id,
+        agent_name: a.agent_name || 'Unknown',
+        agent_code: a.agent_code || '',
+        mobile_number: a.mobile_number || '',
+        profile_image: a.upload_image || null,
+        collected_amount: collected,
+        receipts_count: receipts,
+        avg_collection_size: receipts > 0 ? parseFloat((collected / receipts).toFixed(2)) : 0
+      };
+    });
+
+    const paginated = list.slice(offset, offset + limit);
+
+    return successResponse(res, statusCodes.OK, 'Top collection agents retrieved successfully', {
+      count: list.length,
+      rows: paginated,
+      stats: {
+        total_collected: totalCollected,
+        total_receipts: totalReceipts,
+        active_agents_count: list.length,
+        top_agent_name: list[0]?.agent_name || '-',
+        top_agent_amount: list[0]?.collected_amount || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error in getTopCollectionAgentsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTopBusinessAgentsService = async (res, companyId, query = {}) => {
+  try {
+    const { from_date, to_date, month, year, search, min, max } = query;
+    const limit = parseInt(max, 10) || 50;
+    const offset = parseInt(min, 10) || 0;
+
+    let dateWhere = {};
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      dateWhere = { createdAt: { [Op.between]: [dateRange.startDate, dateRange.endDate] } };
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = new Date(Date.UTC(currentYear, monthNum - 1, 1, 0, 0, 0, 0));
+        const endOfMonth = new Date(Date.UTC(currentYear, monthNum, 0, 23, 59, 59, 999));
+        dateWhere = { createdAt: { [Op.between]: [startOfMonth, endOfMonth] } };
+      }
+    } else {
+      const today = new Date();
+      const firstDayOfMonth = new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1, 0, 0, 0, 0));
+      dateWhere = { createdAt: { [Op.gte]: firstDayOfMonth } };
+    }
+
+    const results = await Enrollment.findAll({
+      attributes: [
+        'business_agent_id',
+        [sequelize.fn('sum', sequelize.col('group.chit_amount')), 'business_amount'],
+        [sequelize.fn('count', sequelize.col('Enrollment.id')), 'enrollments_count'],
+        [sequelize.col('business_agent.id'), 'agent_id'],
+        [sequelize.col('business_agent.name'), 'agent_name'],
+        [sequelize.col('business_agent.member_id'), 'agent_code'],
+        [sequelize.col('business_agent.mobile_number'), 'mobile_number'],
+        [sequelize.col('business_agent.upload_image'), 'upload_image']
+      ],
+      where: {
+        company_id: companyId,
+        delete_status: 0,
+        business_agent_id: { [Op.ne]: null },
+        ...dateWhere
+      },
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: [], required: true },
+        {
+          model: Member,
+          as: 'business_agent',
+          where: {
+            company_id: companyId,
+            ...(search ? {
+              [Op.or]: [
+                { name: { [Op.like]: `%${search}%` } },
+                { mobile_number: { [Op.like]: `%${search}%` } },
+                { member_id: { [Op.like]: `%${search}%` } }
+              ]
+            } : {})
+          },
+          required: true,
+          attributes: []
+        }
+      ],
+      group: [
+        'Enrollment.business_agent_id',
+        'business_agent.id',
+        'business_agent.name',
+        'business_agent.member_id',
+        'business_agent.mobile_number',
+        'business_agent.upload_image'
+      ],
+      order: [[sequelize.literal('business_amount'), 'DESC']],
+      raw: true
+    });
+
+    let totalBusiness = 0;
+    let totalEnrollments = 0;
+
+    const list = results.map((a, idx) => {
+      const business = parseFloat(a.business_amount || 0);
+      const enrollments = parseInt(a.enrollments_count || 0, 10);
+      totalBusiness += business;
+      totalEnrollments += enrollments;
+      return {
+        rank: idx + 1,
+        agent_id: a.agent_id || a.business_agent_id,
+        agent_name: a.agent_name || 'Unknown',
+        agent_code: a.agent_code || '',
+        mobile_number: a.mobile_number || '',
+        profile_image: a.upload_image || null,
+        business_amount: business,
+        enrollments_count: enrollments,
+        avg_deal_size: enrollments > 0 ? parseFloat((business / enrollments).toFixed(2)) : 0
+      };
+    });
+
+    const paginated = list.slice(offset, offset + limit);
+
+    return successResponse(res, statusCodes.OK, 'Top business agents retrieved successfully', {
+      count: list.length,
+      rows: paginated,
+      stats: {
+        total_business: totalBusiness,
+        total_enrollments: totalEnrollments,
+        active_agents_count: list.length,
+        top_agent_name: list[0]?.agent_name || '-',
+        top_agent_amount: list[0]?.business_amount || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error in getTopBusinessAgentsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCommissionEarnedDetailsService = async (res, companyId, query = {}) => {
+  try {
+    const { from_date, to_date, month, year, search, group_id, min, max } = query;
+    const limit = parseInt(max, 10) || 15;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      company_id: companyId,
+      ...(group_id ? { group_id } : {})
+    };
+
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      whereClause.auction_date = { [Op.between]: [dateRange.fromStr, dateRange.toStr] };
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = `${currentYear}-${String(monthNum).padStart(2, '0')}-01`;
+        const lastDay = new Date(currentYear, monthNum, 0).getDate();
+        const endOfMonth = `${currentYear}-${String(monthNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        whereClause.auction_date = { [Op.between]: [startOfMonth, endOfMonth] };
+      }
+    }
+
+    const groupWhere = search ? {
+      [Op.or]: [
+        { group_name: { [Op.like]: `%${search}%` } },
+        { chit_agreement_number: { [Op.like]: `%${search}%` } }
+      ]
+    } : undefined;
+
+    const auctions = await Auction.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['auction_date', 'DESC'], ['auction_number', 'DESC']],
+      include: [
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'company_commission'],
+          where: groupWhere,
+          required: !!search
+        },
+        {
+          model: Member,
+          as: 'bidder',
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        }
+      ]
+    });
+
+    const allMatching = await Auction.findAll({
+      where: whereClause,
+      attributes: ['company_commission', 'gst_amount', 'bid_amount', 'chit_amount', 'auction_number', 'group_id'],
+      include: [
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id'],
+          where: groupWhere,
+          required: !!search
+        }
+      ]
+    });
+
+    let totalCommission = 0;
+    let totalGst = 0;
+    let totalChitValue = 0;
+    const uniqueGroups = new Set();
+
+    allMatching.forEach(a => {
+      totalCommission += (parseFloat(a.company_commission) || 0);
+      totalGst += (parseFloat(a.gst_amount) || 0);
+      totalChitValue += (parseFloat(a.chit_amount) || 0);
+      if (a.group_id) uniqueGroups.add(a.group_id);
+    });
+
+    const auctionCount = allMatching.length;
+    const avgCommission = auctionCount > 0 ? (totalCommission / auctionCount) : 0;
+
+    return successResponse(res, statusCodes.OK, 'Commission earned details retrieved successfully', {
+      count: auctions.count,
+      rows: auctions.rows,
+      stats: {
+        total_commission: parseFloat(totalCommission.toFixed(2)),
+        total_gst: parseFloat(totalGst.toFixed(2)),
+        net_commission: parseFloat((totalCommission + totalGst).toFixed(2)),
+        total_chit_value: parseFloat(totalChitValue.toFixed(2)),
+        auctions_count: auctionCount,
+        unique_groups_count: uniqueGroups.size,
+        avg_commission: parseFloat(avgCommission.toFixed(2))
+      }
+    });
+  } catch (error) {
+    console.error('Error in getCommissionEarnedDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getDividendDistributedDetailsService = async (res, companyId, query = {}) => {
+  try {
+    const { from_date, to_date, month, year, search, group_id, min, max } = query;
+    const limit = parseInt(max, 10) || 15;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      company_id: companyId,
+      ...(group_id ? { group_id } : {})
+    };
+
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      whereClause.auction_date = { [Op.between]: [dateRange.fromStr, dateRange.toStr] };
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = `${currentYear}-${String(monthNum).padStart(2, '0')}-01`;
+        const lastDay = new Date(currentYear, monthNum, 0).getDate();
+        const endOfMonth = `${currentYear}-${String(monthNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        whereClause.auction_date = { [Op.between]: [startOfMonth, endOfMonth] };
+      }
+    }
+
+    const groupWhere = search ? {
+      [Op.or]: [
+        { group_name: { [Op.like]: `%${search}%` } },
+        { chit_agreement_number: { [Op.like]: `%${search}%` } }
+      ]
+    } : undefined;
+
+    const auctions = await Auction.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['auction_date', 'DESC'], ['auction_number', 'DESC']],
+      include: [
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'company_commission'],
+          where: groupWhere,
+          required: !!search
+        },
+        {
+          model: Member,
+          as: 'bidder',
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        }
+      ]
+    });
+
+    const allMatching = await Auction.findAll({
+      where: whereClause,
+      attributes: ['dividend_payable', 'dividend', 'bid_amount', 'subscription_amount', 'net_payable', 'chit_amount', 'group_id'],
+      include: [
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'no_of_installments'],
+          where: groupWhere,
+          required: !!search
+        }
+      ]
+    });
+
+    let totalDividendDistributed = 0;
+    let totalBidDiscount = 0;
+    let totalChitValue = 0;
+    let totalDividendPerSubSum = 0;
+    const uniqueGroups = new Set();
+
+    allMatching.forEach(a => {
+      totalDividendDistributed += (parseFloat(a.dividend_payable) || 0);
+      totalBidDiscount += (parseFloat(a.bid_amount) || 0);
+      totalChitValue += (parseFloat(a.chit_amount) || 0);
+      totalDividendPerSubSum += (parseFloat(a.dividend) || 0);
+      if (a.group_id) uniqueGroups.add(a.group_id);
+    });
+
+    const auctionCount = allMatching.length;
+    const avgDividendPerSub = auctionCount > 0 ? (totalDividendPerSubSum / auctionCount) : 0;
+
+    return successResponse(res, statusCodes.OK, 'Dividend distributed details retrieved successfully', {
+      count: auctions.count,
+      rows: auctions.rows,
+      stats: {
+        total_dividend_distributed: parseFloat(totalDividendDistributed.toFixed(2)),
+        total_bid_discount: parseFloat(totalBidDiscount.toFixed(2)),
+        total_chit_value: parseFloat(totalChitValue.toFixed(2)),
+        auctions_count: auctionCount,
+        unique_groups_count: uniqueGroups.size,
+        avg_dividend_per_subscriber: parseFloat(avgDividendPerSub.toFixed(2))
+      }
+    });
+  } catch (error) {
+    console.error('Error in getDividendDistributedDetailsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -6277,7 +6909,7 @@ const registerAdminTokenService = async (res, userPayload, fcm_token) => {
 const sendManualNotificationService = async (res, userPayload, data) => {
   try {
     if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
-    
+
     const { target_type, target_id, title, body, data_payload } = data;
     const companyId = userPayload.company_id;
 
@@ -6354,7 +6986,7 @@ const getMemberDocumentsAdminService = async (res, group_id, member_id) => {
 const uploadMemberDocumentService = async (res, reqBody, userPayload) => {
   try {
     const { group_id, member_id, document_type, document_url, status = 1 } = reqBody;
-    
+
     let uploaded_by = null;
     if (userPayload && userPayload.id) {
       const memberExists = await Member.findByPk(userPayload.id);
@@ -6502,11 +7134,11 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
       where: { company_id: companyId, ...(member_id && { subscriber_id: member_id }) },
       include: [
         { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'mobile_number'] },
-        { 
-          model: ChitsGroup, 
-          as: 'group', 
-          attributes: ['id', 'group_name'], 
-          ...(group_id && { where: { id: group_id } }) 
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name'],
+          ...(group_id && { where: { id: group_id } })
         }
       ]
     };
@@ -6705,9 +7337,9 @@ const getSystemImpactPreviewService = async (res, userPayload, candidateDateStr)
     if (userPayload.role !== 'superadmin') {
       return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can access system utilities');
     }
-    
+
     const businessDate = candidateDateStr ? new Date(candidateDateStr) : await SystemSettingsService.getBusinessDate();
-    
+
     const overdueCount = await ChitsInstallment.count({
       where: {
         due_date: {
@@ -6736,7 +7368,7 @@ const runSystemJobsService = async (res, userPayload, body) => {
     if (userPayload.role !== 'superadmin') {
       return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can run system jobs');
     }
-    
+
     const { job_type } = body;
     return successResponse(res, statusCodes.OK, `Job ${job_type || 'default'} triggered manually successfully`);
   } catch (error) {
@@ -6762,162 +7394,162 @@ const getSystemAuditLogsService = async (res, userPayload, { min = 0, max = 20 }
 };
 
 const getAllCustomerVisitsService = async (res, userPayload, payload) => {
-    try {
-        const { search, status, min, max } = payload;
-        const limit = parseInt(max, 10) || 10;
-        const offset = parseInt(min, 10) || 0;
-        
-        const companyId = await resolveCompanyIdForAuth(userPayload);
+  try {
+    const { search, status, min, max } = payload;
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
 
-        let where = {};
-        if (status !== undefined && status !== null) {
-            where.customer_vistor_status = status;
-        }
+    const companyId = await resolveCompanyIdForAuth(userPayload);
 
-        let includeWhere = {};
-        if (companyId) {
-            includeWhere.company_id = companyId;
-        }
-
-        if (search) {
-            includeWhere = {
-                ...includeWhere,
-                [Op.or]: [
-                    { name: { [Op.iLike]: `%${search}%` } },
-                    { member_id: { [Op.iLike]: `%${search}%` } }
-                ]
-            };
-        }
-
-        const visits = await CustomerVisit.findAndCountAll({
-            where,
-            limit,
-            offset,
-            include: [
-                {
-                    model: Member,
-                    as: 'member',
-                    where: Object.keys(includeWhere).length ? includeWhere : undefined,
-                    attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
-                },
-                {
-                    model: Member,
-                    as: 'collection_agent',
-                    attributes: ['id', 'name', 'member_id']
-                }
-            ],
-            order: [['createdAt', 'DESC']]
-        });
-
-        return successResponse(res, statusCodes.OK, 'Customer visits retrieved successfully', visits);
-    } catch (error) {
-        console.error('Error in getAllCustomerVisitsService:', error);
-        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    let where = {};
+    if (status !== undefined && status !== null) {
+      where.customer_vistor_status = status;
     }
+
+    let includeWhere = {};
+    if (companyId) {
+      includeWhere.company_id = companyId;
+    }
+
+    if (search) {
+      includeWhere = {
+        ...includeWhere,
+        [Op.or]: [
+          { name: { [Op.iLike]: `%${search}%` } },
+          { member_id: { [Op.iLike]: `%${search}%` } }
+        ]
+      };
+    }
+
+    const visits = await CustomerVisit.findAndCountAll({
+      where,
+      limit,
+      offset,
+      include: [
+        {
+          model: Member,
+          as: 'member',
+          where: Object.keys(includeWhere).length ? includeWhere : undefined,
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        },
+        {
+          model: Member,
+          as: 'collection_agent',
+          attributes: ['id', 'name', 'member_id']
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Customer visits retrieved successfully', visits);
+  } catch (error) {
+    console.error('Error in getAllCustomerVisitsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
 };
 
 const getCustomerVisitByIdService = async (res, userPayload, payload) => {
-    try {
-        const { id } = payload;
-        
-        const companyId = await resolveCompanyIdForAuth(userPayload);
-        const memberWhere = companyId ? { company_id: companyId } : undefined;
+  try {
+    const { id } = payload;
 
-        const visit = await CustomerVisit.findByPk(id, {
-            include: [
-                {
-                    model: Member,
-                    as: 'member',
-                    where: memberWhere,
-                    attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
-                },
-                {
-                    model: Member,
-                    as: 'collection_agent',
-                    attributes: ['id', 'name', 'member_id']
-                }
-            ]
-        });
+    const companyId = await resolveCompanyIdForAuth(userPayload);
+    const memberWhere = companyId ? { company_id: companyId } : undefined;
 
-        if (!visit) {
-            return errorResponse(res, statusCodes.NOT_FOUND, 'Customer visit not found');
+    const visit = await CustomerVisit.findByPk(id, {
+      include: [
+        {
+          model: Member,
+          as: 'member',
+          where: memberWhere,
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        },
+        {
+          model: Member,
+          as: 'collection_agent',
+          attributes: ['id', 'name', 'member_id']
         }
+      ]
+    });
 
-        return successResponse(res, statusCodes.OK, 'Customer visit retrieved successfully', visit);
-    } catch (error) {
-        console.error('Error in getCustomerVisitByIdService:', error);
-        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    if (!visit) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Customer visit not found');
     }
+
+    return successResponse(res, statusCodes.OK, 'Customer visit retrieved successfully', visit);
+  } catch (error) {
+    console.error('Error in getCustomerVisitByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
 };
 
 const updateCustomerVisitStatusService = async (res, userPayload, payload) => {
-    try {
-        const { id, customer_vistor_status } = payload;
-        
-        const companyId = await resolveCompanyIdForAuth(userPayload);
-        const memberWhere = companyId ? { company_id: companyId } : undefined;
+  try {
+    const { id, customer_vistor_status } = payload;
 
-        const visit = await CustomerVisit.findByPk(id, {
-            include: [{ model: Member, as: 'member', where: memberWhere }]
-        });
-        
-        if (!visit) {
-            return errorResponse(res, statusCodes.NOT_FOUND, 'Customer visit not found');
-        }
+    const companyId = await resolveCompanyIdForAuth(userPayload);
+    const memberWhere = companyId ? { company_id: companyId } : undefined;
 
-        visit.customer_vistor_status = customer_vistor_status;
-        await visit.save();
+    const visit = await CustomerVisit.findByPk(id, {
+      include: [{ model: Member, as: 'member', where: memberWhere }]
+    });
 
-        return successResponse(res, statusCodes.OK, 'Customer visit status updated successfully', visit);
-    } catch (error) {
-        console.error('Error in updateCustomerVisitStatusService:', error);
-        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    if (!visit) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Customer visit not found');
     }
+
+    visit.customer_vistor_status = customer_vistor_status;
+    await visit.save();
+
+    return successResponse(res, statusCodes.OK, 'Customer visit status updated successfully', visit);
+  } catch (error) {
+    console.error('Error in updateCustomerVisitStatusService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
 };
 
 const getLedgerReportService = async (res, reqBody) => {
-    try {
-        const { start_date, end_date, member_id } = reqBody;
-        
-        let whereClause = {};
-        if (start_date && end_date) {
-            whereClause.payment_date = { [Op.between]: [start_date, end_date] };
-        } else if (start_date) {
-            whereClause.payment_date = { [Op.gte]: start_date };
-        } else if (end_date) {
-            whereClause.payment_date = { [Op.lte]: end_date };
-        }
-        
-        const includeOptions = [
-            {
-                model: ChitsInstallment,
-                as: 'installment',
-                include: [
-                    {
-                        model: Enrollment,
-                        as: 'enrollment',
-                        include: [
-                            { model: Member, as: 'subscriber', ...(member_id ? { where: { id: member_id } } : {}) },
-                            { model: ChitsGroup, as: 'group' }
-                        ],
-                        required: !!member_id
-                    }
-                ],
-                required: true
-            }
-        ];
-        
-        const payments = await CustomerPayment.findAll({
-            where: whereClause,
-            include: includeOptions,
-            order: [['payment_date', 'DESC'], ['createdAt', 'DESC']]
-        });
-        
-        return successResponse(res, statusCodes.OK, 'Ledger report fetched successfully', { rows: payments });
-    } catch (error) {
-        console.error('Error in getLedgerReportService:', error);
-        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  try {
+    const { start_date, end_date, member_id } = reqBody;
+
+    let whereClause = {};
+    if (start_date && end_date) {
+      whereClause.payment_date = { [Op.between]: [start_date, end_date] };
+    } else if (start_date) {
+      whereClause.payment_date = { [Op.gte]: start_date };
+    } else if (end_date) {
+      whereClause.payment_date = { [Op.lte]: end_date };
     }
+
+    const includeOptions = [
+      {
+        model: ChitsInstallment,
+        as: 'installment',
+        include: [
+          {
+            model: Enrollment,
+            as: 'enrollment',
+            include: [
+              { model: Member, as: 'subscriber', ...(member_id ? { where: { id: member_id } } : {}) },
+              { model: ChitsGroup, as: 'group' }
+            ],
+            required: !!member_id
+          }
+        ],
+        required: true
+      }
+    ];
+
+    const payments = await CustomerPayment.findAll({
+      where: whereClause,
+      include: includeOptions,
+      order: [['payment_date', 'DESC'], ['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Ledger report fetched successfully', { rows: payments });
+  } catch (error) {
+    console.error('Error in getLedgerReportService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
 };
 
 // Company Setup: the company's own profile, including what the statutory
@@ -6967,62 +7599,62 @@ const updateCompanySetupService = async (res, data = {}, userToken) => {
 };
 
 const getStatutoryReportService = async (res, reqBody) => {
-    try {
-        const { start_date, end_date } = reqBody;
-        
-        let whereClause = {};
-        if (start_date && end_date) {
-            whereClause.createdAt = { [Op.between]: [new Date(start_date), new Date(end_date)] };
-        }
-        
-        const groups = await ChitsGroup.findAll({
-            where: whereClause,
-            order: [['createdAt', 'DESC']]
-        });
-        
-        return successResponse(res, statusCodes.OK, 'Statutory report fetched successfully', { rows: groups });
-    } catch (error) {
-        console.error('Error in getStatutoryReportService:', error);
-        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  try {
+    const { start_date, end_date } = reqBody;
+
+    let whereClause = {};
+    if (start_date && end_date) {
+      whereClause.createdAt = { [Op.between]: [new Date(start_date), new Date(end_date)] };
     }
+
+    const groups = await ChitsGroup.findAll({
+      where: whereClause,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Statutory report fetched successfully', { rows: groups });
+  } catch (error) {
+    console.error('Error in getStatutoryReportService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
 };
 
 const searchEnquiryService = async (res, reqBody) => {
-    try {
-        const { query, min = 0, max = 10 } = reqBody;
-        const limit = parseInt(max, 10);
-        const offset = parseInt(min, 10);
-        
-        let memberWhere = {};
-        let groupWhere = {};
-        
-        if (query) {
-            memberWhere = {
-                [Op.or]: [
-                    { name: { [Op.like]: `%${query}%` } },
-                    { mobile_number: { [Op.like]: `%${query}%` } },
-                    { member_id: { [Op.like]: `%${query}%` } }
-                ]
-            };
-            groupWhere = {
-                group_name: { [Op.like]: `%${query}%` }
-            };
-        }
-        const [members, groups] = await Promise.all([
-            Member.findAndCountAll({ where: memberWhere, limit, offset }),
-            ChitsGroup.findAndCountAll({ where: groupWhere, limit, offset })
-        ]);
-        
-        return successResponse(res, statusCodes.OK, 'Search completed successfully', {
-            members: members.rows,
-            groups: groups.rows,
-            totalMembers: members.count,
-            totalGroups: groups.count
-        });
-    } catch (error) {
-        console.error('Error in searchEnquiryService:', error);
-        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  try {
+    const { query, min = 0, max = 10 } = reqBody;
+    const limit = parseInt(max, 10);
+    const offset = parseInt(min, 10);
+
+    let memberWhere = {};
+    let groupWhere = {};
+
+    if (query) {
+      memberWhere = {
+        [Op.or]: [
+          { name: { [Op.like]: `%${query}%` } },
+          { mobile_number: { [Op.like]: `%${query}%` } },
+          { member_id: { [Op.like]: `%${query}%` } }
+        ]
+      };
+      groupWhere = {
+        group_name: { [Op.like]: `%${query}%` }
+      };
     }
+    const [members, groups] = await Promise.all([
+      Member.findAndCountAll({ where: memberWhere, limit, offset }),
+      ChitsGroup.findAndCountAll({ where: groupWhere, limit, offset })
+    ]);
+
+    return successResponse(res, statusCodes.OK, 'Search completed successfully', {
+      members: members.rows,
+      groups: groups.rows,
+      totalMembers: members.count,
+      totalGroups: groups.count
+    });
+  } catch (error) {
+    console.error('Error in searchEnquiryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
 };
 
 const getMemberReferralsService = async (res, min = 0, max = 10, search = '', status, userToken) => {
@@ -7400,6 +8032,10 @@ module.exports = {
   getRoleByIdService,
   deleteRoleService,
   getDashboardSummaryService,
+  getTopCollectionAgentsService,
+  getTopBusinessAgentsService,
+  getCommissionEarnedDetailsService,
+  getDividendDistributedDetailsService,
   registerAdminTokenService,
   sendManualNotificationService,
   getAllAuditLogsService,

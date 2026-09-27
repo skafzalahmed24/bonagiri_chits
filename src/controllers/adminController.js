@@ -248,8 +248,8 @@ const storeOrUpdateChitsGroup = async (req, res) => {
 const getAllChitsGroupDetails = async (req, res) => {
   try {
     const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
-    const { min, max, search, enrollment_status, not_status } = req.body || {};
-    return await adminService.getAllChitsGroupDetailsService(res, comp_id, min, max, search, enrollment_status, not_status);
+    const { min, max, search, enrollment_status, not_status, chits_group_status, from_date, to_date } = req.body || {};
+    return await adminService.getAllChitsGroupDetailsService(res, comp_id, min, max, search, enrollment_status, not_status, chits_group_status, from_date, to_date);
   } catch (error) {
     console.error('Error in getAllChitsGroupDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -425,10 +425,52 @@ const updateJointHolders = async (req, res) => {
 
 const getAllEnrollmentDetails = async (req, res) => {
   try {
-    const { company_id, min, max, search } = req.body || {};
-    return await adminService.getAllEnrollmentDetailsService(res, company_id, min, max, search);
+    const authCompanyId = await adminService.resolveCompanyIdForAuth(req.user);
+    const { company_id, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id } = req.body || {};
+    const targetCompanyId = authCompanyId || company_id;
+    return await adminService.getAllEnrollmentDetailsService(res, targetCompanyId, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id);
   } catch (error) {
     console.error('Error in getAllEnrollmentDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTopCollectionAgents = async (req, res) => {
+  try {
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getTopCollectionAgentsService(res, companyId, req.body || {});
+  } catch (error) {
+    console.error('Error in getTopCollectionAgents:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTopBusinessAgents = async (req, res) => {
+  try {
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getTopBusinessAgentsService(res, companyId, req.body || {});
+  } catch (error) {
+    console.error('Error in getTopBusinessAgents:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCommissionEarnedDetails = async (req, res) => {
+  try {
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getCommissionEarnedDetailsService(res, companyId, req.body || {});
+  } catch (error) {
+    console.error('Error in getCommissionEarnedDetails:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getDividendDistributedDetails = async (req, res) => {
+  try {
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getDividendDistributedDetailsService(res, companyId, req.body || {});
+  } catch (error) {
+    console.error('Error in getDividendDistributedDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1838,6 +1880,10 @@ module.exports = {
   getRoleById,
   deleteRole,
   getDashboardSummary,
+  getTopCollectionAgents,
+  getTopBusinessAgents,
+  getCommissionEarnedDetails,
+  getDividendDistributedDetails,
   registerAdminToken,
   sendManualNotification,
   getAdminNotificationHistory,

@@ -412,7 +412,33 @@ const getAllChitsGroupSchema = Joi.object({
   }),
   search: Joi.string().allow('', null).optional(),
   enrollment_status: Joi.number().integer().valid(0, 1).optional(),
-  not_status: Joi.number().integer().valid(0, 1).optional()
+  not_status: Joi.number().integer().valid(0, 1).optional(),
+  chits_group_status: Joi.number().integer().valid(0, 1, 2).allow(null).optional(),
+  from_date: Joi.date().iso().allow('', null).optional(),
+  to_date: Joi.date().iso().allow('', null).optional()
+});
+
+const getAgentLeaderboardSchema = Joi.object({
+  company_id: Joi.string().uuid().allow('', null).optional(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional(),
+  search: Joi.string().allow('', null).optional(),
+  from_date: Joi.date().iso().allow('', null).optional(),
+  to_date: Joi.date().iso().allow('', null).optional(),
+  month: Joi.number().integer().min(1).max(12).optional(),
+  year: Joi.number().integer().optional()
+});
+
+const getFinancialsDetailSchema = Joi.object({
+  company_id: Joi.string().uuid().allow('', null).optional(),
+  min: Joi.number().integer().min(0).optional(),
+  max: Joi.number().integer().min(1).optional(),
+  search: Joi.string().allow('', null).optional(),
+  group_id: Joi.string().uuid().allow('', null).optional(),
+  from_date: Joi.date().iso().allow('', null).optional(),
+  to_date: Joi.date().iso().allow('', null).optional(),
+  month: Joi.number().integer().min(1).max(12).optional(),
+  year: Joi.number().integer().optional()
 });
 
 const deleteChitsGroupSchema = Joi.object({
@@ -565,6 +591,8 @@ module.exports = {
   deleteAreaSchema,
   chitsGroupValidator,
   getAllChitsGroupSchema,
+  getAgentLeaderboardSchema,
+  getFinancialsDetailSchema,
   deleteChitsGroupSchema,
   getCountriesSchema: Joi.object({
     search: Joi.string().allow('', null).optional()
@@ -693,7 +721,14 @@ module.exports = {
     company_id: Joi.string().uuid().allow('', null).optional(),
     min: Joi.number().integer().optional(),
     max: Joi.number().integer().optional(),
-    search: Joi.string().allow('', null).optional()
+    search: Joi.string().allow('', null).optional(),
+    from_date: Joi.date().iso().allow('', null).optional(),
+    to_date: Joi.date().iso().allow('', null).optional(),
+    month: Joi.number().integer().min(1).max(12).optional(),
+    year: Joi.number().integer().optional(),
+    group_id: Joi.string().uuid().allow('', null).optional(),
+    business_agent_id: Joi.number().integer().allow(null).optional(),
+    collection_agent_id: Joi.number().integer().allow(null).optional()
   }),
   deleteEnrollmentSchema: Joi.object({
     id: Joi.number().integer().required().messages({
