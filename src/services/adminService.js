@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, SelfTransfer, BorrowRepay, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, EnrollmentJointHolder, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
@@ -12,6 +12,8 @@ const twilioService = require('./twilioService');
 const fcmService = require('./fcmService');
 const { calculateMemberRating } = require('../utils/ratingHelper');
 const { deleteUploadedFile } = require('../utils/fileHelper');
+const { dailyPenaltyFor, penaltyPercentFor, toDateStr, daysBetween, addDays } = require('../utils/penalty');
+const { memberTicketsInGroup, ticketWin, holderMembersOf } = require('../utils/jointHolders');
 
 const formatDateDDMMYYYY = (dateVal) => {
   if (!dateVal) return null;
@@ -815,140 +817,262 @@ const deleteAreaService = async (res, id, companyId) => {
   }
 };
 
-const createInstallaments = async (chits_group_id, chits_group_status) => {
-  try {
-    if (Number(chits_group_status) === 1) {
-      const group = await ChitsGroup.findByPk(chits_group_id);
-      if (!group) {
-        console.error('Chits Group not found for createInstallaments');
-        return;
-      }
+const computeGroupStatus = async (group) => {
+  if (Number(group.chits_group_status) === 2) return 2;
+  const businessDate = await SystemSettingsService.getBusinessDate();
+  const startDateStr = getGroupStartDate(group);
+  if (!startDateStr) return 0;
+  const startDate = new Date(startDateStr);
+  if (startDate <= new Date(businessDate)) return 1;
+  return 0;
+};
 
-      const enrollments = await Enrollment.findAll({
-        where: { group_id: chits_group_id, delete_status: 0 },
-        include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }]
-      });
+const frequencyFromModeName = (name) => {
+  const n = String(name || '').toLowerCase();
+  if (n === 'weekly') return 2;
+  if (n === 'daily') return 3;
+  return 1; // monthly, and the default
+};
 
-      const noOfInstallments = group.no_of_installments || 1;
-      const initialDateStr = group.chit_start_date || group.commencement_date || new Date().toISOString().split('T')[0];
-      const chitAmount = parseFloat(group.chit_amount) || 0;
-      const payableAmount = parseFloat((chitAmount / noOfInstallments).toFixed(2));
+/**
+ * The group's instalment schedule for one payment frequency, as rows of
+ * { type, installment_no, due_date, payable_amount }. Copies the schedule of a
+ * member who already has one with the same frequency, so everyone in a group is on
+ * the same dates; otherwise generates it (decision 1: instalment 1 on the start date).
+ * Used by enrollment and by the late-join preview so the two can never disagree.
+ */
+const buildGroupSchedule = async (group, mappedType, { transaction, excludeEnrollmentId = null } = {}) => {
+  const peerRows = await sequelize.query(`
+    SELECT ci.enrollment_id
+    FROM chits_installments ci
+    JOIN enrollments e ON e.id = ci.enrollment_id
+    WHERE e.group_id = :groupId
+      AND e.delete_status = 0
+      AND e.id <> :excludeId
+      AND ci.type = :mappedType
+    LIMIT 1
+  `, {
+    replacements: { groupId: group.id, excludeId: excludeEnrollmentId || -1, mappedType },
+    type: sequelize.QueryTypes.SELECT,
+    transaction
+  });
 
-      const schemeConfig = group.scheme_configuration_id
-        ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id)
-        : null;
-
-      const pricesArray = schemeConfig && schemeConfig.prices
-        ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
-        : [];
-
-      for (const e of enrollments) {
-        const data = e.toJSON();
-        const modeName = data.payment_mode ? data.payment_mode.dropdown_name : 'Unknown';
-
-        let mappedType = null;
-        if (modeName.toLowerCase() === 'monthly') mappedType = 1;
-        else if (modeName.toLowerCase() === 'weekly') mappedType = 2;
-        else if (modeName.toLowerCase() === 'daily') mappedType = 3;
-
-        // Skip if installments data already generated for this enrollment
-        const existingInstallmentRecord = await ChitsInstallment.findOne({ where: { enrollment_id: data.id } });
-        if (existingInstallmentRecord) continue;
-
-        const dueDayOfMonth = group.due_date_number_count;
-        const daysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-        
-        const dateIterator = new Date(initialDateStr);
-        
-        if (mappedType === 1 || !mappedType) { // Monthly (default)
-          dateIterator.setMonth(dateIterator.getMonth() + 1);
-          if (dueDayOfMonth && dueDayOfMonth >= 1 && dueDayOfMonth <= 31) {
-            dateIterator.setDate(Math.min(dueDayOfMonth, daysInMonth(dateIterator)));
-          }
-        } else if (mappedType === 2) { // Weekly
-          dateIterator.setDate(dateIterator.getDate() + 7);
-        } else if (mappedType === 3) { // Daily
-          dateIterator.setDate(dateIterator.getDate() + 1);
-        }
-
-        const installmentsJsonArray = [];
-
-        // Generate JSON data array directly
-        for (let i = 1; i <= noOfInstallments; i++) {
-          let currentPayableAmount = payableAmount; // fallback flat amount
-
-          if (schemeConfig) {
-            if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) {
-              const row = pricesArray[i - 1];
-              currentPayableAmount = parseFloat(row?.installment) || 0;
-            } else if (schemeConfig.scheme_type === 62) {
-              const row = pricesArray[i - 1];
-              currentPayableAmount = parseFloat(row?.not_withdrawn) || 0;
-            } else if (schemeConfig.scheme_type === 63) {
-              currentPayableAmount = parseFloat(schemeConfig.installment) || 0;
-            }
-          }
-
-          installmentsJsonArray.push({
-            enrollment_id: data.id,
-            group_id: chits_group_id,
-            type: mappedType || 1, // Fallback to 1
-            installment_no: i,
-            due_date: new Date(dateIterator.getTime() - (dateIterator.getTimezoneOffset() * 60000)).toISOString().split('T')[0],
-            over_due_days_count: 0,
-            penalty_amount: 0.00,
-            payable_amount: currentPayableAmount
-          });
-
-          // Move iterator forward to the next due date based on schedule type
-          if (mappedType === 1 || !mappedType) {
-            dateIterator.setMonth(dateIterator.getMonth() + 1); // 1 = Monthly
-            if (dueDayOfMonth && dueDayOfMonth >= 1 && dueDayOfMonth <= 31) {
-              dateIterator.setDate(Math.min(dueDayOfMonth, daysInMonth(dateIterator)));
-            }
-          } else if (mappedType === 2) {
-            dateIterator.setDate(dateIterator.getDate() + 7); // 2 = Weekly
-          } else if (mappedType === 3) {
-            dateIterator.setDate(dateIterator.getDate() + 1); // 3 = Daily
-          }
-        }
-
-        // Create individual relational rows for each installment month/week
-        await ChitsInstallment.bulkCreate(installmentsJsonArray);
-      }
-
-      console.log(`\n--- Set up Installments data in DB for Chits Group ${chits_group_id} (Status: 1) ---`);
+  if (peerRows.length > 0) {
+    const peerInstallments = await ChitsInstallment.findAll({
+      where: { enrollment_id: peerRows[0].enrollment_id },
+      order: [['installment_no', 'ASC']],
+      transaction
+    });
+    if (peerInstallments.length > 0) {
+      return peerInstallments.map((p) => ({
+        type: p.type,
+        installment_no: p.installment_no,
+        due_date: toDateStr(p.due_date),
+        payable_amount: p.payable_amount
+      }));
     }
-  } catch (error) {
-    console.error('Error in createInstallaments:', error);
+  }
+
+  const noOfInstallments = group.no_of_installments || 1;
+  const initialDateStr = getGroupStartDate(group) || new Date().toISOString().split('T')[0];
+  const payableAmount = parseFloat(((parseFloat(group.chit_amount) || 0) / noOfInstallments).toFixed(2));
+
+  const schemeConfig = group.scheme_configuration_id
+    ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
+    : null;
+  const pricesArray = schemeConfig && schemeConfig.prices
+    ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
+    : [];
+
+  const daysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  const asDateStr = (d) => new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+  const dateIterator = new Date(initialDateStr);
+  const dueDayOfMonth = group.due_date_number_count || dateIterator.getDate();
+
+  const rows = [];
+  for (let i = 1; i <= noOfInstallments; i++) {
+    let currentPayableAmount = payableAmount;
+    if (schemeConfig) {
+      if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) {
+        currentPayableAmount = parseFloat(pricesArray[i - 1]?.installment) || 0;
+      } else if (schemeConfig.scheme_type === 62) {
+        currentPayableAmount = parseFloat(pricesArray[i - 1]?.not_withdrawn) || 0;
+      } else if (schemeConfig.scheme_type === 63) {
+        currentPayableAmount = parseFloat(schemeConfig.installment) || 0;
+      }
+    }
+
+    let dueDateStr;
+    if (i === 1) {
+      dueDateStr = asDateStr(dateIterator);
+    } else if (mappedType === 2) {
+      const d = new Date(initialDateStr);
+      d.setDate(d.getDate() + 7 * (i - 1));
+      dueDateStr = asDateStr(d);
+    } else if (mappedType === 3) {
+      const d = new Date(initialDateStr);
+      d.setDate(d.getDate() + (i - 1));
+      dueDateStr = asDateStr(d);
+    } else {
+      // Pin to the 1st before moving months so short months can't overflow, then clamp.
+      const d = new Date(initialDateStr);
+      d.setDate(1);
+      d.setMonth(d.getMonth() + (i - 1));
+      d.setDate(Math.min(dueDayOfMonth, daysInMonth(d)));
+      dueDateStr = asDateStr(d);
+    }
+
+    rows.push({ type: mappedType, installment_no: i, due_date: dueDateStr, payable_amount: currentPayableAmount });
+  }
+  return rows;
+};
+
+/** The company's late-join grace period in days (company setting, default 15). */
+const lateJoinGraceDays = async (companyId, transaction) => {
+  if (!companyId) return 15;
+  const company = await Company.findByPk(companyId, { attributes: ['late_join_grace_days'], transaction });
+  const days = company ? parseInt(company.late_join_grace_days, 10) : NaN;
+  return Number.isNaN(days) ? 15 : days;
+};
+
+/** Instalments already due on the joining date: the late joiner's catch-up. */
+const catchUpRows = (rows, enrollmentDateStr) => rows.filter((r) => r.due_date <= enrollmentDateStr);
+
+const createInstallmentsForEnrollment = async (enrollment, group, options = {}) => {
+  const transaction = options.transaction;
+
+  // Skip if installments data already generated for this enrollment
+  const existingInstallmentRecord = await ChitsInstallment.findOne({
+    where: { enrollment_id: enrollment.id },
+    transaction
+  });
+  if (existingInstallmentRecord) return;
+
+  const mappedType = frequencyFromModeName(enrollment.payment_mode && enrollment.payment_mode.dropdown_name);
+  const schedule = await buildGroupSchedule(group, mappedType, { transaction, excludeEnrollmentId: enrollment.id });
+
+  const installmentsJsonArray = schedule.map((r) => ({
+    enrollment_id: enrollment.id,
+    group_id: group.id,
+    type: r.type,
+    installment_no: r.installment_no,
+    due_date: r.due_date,
+    over_due_days_count: 0,
+    penalty_amount: 0.00,
+    payable_amount: r.payable_amount,
+    penalty_from_date: null,
+    penalty_last_applied_date: null
+  }));
+
+  // Late joiner (WP5): instalments already due on the joining date carry the penalty
+  // the admin chose, and the daily penalty waits for the grace period.
+  const enrollmentDateStr = toDateStr(enrollment.enrollment_date);
+  const catchUp = enrollmentDateStr ? catchUpRows(installmentsJsonArray, enrollmentDateStr) : [];
+  if (catchUp.length > 0) {
+    const graceDays = await lateJoinGraceDays(enrollment.company_id || group.company_id, transaction);
+    const penaltyFromDateStr = addDays(enrollmentDateStr, graceDays);
+    const penaltyType = parseInt(enrollment.late_join_penalty_type, 10);
+    const amount = parseFloat(enrollment.late_join_penalty_amount) || 0;
+
+    let applied = 0;
+    catchUp.forEach((inst, idx) => {
+      inst.penalty_from_date = penaltyFromDateStr;
+      if (penaltyType === 1 && amount > 0) {
+        // Spread a fixed total; the last instalment takes the rounding remainder.
+        const share = parseFloat((amount / catchUp.length).toFixed(2));
+        inst.penalty_amount = idx === catchUp.length - 1
+          ? parseFloat((amount - share * (catchUp.length - 1)).toFixed(2))
+          : share;
+      } else if (penaltyType === 2 && amount > 0) {
+        inst.penalty_amount = amount;
+      }
+      applied += inst.penalty_amount;
+    });
+
+    // Record what was actually applied, for audit (type 2 stores the total, not the per-instalment amount).
+    if (!Number.isNaN(penaltyType)) {
+      await Enrollment.update(
+        { late_join_penalty_type: penaltyType, late_join_penalty_amount: parseFloat(applied.toFixed(2)) },
+        { where: { id: enrollment.id }, transaction }
+      );
+    }
+  }
+
+  await ChitsInstallment.bulkCreate(installmentsJsonArray, { transaction });
+};
+
+const createInstallmentsForGroup = async (group_id, options = {}) => {
+  const transaction = options.transaction;
+  const group = await ChitsGroup.findByPk(group_id, { transaction });
+  if (!group) return;
+
+  const enrollments = await Enrollment.findAll({
+    where: { group_id: group.id, delete_status: 0 },
+    include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+    transaction
+  });
+
+  for (const enrollment of enrollments) {
+    await createInstallmentsForEnrollment(enrollment, group, { transaction });
   }
 };
 
 const storeOrUpdateChitsGroupService = async (res, data = {}) => {
   try {
-    const { id, ...chitsGroupData } = data;
+    const { id, chits_group_status, ...chitsGroupData } = data; // ignore client status
+    
+    if (chitsGroupData.commencement_date !== undefined) {
+      chitsGroupData.chit_start_date = chitsGroupData.commencement_date;
+    }
+
     if (id) {
       const chitsGroup = await ChitsGroup.findByPk(id);
       if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
-      if (chitsGroupData.chits_group_status !== undefined && Number(chitsGroupData.chits_group_status) === 1 && chitsGroup.chits_group_status !== 1) {
-        const enrollmentsCount = await Enrollment.count({ where: { group_id: id, delete_status: 0 } });
-        const totalTaken = enrollmentsCount;
-        const requiredPositions = parseInt(chitsGroup.no_of_installments) || 0;
 
-        if (totalTaken < requiredPositions) {
-          return errorResponse(res, statusCodes.BAD_REQUEST, `Cannot start group. All positions must be filled (${totalTaken}/${requiredPositions} filled).`);
+      // Schedule change detection
+      const scheduleFieldsChanged = 
+        (chitsGroupData.commencement_date && chitsGroupData.commencement_date !== chitsGroup.commencement_date) ||
+        (chitsGroupData.chit_start_date && chitsGroupData.chit_start_date !== chitsGroup.chit_start_date) ||
+        (chitsGroupData.due_date_number_count !== undefined && String(chitsGroupData.due_date_number_count) !== String(chitsGroup.due_date_number_count)) ||
+        (chitsGroupData.no_of_installments !== undefined && String(chitsGroupData.no_of_installments) !== String(chitsGroup.no_of_installments)) ||
+        (chitsGroupData.chit_amount !== undefined && String(chitsGroupData.chit_amount) !== String(chitsGroup.chit_amount)) ||
+        (chitsGroupData.scheme_configuration_id !== undefined && String(chitsGroupData.scheme_configuration_id) !== String(chitsGroup.scheme_configuration_id));
+
+      if (scheduleFieldsChanged) {
+        const hasPayments = await CustomerPayment.count({
+          where: { payment_status: { [Op.in]: [0, 1] } },
+          include: [{
+            model: ChitsInstallment,
+            as: 'installment',
+            where: { group_id: id },
+            required: true
+          }]
+        });
+        if (hasPayments > 0) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'The schedule can\'t change after payments are recorded.');
         }
+
+        // Apply changes and recreate schedule inside transaction
+        const updatedGroupData = { ...chitsGroupData, chits_group_status: await computeGroupStatus({ ...chitsGroup.toJSON(), ...chitsGroupData }) };
+
+        await sequelize.transaction(async (t) => {
+          await ChitsInstallment.destroy({ where: { group_id: id }, transaction: t });
+          await chitsGroup.update(updatedGroupData, { transaction: t });
+          await createInstallmentsForGroup(chitsGroup.id, { transaction: t });
+        });
+      } else {
+        const updatedGroupData = { ...chitsGroupData, chits_group_status: await computeGroupStatus({ ...chitsGroup.toJSON(), ...chitsGroupData }) };
+        await chitsGroup.update(updatedGroupData);
       }
-
-      await chitsGroup.update(chitsGroupData);
-
-      // Step case: Trigger createInstallaments on update
-      await createInstallaments(chitsGroup.id, chitsGroup.chits_group_status);
 
       return successResponse(res, statusCodes.OK, 'Chits group updated successfully', chitsGroup);
     } else {
       console.log('Creating new ChitsGroup with data:', chitsGroupData);
-      const newChitsGroup = await ChitsGroup.create(chitsGroupData);
+      const tempGroupData = { ...chitsGroupData, chits_group_status: 0 };
+      const statusToSet = await computeGroupStatus(tempGroupData);
+      tempGroupData.chits_group_status = statusToSet;
+
+      const newChitsGroup = await ChitsGroup.create(tempGroupData);
       console.log('New ChitsGroup created:', newChitsGroup.toJSON());
 
       // Auto-enroll company if company_chit_number is provided
@@ -981,17 +1105,26 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
           }
 
           if (companyMember) {
-            const enrollment = await Enrollment.create({
-              company_id: targetCompanyId,
-              group_id: newChitsGroup.id,
-              group_position_number: chitsGroupData.company_chit_number,
-              subscriber_id: companyMember.id,
-              enrollment_date: chitsGroupData.commencement_date || new Date().toISOString().split('T')[0],
-              address_type: 1, // Default to home
-              business_type_id: 1, // Default to direct
-              delete_status: 0
+            await sequelize.transaction(async (t) => {
+              const enrollment = await Enrollment.create({
+                company_id: targetCompanyId,
+                group_id: newChitsGroup.id,
+                group_position_number: chitsGroupData.company_chit_number,
+                subscriber_id: companyMember.id,
+                enrollment_date: chitsGroupData.commencement_date || new Date().toISOString().split('T')[0],
+                address_type: 1, // Default to home
+                business_type_id: 1, // Default to direct
+                delete_status: 0
+              }, { transaction: t });
+              
+              const loadedEnrollment = await Enrollment.findByPk(enrollment.id, {
+                include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+                transaction: t
+              });
+
+              await createInstallmentsForEnrollment(loadedEnrollment, newChitsGroup, { transaction: t });
+              console.log('Enrollment created:', enrollment.id);
             });
-            console.log('Enrollment created:', enrollment.id);
 
             const selfChit = await SelfChit.create({
               company_id: targetCompanyId,
@@ -1007,9 +1140,6 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
           console.log('Skipping enrollment: targetCompanyId is missing');
         }
       }
-
-      // Step case: Trigger createInstallaments on create
-      await createInstallaments(newChitsGroup.id, newChitsGroup.chits_group_status);
 
       // Trigger FCM Notification for Marketing (New Group)
       try {
@@ -1037,7 +1167,7 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search,
       limit, offset, where: {
         is_deleted_status: 0,
         ...(not_status === 1 ? { chits_group_status: { [Op.ne]: 0 } } : {}),
-        ...(enrollment_status === 1 ? { is_chit_full_status: 0 } : {}),
+        ...(enrollment_status === 1 ? { is_chit_full_status: 0, chits_group_status: { [Op.ne]: 2 } } : {}),
         ...(company_id && company_id !== '' ? { company_id } : {}),
         ...(search && {
           [Op.or]: [
@@ -1085,40 +1215,26 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
     const chitsGroup = await ChitsGroup.findByPk(id);
     if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
 
-    const updateData = {};
     if (chits_group_status !== undefined && chits_group_status !== null) {
-      if (Number(chits_group_status) === 1 && chitsGroup.chits_group_status !== 1) {
-        const enrollmentsCount = await Enrollment.count({ where: { group_id: id, delete_status: 0 } });
-        const selfChitsCount = await SelfChit.count({ where: { group_id: id, is_deleted_status: 0 } });
-        const totalTaken = enrollmentsCount + selfChitsCount;
-        const requiredPositions = parseInt(chitsGroup.no_of_installments) || 0;
-
-        if (totalTaken < requiredPositions) {
-          return errorResponse(res, statusCodes.BAD_REQUEST, `Cannot start group. All positions must be filled (${totalTaken}/${requiredPositions} filled).`);
-        }
+      if (Number(chits_group_status) !== 2) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'A group\'s status follows its start date.');
       }
-      updateData.chits_group_status = chits_group_status;
-    }
-
-    await chitsGroup.update(updateData);
-
-    if (updateData.chits_group_status !== undefined) {
-      await createInstallaments(chitsGroup.id, updateData.chits_group_status);
-
+      if (Number(chitsGroup.chits_group_status) !== 1) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Only a Running group can be marked completed.');
+      }
+      
+      await chitsGroup.update({ chits_group_status: 2 });
+      
       // Trigger FCM Notifications
       try {
         const enrollments = await Enrollment.findAll({
           where: { group_id: chitsGroup.id, delete_status: 0, company_id: chitsGroup.company_id },
-          include: [{ model: Member, as: 'subscriber', where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } }, required: true }]
+          attributes: ['id']
         });
-        const members = enrollments.map(e => e.subscriber);
+        const members = (await holderMembersOf(enrollments.map((e) => e.id))).filter((m) => m.fcm_token);
 
         if (members.length > 0) {
-          if (Number(updateData.chits_group_status) === 1) {
-            fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Commenced!', `The Chit Group ${chitsGroup.chit_group_name} has officially commenced.`, { type: 'GROUP_STARTED', group_id: String(chitsGroup.id) });
-          } else if (Number(updateData.chits_group_status) === 2) {
-            fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Completed', `Congratulations! The Chit Group ${chitsGroup.chit_group_name} has successfully completed its term.`, { type: 'GROUP_COMPLETED', group_id: String(chitsGroup.id) });
-          }
+          fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Completed', `Congratulations! The Chit Group ${chitsGroup.chit_group_name} has successfully completed its term.`, { type: 'GROUP_COMPLETED', group_id: String(chitsGroup.id) });
         }
       } catch (pushErr) {
         console.error('Error sending FCM push for group status:', pushErr);
@@ -1334,12 +1450,142 @@ const checkAndUpdateChitFullStatus = async (group_id) => {
   }
 };
 
+/**
+ * Joint enrollment (up to 3 holders a ticket). Checks the other holders are verified,
+ * active members of the main holder's company, not the main holder, not listed twice,
+ * and that every share adds up to 100%. Returns { holders, mainShare } or { error }.
+ */
+const MAX_TICKET_HOLDERS = 3;
+const validateJointHolders = async (input, mainShareInput, subscriber) => {
+  const list = Array.isArray(input) ? input : [];
+  if (list.length === 0) return { holders: [], mainShare: 100 };
+  if (list.length + 1 > MAX_TICKET_HOLDERS) {
+    return { error: `A ticket can have at most ${MAX_TICKET_HOLDERS} holders.` };
+  }
+
+  const ids = list.map((h) => Number(h.member_id));
+  if (new Set(ids).size !== ids.length) return { error: 'The same member is listed twice as a joint holder.' };
+  if (ids.includes(Number(subscriber.id))) return { error: 'The main holder cannot also be a joint holder.' };
+
+  const members = await Member.findAll({ where: { id: { [Op.in]: ids } } });
+  for (const h of list) {
+    const m = members.find((x) => Number(x.id) === Number(h.member_id));
+    if (!m || Number(m.is_deleted_status) !== 0) return { error: `Joint holder #${h.member_id} was not found.` };
+    if (String(m.company_id) !== String(subscriber.company_id)) return { error: `Joint holder ${m.name} belongs to another company.` };
+    if (!m.is_verified) return { error: `Joint holder ${m.name} must be verified before enrollment.` };
+  }
+
+  const jointTotal = list.reduce((sum, h) => sum + Number(h.share_percent), 0);
+  const mainShare = mainShareInput !== undefined && mainShareInput !== null
+    ? Number(mainShareInput)
+    : parseFloat((100 - jointTotal).toFixed(2));
+  if (!(mainShare > 0)) return { error: "The main holder's share must be more than 0%." };
+  if (Math.abs(mainShare + jointTotal - 100) > 0.01) {
+    return { error: `Shares must add up to 100% (they add up to ${parseFloat((mainShare + jointTotal).toFixed(2))}%).` };
+  }
+
+  return {
+    mainShare,
+    holders: list.map((h) => ({ member: members.find((x) => Number(x.id) === Number(h.member_id)), share_percent: Number(h.share_percent) }))
+  };
+};
+
+/**
+ * Change who holds a ticket: add, remove or re-share joint holders, or turn a single
+ * ticket into a joint one (and back). Allowed only until the ticket wins an auction —
+ * after that the prize and the liability are fixed on the holders at the time.
+ * Removed holders keep their row with removed_on / removed_reason, so history stays.
+ */
+const updateJointHoldersService = async (res, data = {}) => {
+  const { company_id, enrollment_id, joint_holders: input, main_holder_share: mainShareInput, effective_date, reason } = data;
+  const enrollment = await Enrollment.findOne({ where: { id: enrollment_id, company_id, delete_status: 0 } });
+  if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+
+  const win = await ticketWin(enrollment);
+  if (win) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, `This ticket won auction #${win.auction_number}, so its holders can no longer change.`);
+  }
+
+  const subscriber = await Member.findByPk(enrollment.subscriber_id);
+  const joint = await validateJointHolders(input, mainShareInput, subscriber);
+  if (joint.error) return errorResponse(res, statusCodes.BAD_REQUEST, joint.error);
+
+  const bd = await SystemSettingsService.getBusinessDate();
+  const today = `${bd.getFullYear()}-${String(bd.getMonth() + 1).padStart(2, '0')}-${String(bd.getDate()).padStart(2, '0')}`;
+  const onDate = effective_date ? toDateStr(effective_date) : today;
+  const enrolledOn = toDateStr(enrollment.enrollment_date);
+  if (enrolledOn && onDate < enrolledOn) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, 'The change date cannot be before the enrollment date.');
+  }
+  if (onDate > today) return errorResponse(res, statusCodes.BAD_REQUEST, 'The change date cannot be in the future.');
+
+  const current = await EnrollmentJointHolder.findAll({ where: { enrollment_id: enrollment.id, removed_on: null } });
+  const nextIds = new Set(joint.holders.map((h) => Number(h.member.id)));
+  const leaving = current.filter((c) => !nextIds.has(Number(c.member_id)));
+  if (leaving.length && !(reason && String(reason).trim())) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, 'Give a reason when removing a joint holder.');
+  }
+
+  const transaction = await sequelize.transaction();
+  try {
+    for (const c of leaving) {
+      await c.update({ removed_on: onDate, removed_reason: String(reason).trim() }, { transaction });
+    }
+    for (const h of joint.holders) {
+      const existing = current.find((c) => Number(c.member_id) === Number(h.member.id));
+      if (existing) {
+        if (Number(existing.share_percent) !== h.share_percent) await existing.update({ share_percent: h.share_percent }, { transaction });
+      } else {
+        await EnrollmentJointHolder.create({
+          company_id: enrollment.company_id,
+          enrollment_id: enrollment.id,
+          member_id: h.member.id,
+          share_percent: h.share_percent,
+          added_on: onDate
+        }, { transaction });
+      }
+    }
+    await enrollment.update({ main_holder_share: joint.mainShare }, { transaction });
+    await transaction.commit();
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
+
+  // Tell everyone affected: current holders and anyone who just left.
+  const leftMembers = leaving.length ? await Member.findAll({ where: { id: { [Op.in]: leaving.map((c) => c.member_id) } } }) : [];
+  const notify = [...(await holderMembersOf([enrollment.id])), ...leftMembers].filter((m) => m && m.fcm_token);
+  const group = await ChitsGroup.findByPk(enrollment.group_id, { attributes: ['group_name'] });
+  const seen = new Set();
+  notify.forEach((m) => {
+    if (seen.has(m.id)) return;
+    seen.add(m.id);
+    fcmService.sendPushToMember(m, 'Ticket holders updated', `The holders of your ticket #${enrollment.group_position_number} in ${group ? group.group_name : 'your chit'} have changed.`, { type: 'TICKET_HOLDERS_UPDATED', enrollment_id: String(enrollment.id) });
+  });
+
+  const holders = await EnrollmentJointHolder.findAll({
+    where: { enrollment_id: enrollment.id },
+    attributes: ['id', 'member_id', 'share_percent', 'added_on', 'removed_on', 'removed_reason'],
+    include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }],
+    order: [['added_on', 'ASC'], ['id', 'ASC']]
+  });
+  return successResponse(res, statusCodes.OK, 'Ticket holders updated', { enrollment_id: enrollment.id, main_holder_share: joint.mainShare, joint_holders: holders });
+};
+
 const storeOrUpdateEnrollmentService = async (res, data = {}) => {
   try {
-    const { id, ...enrollmentData } = data;
+    const { id, joint_holders: jointHoldersInput, main_holder_share: mainShareInput, ...enrollmentData } = data;
     if (id) {
-      const enrollment = await Enrollment.findByPk(id);
+      const enrollment = await Enrollment.findOne({ where: { id, company_id: enrollmentData.company_id } });
       if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+
+      if (enrollmentData.group_id && String(enrollmentData.group_id) !== String(enrollment.group_id)) {
+        const hasInstalments = await ChitsInstallment.count({ where: { enrollment_id: id } });
+        if (hasInstalments > 0) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot change group once instalments are generated.');
+        }
+      }
+
       await enrollment.update(enrollmentData);
       await checkAndUpdateChitFullStatus(enrollment.group_id);
       return successResponse(res, statusCodes.OK, 'Enrollment updated successfully', enrollment);
@@ -1349,36 +1595,62 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Subscriber must be verified before enrollment');
       }
 
-      // A group cannot take more members than it has positions. Lock the group row
-      // so two enrollments saved at the same moment cannot both pass this check.
-      const capacity = await sequelize.transaction(async (t) => {
+      // Joint enrollment: validate the other holders and the shares up front.
+      const joint = await validateJointHolders(jointHoldersInput, mainShareInput, subscriber);
+      if (joint.error) return errorResponse(res, statusCodes.BAD_REQUEST, joint.error);
+      enrollmentData.main_holder_share = joint.mainShare;
+
+      const result = await sequelize.transaction(async (t) => {
         const group = await ChitsGroup.findByPk(enrollmentData.group_id, {
-          attributes: ['id', 'no_of_installments'],
           lock: t.LOCK.UPDATE,
           transaction: t,
         });
-        if (!group) return { missing: true };
+        if (!group) return { error: 'NOT_FOUND', msg: 'Chits group not found' };
+        if (Number(group.chits_group_status) === 2) {
+          return { error: 'BAD_REQUEST', msg: 'This chit group is completed; members can\'t join it.' };
+        }
+
         const taken = await Enrollment.count({ where: { group_id: group.id, delete_status: 0 }, transaction: t })
           + await SelfChit.count({ where: { group_id: group.id, is_deleted_status: 0 }, transaction: t });
         const positions = parseInt(group.no_of_installments) || 0;
-        return { taken, positions, isFull: taken >= positions };
-      });
-      if (capacity.missing) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
-      if (capacity.isFull) {
-        return errorResponse(res, statusCodes.BAD_REQUEST, `This chit group is full (${capacity.taken}/${capacity.positions} positions taken).`);
-      }
+        if (taken >= positions) {
+          return { error: 'BAD_REQUEST', msg: `This chit group is full (${taken}/${positions} positions taken).` };
+        }
 
-      const newEnrollment = await Enrollment.create(enrollmentData);
+        const newEnrollment = await Enrollment.create(enrollmentData, { transaction: t });
+
+        if (joint.holders.length > 0) {
+          const addedOn = toDateStr(enrollmentData.enrollment_date) || toDateStr(new Date());
+          await EnrollmentJointHolder.bulkCreate(joint.holders.map((h) => ({
+            company_id: newEnrollment.company_id || subscriber.company_id,
+            enrollment_id: newEnrollment.id,
+            member_id: h.member.id,
+            share_percent: h.share_percent,
+            added_on: addedOn
+          })), { transaction: t });
+        }
+        
+        const loadedEnrollment = await Enrollment.findByPk(newEnrollment.id, {
+          include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+          transaction: t
+        });
+
+        await createInstallmentsForEnrollment(loadedEnrollment, group, { transaction: t });
+
+        return { newEnrollment, group };
+      });
+
+      if (result.error === 'NOT_FOUND') return errorResponse(res, statusCodes.NOT_FOUND, result.msg);
+      if (result.error === 'BAD_REQUEST') return errorResponse(res, statusCodes.BAD_REQUEST, result.msg);
+
+      const { newEnrollment, group: chitGroup } = result;
+
       await checkAndUpdateChitFullStatus(newEnrollment.group_id);
 
-      const chitGroup = await ChitsGroup.findByPk(newEnrollment.group_id);
-      if (chitGroup && Number(chitGroup.chits_group_status) === 1) {
-        await createInstallaments(newEnrollment.group_id, chitGroup.chits_group_status);
-      }
-
-      // Send push notification
       if (subscriber && chitGroup) {
-        fcmService.sendPushToMember(subscriber, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${chitGroup.chit_group_name}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
+        for (const holder of [subscriber, ...joint.holders.map((h) => h.member)]) {
+          fcmService.sendPushToMember(holder, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${chitGroup.chit_group_name}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
+        }
       }
 
       return successResponse(res, statusCodes.CREATED, 'Enrollment stored successfully', newEnrollment);
@@ -1407,6 +1679,7 @@ const getAllEnrollmentDetailsService = async (res, company_id, min, max, search)
         { model: Company, as: 'company', attributes: ['company_name'] },
         { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
         { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] },
+        { model: EnrollmentJointHolder, as: 'joint_holders', separate: true, where: { removed_on: null }, attributes: ['id', 'member_id', 'share_percent', 'added_on'], include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }] },
         { model: Member, as: 'business_agent', attributes: ['name', 'member_id'] },
         { model: Member, as: 'collection_agent', attributes: ['name', 'member_id'] },
         { model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] },
@@ -2017,14 +2290,23 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     }
 
     // 2. Bidder checks
-    const winnerEnrollment = await Enrollment.findOne({
-      where: { group_id, subscriber_id: bidder_id, delete_status: 0 },
-      transaction
-    });
-
-    if (!winnerEnrollment) {
+    // A member may bid through any ticket they hold (as main or joint holder). The
+    // ticket that wins is their first ticket in the group that hasn't won yet.
+    const bidderTickets = await memberTicketsInGroup(group_id, bidder_id, { transaction });
+    if (!bidderTickets.length) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Bidder is not enrolled in this group');
+    }
+    let winnerEnrollment = null;
+    let existingWin = null;
+    for (const ticket of bidderTickets) {
+      const win = await ticketWin(ticket, { transaction });
+      if (!win) { winnerEnrollment = ticket; break; }
+      existingWin = existingWin || win;
+    }
+    if (!winnerEnrollment) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, `This member's ticket has already won auction #${existingWin.auction_number} in this group`);
     }
 
     if (group.company_chit_number && winnerEnrollment.group_position_number === group.company_chit_number) {
@@ -2033,15 +2315,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     }
 
     // 3. Duplicate-winner guard
-    const existingWin = await Auction.findOne({
-      where: { group_id, bidder_id },
-      transaction
-    });
-
-    if (existingWin) {
-      await transaction.rollback();
-      return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
-    }
+    // Duplicate-winner guard: handled per ticket above (a prized ticket can't win again).
 
     // 4. Auction number
     const lastAuction = await Auction.findOne({
@@ -2126,6 +2400,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     }
 
     // 6. Create auction row and apply adjustments
+    auctionData.ticket_number = winnerEnrollment.group_position_number;
     const newAuction = await Auction.create(auctionData, { transaction });
 
     if (schemeConfig) {
@@ -2151,16 +2426,18 @@ const recordWinnerService = async (res, reqBody, userToken) => {
 
     // FCM Notification Trigger
     try {
-      const winner = await Member.findByPk(bidder_id);
-      if (winner && winner.fcm_token) {
-        fcmService.sendPushToMember(winner, 'Auction Won', `Congratulations! You won the auction for Chit ${group.chit_group_name}`, { type: 'AUCTION_WIN', group_id: String(group_id) });
-      }
+      // The prize belongs to the ticket, so every holder of the winning ticket hears it.
+      const winners = await holderMembersOf([winnerEnrollment.id]);
+      winners.filter((w) => w.fcm_token).forEach((w) => {
+        fcmService.sendPushToMember(w, 'Auction Won', `Congratulations! Your ticket won the auction for Chit ${group.chit_group_name}`, { type: 'AUCTION_WIN', group_id: String(group_id) });
+      });
+      const winnerIds = new Set(winners.map((w) => w.id));
 
       const allEnrollments = await Enrollment.findAll({
         where: { group_id, delete_status: 0, company_id: safeCompanyId || group.company_id },
-        include: [{ model: Member, as: 'subscriber', where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } }, required: true }]
+        attributes: ['id']
       });
-      const groupMembers = allEnrollments.map(e => e.subscriber).filter(s => s.id !== bidder_id);
+      const groupMembers = (await holderMembersOf(allEnrollments.map((e) => e.id))).filter((m) => m.fcm_token && !winnerIds.has(m.id));
       
       let dividendText = '';
       if (schemeConfig && schemeConfig.scheme_type !== 63 && schemeConfig.scheme_type !== 64) {
@@ -4215,7 +4492,10 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
     const companyId = await resolveCompanyIdForAuth(userToken);
     const submission = await CollectionAgentAmount.findOne({ 
       where: { id },
-      include: [{ model: Member, as: 'member', where: { company_id: companyId } }],
+      include: [
+        { model: Member, as: 'member', where: { company_id: companyId } },
+        { model: Member, as: 'collection_agent' }
+      ],
       transaction
     });
     if (!submission) {
@@ -4361,7 +4641,7 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
       }, { transaction });
 
     } else if (status === 3) {
-      await CustomerPayment.destroy({
+      await CustomerPayment.update({ payment_status: 2 }, {
         where: { collection_agent_amount_id: id, payment_status: 0 },
         transaction
       });
@@ -4379,6 +4659,20 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
         );
       } catch (fcmErr) {
         console.error('Failed to send payment verified push:', fcmErr.message);
+      }
+    } else if (status === 3 && submission.member) {
+      try {
+        const agentName = submission.collection_agent ? submission.collection_agent.name : 'an agent';
+        const collectionDate = submission.paid_date ? new Date(submission.paid_date).toLocaleDateString('en-IN') : 'recently';
+
+        fcmService.sendPushToMember(
+          submission.member,
+          'Payment not confirmed',
+          `Your payment of ₹${submission.received_amount} collected by ${agentName} on ${collectionDate} was not confirmed by the office. Please contact the office.`,
+          { type: 'PAYMENT_REJECTED', submission_id: String(id), amount: String(submission.received_amount) }
+        );
+      } catch (fcmErr) {
+        console.error('Failed to send payment rejected push:', fcmErr.message);
       }
     }
 
@@ -4552,10 +4846,9 @@ const storeDirectPaymentService = async (res, user, data) => {
 
     // Trigger FCM Notification for Payment Received
     try {
-      const subscriber = await Member.findByPk(installmentInfo.enrollment.subscriber_id);
-      if (subscriber) {
+      for (const holder of await holderMembersOf([installmentInfo.enrollment.id])) {
         fcmService.sendPushToMember(
-          subscriber,
+          holder,
           'Payment Received',
           `Payment of ₹${receivedAmountFloat} received successfully for Receipt #${newReceiptNumber}.`,
           { type: 'PAYMENT_RECEIVED', receipt_number: newReceiptNumber, amount: String(receivedAmountFloat) }
@@ -4765,7 +5058,8 @@ const getEnrollmentByIdService = async (res, id, companyId) => {
         { model: ChitsGroup, as: 'group' },
         { model: Member, as: 'subscriber' },
         { model: Member, as: 'business_agent' },
-        { model: Member, as: 'collection_agent' }
+        { model: Member, as: 'collection_agent' },
+        { model: EnrollmentJointHolder, as: 'joint_holders', separate: true, where: { removed_on: null }, attributes: ['id', 'member_id', 'share_percent', 'added_on'], include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }] }
       ]
     });
     if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
@@ -6379,6 +6673,8 @@ const updateBusinessDateService = async (res, userPayload, body) => {
       remarks: body.remarks,
       changedBy: userPayload.id
     });
+    const { runGroupStatusJob } = require('../utils/cronJobs');
+    await runGroupStatusJob();
     return successResponse(res, statusCodes.OK, 'Business date updated successfully', settings);
   } catch (error) {
     console.error('Error in updateBusinessDateService:', error);
@@ -6629,7 +6925,7 @@ const getLedgerReportService = async (res, reqBody) => {
 const SETUP_FIELDS = [
   'company_name', 'company_address', 'bank_name', 'gst_percentage', 'gst_number', 'gst_type',
   'pan_number', 'sac_code', 'cheque_return_charges', 'enrollment_charges', 'notice_charges',
-  'transaction_lock_days', 'rect_print_format', 'latitude', 'longitude', 'location',
+  'transaction_lock_days', 'late_join_grace_days', 'rect_print_format', 'latitude', 'longitude', 'location',
   'foreman_name', 'foreman_father_name', 'foreman_address', 'cin', 'place', 'registrar_office_address',
 ];
 
@@ -6924,7 +7220,54 @@ const applyAdvanceService = async (res, member_advance_id, chits_installment_id,
   }
 };
 
+const getGroupStartDate = (group) => {
+  return group.commencement_date || group.chit_start_date || null;
+};
+
+const lateJoinPreviewService = async (res, payload) => {
+  try {
+    const { group_id, enrollment_date, payment_mode_id, company_id } = payload;
+    const group = await ChitsGroup.findOne({ where: { id: group_id, is_deleted_status: 0, ...(company_id ? { company_id } : {}) } });
+    if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+
+    let mappedType = 1;
+    if (payment_mode_id) {
+      const mode = await StaticDropdownsList.findByPk(payment_mode_id);
+      mappedType = frequencyFromModeName(mode && mode.dropdown_name);
+    }
+
+    const enrollmentDateStr = toDateStr(enrollment_date);
+    const schedule = await buildGroupSchedule(group, mappedType);
+
+    const installmentsDue = catchUpRows(schedule, enrollmentDateStr).map((r) => ({
+      installment_no: r.installment_no,
+      due_date: r.due_date,
+      payable_amount: parseFloat(r.payable_amount) || 0,
+      days_overdue: Math.max(0, daysBetween(r.due_date, enrollmentDateStr))
+    }));
+
+    const totalDue = installmentsDue.reduce((sum, r) => sum + r.payable_amount, 0);
+    // A new member hasn't won an auction, so the non-prized rate applies.
+    const suggested = installmentsDue.reduce((sum, r) => sum + r.days_overdue * dailyPenaltyFor(group, false, r.payable_amount), 0);
+
+    return successResponse(res, statusCodes.OK, 'Late-join preview', {
+      is_late: installmentsDue.length > 0,
+      installments_due: installmentsDue,
+      count: installmentsDue.length,
+      total_due: parseFloat(totalDue.toFixed(2)),
+      penalty_percent_per_day: penaltyPercentFor(group, false),
+      suggested_penalty: Math.round(suggested),
+      grace_days: await lateJoinGraceDays(group.company_id)
+    });
+  } catch (err) {
+    console.error('Error in lateJoinPreviewService:', err);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
+  lateJoinPreviewService,
+  getGroupStartDate,
   storeOrUpdateFAQService,
   getAllFAQService,
   getFAQByIdService,
@@ -6972,6 +7315,7 @@ module.exports = {
   getDistrictsListService,
   deleteCityService,
   fetchStaticDropdownService,
+  updateJointHoldersService,
   storeOrUpdateEnrollmentService,
   getAllEnrollmentDetailsService,
   deleteEnrollmentService,
@@ -7081,5 +7425,8 @@ module.exports = {
   updateMemberReferralStatusService,
   getAppSupportedCountriesService,
   getAdvancesByMemberService,
-  applyAdvanceService
+  applyAdvanceService,
+  computeGroupStatus,
+  createInstallmentsForEnrollment,
+  createInstallmentsForGroup
 };

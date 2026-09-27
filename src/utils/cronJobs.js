@@ -1,19 +1,66 @@
 const cron = require('node-cron');
 const { ChitsInstallment, Enrollment, ChitsGroup, sequelize } = require('../models');
 const { Op } = require('sequelize');
-const { getSimulatedNow } = require('./timeSimulator');
 const fcmService = require('../services/fcmService');
 const SystemSettingsService = require('../services/systemSettingsService');
+const { dailyPenaltyFor } = require('./penalty');
+const { isTicketPrized, holderMembersOf } = require('./jointHolders');
+
+const runGroupStatusJob = async () => {
+  try {
+    const bDate = await SystemSettingsService.getBusinessDate();
+    const yyyy = bDate.getFullYear();
+    const mm = String(bDate.getMonth() + 1).padStart(2, '0');
+    const dd = String(bDate.getDate()).padStart(2, '0');
+    const businessDateStr = `${yyyy}-${mm}-${dd}`;
+    // Use businessDateStr (YYYY-MM-DD) directly for comparisons
+
+    const upcomingGroups = await ChitsGroup.findAll({ where: { chits_group_status: 0, is_deleted_status: 0 } });
+    for (const group of upcomingGroups) {
+      const startStr = group.commencement_date || group.chit_start_date;
+      if (!startStr) continue;
+      
+      const startDateStr = startStr.split('T')[0];
+      
+      if (startDateStr <= businessDateStr) {
+        await group.update({ chits_group_status: 1 });
+        const enrollments = await Enrollment.findAll({
+          where: { group_id: group.id, delete_status: 0, company_id: group.company_id },
+          attributes: ['id']
+        });
+        const members = (await holderMembersOf(enrollments.map((e) => e.id))).filter((m) => m.fcm_token);
+        if (members.length > 0) {
+          fcmService.sendPushToMulticast(members, group.company_id, 'Chit Group Commenced!', `The Chit Group ${group.chit_group_name} has officially commenced.`, { type: 'GROUP_STARTED', group_id: String(group.id) });
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[CRON] Error in runGroupStatusJob:', error);
+  }
+};
+
+// Prize status belongs to the ticket: a ticket won by any of its holders is prized.
+const isPrizedEnrollment = (enrollment) => isTicketPrized(enrollment);
 
 const startDailyPenaltyCron = () => {
-  // Run every 1 minute for testing
   cron.schedule('* * * * *', async () => {
     try {
       const settings = await SystemSettingsService.getSettings();
-      if (settings.scheduler_mode === 'MANUAL') return; // Skip automatic execution
+      if (settings.scheduler_mode === 'MANUAL') return;
+
+      await runGroupStatusJob();
 
       console.log('\n[CRON] Starting Accelerated Penalty Calculation Job...');
-      // Fetch all purely unpaid installment records organically across the DB
+      
+      const bDate = await SystemSettingsService.getBusinessDate();
+      const byyyy = bDate.getFullYear();
+      const bmm = String(bDate.getMonth() + 1).padStart(2, '0');
+      const bdd = String(bDate.getDate()).padStart(2, '0');
+      const businessDateStr = `${byyyy}-${bmm}-${bdd}`; // YYYY-MM-DD
+      const DStr = businessDateStr;
+      const [y, m, d] = DStr.split('-');
+      const D_UTC = Date.UTC(parseInt(y), parseInt(m) - 1, parseInt(d));
+
       const unpaidInstallments = await ChitsInstallment.findAll({
         where: {
           id: {
@@ -25,14 +72,8 @@ const startDailyPenaltyCron = () => {
             model: Enrollment,
             as: 'enrollment',
             include: [
-              {
-                model: ChitsGroup,
-                as: 'group'
-              },
-              {
-                model: sequelize.models.Member,
-                as: 'subscriber'
-              }
+              { model: ChitsGroup, as: 'group' },
+              { model: sequelize.models.Member, as: 'subscriber' }
             ]
           }
         ]
@@ -42,70 +83,68 @@ const startDailyPenaltyCron = () => {
       const winnerCache = {};
 
       for (const installment of unpaidInstallments) {
-        // Follow foreign-keys up the chain to the master root definition
         const group = installment.enrollment?.group;
         if (!group) continue;
         
-        const subscriberId = installment.enrollment?.subscriber?.id;
-        let isWinner = false;
-        if (subscriberId) {
-          const cacheKey = `${group.id}_${subscriberId}`;
-          if (winnerCache[cacheKey] !== undefined) {
-             isWinner = winnerCache[cacheKey];
-          } else {
-             const auctionWin = await sequelize.models.Auction.findOne({
-               where: { group_id: group.id, bidder_id: subscriberId }
-             });
-             isWinner = !!auctionWin;
-             winnerCache[cacheKey] = isWinner;
-          }
-        }
-        
-        // Calculate simulated time globally
-        const simulatedNow = await getSimulatedNow();
-        simulatedNow.setHours(0, 0, 0, 0);
-        
-        const dueDate = new Date(installment.due_date);
-        dueDate.setHours(0, 0, 0, 0);
-
-        // Check if overdue in simulated time
-        if (dueDate < simulatedNow) {
-
-        // Retrieve exactly what the admin specified for this exact root group
-        const penaltyAmountPerDay = isWinner
-          ? (parseFloat(group.penality_for_ps) || 0)
-          : (parseFloat(group.penality_for_nps) || 0);
-
-        // Math: Add exactly 1 simulated day and physically stack the exact defined fraction incrementally limitlessly
-        const newOverdueCount = (installment.over_due_days_count || 0) + 1;
-        const newPenaltyAmount = parseFloat(installment.penalty_amount || 0) + penaltyAmountPerDay;
-
-        await installment.update({
-          over_due_days_count: newOverdueCount,
-          penalty_amount: newPenaltyAmount
+        const pendingPayment = await sequelize.models.CustomerPayment.findOne({
+          where: { chits_installment_id: installment.id, payment_status: 0 }
         });
 
-        // Send FCM Notification on first day of overdue
-        if (newOverdueCount === 1) {
-          const subscriber = installment.enrollment?.subscriber;
-          if (subscriber && subscriber.fcm_token) {
-            fcmService.sendPushToMember(
-              subscriber,
-              'Payment Overdue!',
-              `Your payment for Chit ${group.chit_group_name} is overdue. A penalty has been applied.`,
-              { type: 'PAYMENT_OVERDUE', group_id: String(group.id) }
-            );
+        if (pendingPayment) {
+          if (installment.penalty_last_applied_date !== DStr) {
+             await installment.update({ penalty_last_applied_date: DStr });
           }
+          continue;
         }
 
-        processedCount++;
-        } else if (dueDate.getTime() === simulatedNow.getTime() + 86400000) {
+        let startStr = installment.due_date;
+        if (installment.penalty_from_date && installment.penalty_from_date > startStr) {
+          startStr = installment.penalty_from_date;
+        }
+        if (installment.penalty_last_applied_date && installment.penalty_last_applied_date > startStr) {
+          startStr = installment.penalty_last_applied_date;
+        }
+
+        const [sy, sm, sd] = startStr.split('T')[0].split('-');
+        const start_UTC = Date.UTC(parseInt(sy), parseInt(sm) - 1, parseInt(sd));
+
+        const days = Math.floor((D_UTC - start_UTC) / (1000 * 60 * 60 * 24));
+
+        if (days > 0) {
+          const cacheKey = installment.enrollment.id;
+          if (winnerCache[cacheKey] === undefined) {
+            winnerCache[cacheKey] = await isPrizedEnrollment(installment.enrollment);
+          }
+          const isWinner = winnerCache[cacheKey];
+
+          const rate = dailyPenaltyFor(group, isWinner, installment.payable_amount);
+          const newOverdueCount = (installment.over_due_days_count || 0) + days;
+          const newPenaltyAmount = parseFloat(installment.penalty_amount || 0) + (days * rate);
+
+          await installment.update({
+            over_due_days_count: newOverdueCount,
+            penalty_amount: newPenaltyAmount,
+            penalty_last_applied_date: DStr
+          });
+
+          // Send FCM Notification on first day of overdue (we approximate this by checking if it was previously not overdue)
+          if ((installment.over_due_days_count || 0) === 0) {
+            const holders = await holderMembersOf([installment.enrollment.id]);
+            for (const subscriber of holders.filter((h) => h.fcm_token)) {
+              fcmService.sendPushToMember(
+                subscriber,
+                'Payment Overdue!',
+                `Your payment for Chit ${group.chit_group_name} is overdue. A penalty has been applied.`,
+                { type: 'PAYMENT_OVERDUE', group_id: String(group.id) }
+              );
+            }
+          }
+
+          processedCount++;
+        } else if (days === -1) {
           // Due tomorrow
-          const subscriber = installment.enrollment?.subscriber;
-          if (subscriber && subscriber.fcm_token) {
-            // Note: In a production environment with cron running every minute, 
-            // a database flag (e.g. notified_due_date) is needed to prevent spam.
-            // For now, it will fire based on the simulated time loop.
+          const holders = await holderMembersOf([installment.enrollment.id]);
+          for (const subscriber of holders.filter((h) => h.fcm_token)) {
             fcmService.sendPushToMember(
               subscriber,
               'Payment Due Tomorrow',
@@ -126,4 +165,4 @@ const startDailyPenaltyCron = () => {
   console.log('[CRON] Background Penalty calculation scheduler initialized & actively listening.');
 };
 
-module.exports = { startDailyPenaltyCron };
+module.exports = { startDailyPenaltyCron, runGroupStatusJob };

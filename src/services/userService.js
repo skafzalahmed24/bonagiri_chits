@@ -7,14 +7,79 @@ const {
     Auction, CollectionAgentAmount, FixedSchemeChitsConfiguration,
     NotificationHistory, MemberDocument, CustomerVisit, Gallery, MemberReferral,
     ConfigureBusinessAgentCommission, HistoryBusinessAgent, ChitType, StaffUser,
-    Banner, sequelize
+    Banner, EnrollmentJointHolder, sequelize
 } = require('../models');
 const { Op } = require('sequelize');
+const { memberTicketsInGroup, ticketWin, holderNamesByEnrollment } = require('../utils/jointHolders');
 
-const { getSimulatedNow } = require('../utils/timeSimulator');
+// ---- Joint enrollment: a member's tickets are the ones they hold as main holder
+// (Enrollment.subscriber_id) or as an active joint holder.
+const jointEnrollmentIds = async (memberId) => {
+    const rows = await EnrollmentJointHolder.findAll({
+        where: { member_id: memberId, removed_on: null },
+        attributes: ['enrollment_id']
+    });
+    return rows.map((r) => r.enrollment_id);
+};
+
+/** Enrollment `where` fragment matching every ticket the member holds. */
+const ticketHolderWhere = async (memberId) => {
+    const ids = await jointEnrollmentIds(memberId);
+    return ids.length
+        ? { [Op.or]: [{ subscriber_id: memberId }, { id: { [Op.in]: ids } }] }
+        : { subscriber_id: memberId };
+};
+
+/** Ids of the auctions won by these tickets (each ticket wins at most once). */
+const auctionIdsWonBy = async (tickets) => {
+    const ids = new Set();
+    for (const t of tickets) {
+        const win = await ticketWin(t);
+        if (win) ids.add(win.id);
+    }
+    return ids;
+};
+
+/** Does the member hold this ticket (as main or joint holder)? */
+const isTicketHolder = async (enrollment, memberId) => {
+    if (!enrollment) return false;
+    if (Number(enrollment.subscriber_id) === Number(memberId)) return true;
+    const row = await EnrollmentJointHolder.findOne({ where: { enrollment_id: enrollment.id, member_id: memberId, removed_on: null } });
+    return !!row;
+};
+
+/**
+ * For each ticket, the names of the member's co-holders ("Joint with …").
+ * Returns { [enrollmentId]: ['Name', …] }; tickets with no co-holders are absent.
+ */
+const coHolderNames = async (enrollmentIds, memberId) => {
+    if (!enrollmentIds.length) return {};
+    const enrollments = await Enrollment.findAll({
+        where: { id: { [Op.in]: enrollmentIds } },
+        attributes: ['id', 'subscriber_id'],
+        include: [
+            { model: Member, as: 'subscriber', attributes: ['id', 'name'] },
+            { model: EnrollmentJointHolder, as: 'joint_holders', required: false, where: { removed_on: null }, attributes: ['member_id'], include: [{ model: Member, as: 'member', attributes: ['id', 'name'] }] }
+        ]
+    });
+    const out = {};
+    enrollments.forEach((e) => {
+        const holders = [
+            e.subscriber ? { id: e.subscriber.id, name: e.subscriber.name } : null,
+            ...(e.joint_holders || []).map((j) => (j.member ? { id: j.member.id, name: j.member.name } : null))
+        ].filter(Boolean);
+        if (holders.length < 2) return;
+        const others = holders.filter((h) => Number(h.id) !== Number(memberId)).map((h) => h.name);
+        if (others.length) out[e.id] = others;
+    });
+    return out;
+};
+
+const SystemSettingsService = require('./systemSettingsService');
 const { isCollectionAgent, isBusinessAgent } = require('../utils/authHelpers');
 const { calculateMemberRating } = require('../utils/ratingHelper');
 const fcmService = require('./fcmService');
+const { getGroupStartDate } = require('./adminService');
 
 const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) => {
     const subscriber_id = (userPayload && userPayload.id) ? userPayload.id : reqSubscriberId;
@@ -22,7 +87,7 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
         // 1. Fetch only essential Enrollment fields
         const enrollment = await Enrollment.findOne({
             where: {
-                subscriber_id,
+                ...(await ticketHolderWhere(subscriber_id)),
                 delete_status: 0
             },
             attributes: ['id', 'group_id', 'subscriber_id'],
@@ -44,7 +109,7 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
             where: {
                 enrollment_id: enrollment.id,
                 id: {
-                    [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+                    [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" IN (0, 1) AND "chits_installment_id" IS NOT NULL)`)
                 }
             },
             order: [['installment_no', 'ASC']]
@@ -54,7 +119,7 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
         const upcoming_auction = [];
         const allEnrollments = await Enrollment.findAll({
             where: {
-                subscriber_id,
+                ...(await ticketHolderWhere(subscriber_id)),
                 delete_status: 0
             },
             include: [
@@ -146,7 +211,7 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
         // 7. Fetch active regular banners (banner_type: 1)
         let banners = [];
         try {
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             const todayStr = simulatedNow.toISOString().split('T')[0];
             const company_id = member ? member.company_id : (userPayload ? userPayload.company_id : null);
 
@@ -224,7 +289,7 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
     try {
         const enrollments = await Enrollment.findAll({
             where: {
-                subscriber_id,
+                ...(await ticketHolderWhere(subscriber_id)),
                 delete_status: 0
             },
             attributes: ['id', 'group_id', 'subscriber_id'],
@@ -245,6 +310,7 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
             return true;
         });
 
+        const coHolders = await coHolderNames(uniqueEnrollments.map((e) => e.id), subscriber_id);
         const resolvedData = await Promise.all(uniqueEnrollments.map(async (enrollment) => {
             const group = await ChitsGroup.findOne({
                 where: { id: enrollment.group_id },
@@ -263,7 +329,7 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 where: {
                     enrollment_id: enrollment.id,
                     id: {
-                        [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+                        [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" IN (0, 1) AND "chits_installment_id" IS NOT NULL)`)
                     }
                 },
                 order: [['installment_no', 'ASC']]
@@ -288,6 +354,8 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 id: enrollment.id,
                 group_id: enrollment.group_id,
                 subscriber_id: enrollment.subscriber_id,
+                is_joint: !!coHolders[enrollment.id],
+                joint_with: coHolders[enrollment.id] || [],
                 group_name: group ? group.group_name : null,
                 chit_amount: group ? (parseFloat(group.chit_amount) || 0) : null,
                 no_of_installments: group ? group.no_of_installments : null,
@@ -302,6 +370,7 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 enrollment_id: enrollment.id,
                 next_due_date: upcomingInstallment ? upcomingInstallment.due_date : null,
                 payable_amount: upcomingInstallment ? (parseFloat(upcomingInstallment.payable_amount) || 0) : 0,
+                payment_state: upcomingInstallment ? 'unpaid' : 'paid',
                 ...(upcomingInstallment && {
                     createdAt: upcomingInstallment.createdAt,
                     updatedAt: upcomingInstallment.updatedAt
@@ -470,7 +539,7 @@ const submitChitInterestService = async (res, userPayload, upcoming_chit_id, sho
 
 const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min = 0, max = 10) => {
     try {
-        const globalSimulatedNow = await getSimulatedNow();
+        const globalSimulatedNow = new Date(await SystemSettingsService.getBusinessDate());
         let subscriber_id = bodySubscriberId;
 
         if (!subscriber_id) {
@@ -497,7 +566,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
         // 1. Fetch active enrollments for this subscriber
         const enrollments = await Enrollment.findAll({
             where: {
-                subscriber_id,
+                ...(await ticketHolderWhere(subscriber_id)),
                 delete_status: 0
             },
             include: [
@@ -545,7 +614,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
             where: {
                 enrollment_id: { [Op.in]: enrollmentIds },
                 id: {
-                    [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+                    [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" IN (0, 1) AND "chits_installment_id" IS NOT NULL)`)
                 }
             },
             include: [
@@ -564,6 +633,16 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
         });
 
         // Filter in-memory based on simulated time relative to each group
+        const payments = await CustomerPayment.findAll({
+            where: { chits_installment_id: { [Op.in]: allUnpaidInstallments.map((i) => i.id) }, payment_status: { [Op.in]: [0, 1] } },
+            attributes: ['chits_installment_id', 'penalty_paid']
+        });
+        const penaltyPaidByInstallment = {};
+        payments.forEach((p) => {
+            const k = p.chits_installment_id;
+            penaltyPaidByInstallment[k] = (penaltyPaidByInstallment[k] || 0) + (parseFloat(p.penalty_paid) || 0);
+        });
+
         const unpaidInstallments = allUnpaidInstallments.filter(inst => {
             const group = inst.enrollment?.group;
             const simulatedNow = new Date(globalSimulatedNow);
@@ -625,58 +704,15 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
             const dueAmount = parseFloat((netPayable > 0 ? netPayable : (parseFloat(installment.payable_amount) || originalAmount)).toFixed(2));
             const grossAmount = parseFloat(originalAmount.toFixed(2));
 
-            // Calculate dynamic over_due_days_count based on simulated date
-            const simulatedNow = new Date(globalSimulatedNow);
-            simulatedNow.setHours(0, 0, 0, 0);
-            const dueDate = new Date(installment.due_date);
-            dueDate.setHours(0, 0, 0, 0);
-
-            let overDueDaysCount = 0;
-            if (dueDate < simulatedNow) {
-                const diffTime = simulatedNow.getTime() - dueDate.getTime();
-                overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-            }
+            const overDueDaysCount = installment.over_due_days_count || 0;
             const isOverdue = overDueDaysCount > 0;
-
             if (isOverdue) {
                 overduePaymentsCount++;
             }
 
-            // Check if subscriber is an auction winner (Prized Subscriber) in this group
-            const isWinner = group ? wonGroupIds.has(group.id) : false;
-
-            // Select dynamic penalty rate: penality_for_ps for winners, penality_for_nps for non-winners
-            const penaltyRate = isWinner
-                ? (group ? parseFloat(group.penality_for_ps) || 0.00 : 0.00)
-                : (group ? parseFloat(group.penality_for_nps) || 0.00 : 0.00);
-
-            let penaltyAmountPerDay = 0.00;
-            let displayPercentage = 2.0;
-
-            if (penaltyRate > 0) {
-                if (penaltyRate <= 20) {
-                    // Dynamic percentage rate per day
-                    displayPercentage = penaltyRate;
-                    penaltyAmountPerDay = (penaltyRate / 100) * dueAmount;
-                } else {
-                    // Flat daily penalty amount
-                    penaltyAmountPerDay = penaltyRate;
-                    displayPercentage = dueAmount > 0 ? parseFloat(((penaltyAmountPerDay / dueAmount) * 100).toFixed(1)) : 2.0;
-                }
-            } else {
-                // Fallback default: 2.0% per day
-                displayPercentage = 2.0;
-                penaltyAmountPerDay = 0.02 * dueAmount;
-            }
-
-            // Dynamic calculation of penalty_amount
-            const penaltyAmount = isOverdue
-                ? parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2))
-                : 0.00;
-
-            const dailyPenaltyAmount = parseFloat(penaltyAmountPerDay.toFixed(2));
-            const penaltyText = isOverdue
-                ? `${displayPercentage}% per day ${dailyPenaltyAmount} × ${overDueDaysCount} days`
+            const penaltyAmount = Math.max(0, (parseFloat(installment.penalty_amount) || 0) - (penaltyPaidByInstallment[installment.id] || 0));
+            const penaltyText = penaltyAmount > 0
+                ? `Penalty ₹${penaltyAmount} (${overDueDaysCount} days)`
                 : null;
 
             const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
@@ -693,7 +729,8 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
                 over_due_days_count: overDueDaysCount,
                 penalty_text: penaltyText,
                 final_payable_amount: finalPayableAmount,
-                is_overdue: isOverdue
+                is_overdue: isOverdue,
+                payment_state: 'unpaid'
             };
         });
 
@@ -717,7 +754,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
 
 const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
     try {
-        const globalSimulatedNow = await getSimulatedNow();
+        const globalSimulatedNow = new Date(await SystemSettingsService.getBusinessDate());
         if (!userPayload) {
             return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
         }
@@ -726,7 +763,7 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
         // 1. Fetch active enrollments for this subscriber
         const enrollments = await Enrollment.findAll({
             where: {
-                subscriber_id,
+                ...(await ticketHolderWhere(subscriber_id)),
                 delete_status: 0
             },
             include: [
@@ -885,9 +922,10 @@ const getBidDetailsService = async (res, group_id, userPayload, bodySubscriberId
 
         // 3. User's enrolled member numbers in this group (e.g. ["#08", "#07"])
         const currentMemberId = (userPayload && userPayload.id) ? userPayload.id : bodySubscriberId;
-        const userEnrollments = currentMemberId
-            ? allEnrollments.filter(e => e.subscriber_id == currentMemberId)
-            : [];
+        const myTicketIds = currentMemberId
+            ? new Set((await memberTicketsInGroup(group_id, currentMemberId)).map((e) => e.id))
+            : new Set();
+        const userEnrollments = allEnrollments.filter(e => myTicketIds.has(e.id));
 
         const memberNumbersList = userEnrollments
             .map(e => e.group_position_number)
@@ -920,8 +958,8 @@ const getBidDetailsService = async (res, group_id, userPayload, bodySubscriberId
             }
         }
 
-        const isWinnerStatus = (latestAuction && currentMemberId)
-            ? (latestAuction.bidder_id == currentMemberId)
+        const isWinnerStatus = latestAuction
+            ? (await auctionIdsWonBy(userEnrollments)).has(latestAuction.id)
             : false;
 
         const winnerNumberFormatted = winnerTicketNo !== null && winnerTicketNo !== undefined
@@ -1008,7 +1046,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         // 2. Fetch the subscriber's enrollments in this group
         const userEnrollments = await Enrollment.findAll({
             where: {
-                subscriber_id,
+                ...(await ticketHolderWhere(subscriber_id)),
                 group_id,
                 delete_status: 0
             },
@@ -1031,6 +1069,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             ],
             order: [['group_position_number', 'ASC']]
         });
+        const detailCoHolders = await coHolderNames(userEnrollments.map((e) => e.id), subscriber_id);
 
         if (!userEnrollments || userEnrollments.length === 0) {
             return errorResponse(res, statusCodes.NOT_FOUND, 'No enrollment found for this subscriber in this group');
@@ -1110,7 +1149,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         // 5. Calculate Dates, Installments & Counts
         const totalMonthsCount = parseInt(group.no_of_installments, 10) || 12;
 
-        let startDateVal = group.chit_start_date || group.commencement_date || (group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null);
+        let startDateVal = getGroupStartDate(group) || (group.createdAt ? new Date(group.createdAt).toISOString().split('T')[0] : null);
         let endDateVal = group.chit_end_date || group.term_date || group.maturity_date;
 
         if (!endDateVal && startDateVal) {
@@ -1139,12 +1178,25 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         const userPayments = await CustomerPayment.findAll({
             where: {
                 chits_installment_id: { [Op.in]: userInstallmentIds },
-                payment_status: 1
+                payment_status: { [Op.in]: [0, 1] }
             },
             order: [['payment_date', 'ASC'], ['createdAt', 'ASC']]
         });
 
         const totalPaidAmount = userPayments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0);
+
+        // Collections an agent has taken but the office hasn't verified yet: paid for the
+        // member, receipt number still to come. Listed per instalment for the app to show.
+        const instById = allUserInstallments.reduce((acc, i) => { acc[i.id] = i; return acc; }, {});
+        const awaitingByInst = {};
+        userPayments.filter((p) => Number(p.payment_status) === 0).forEach((p) => {
+            const inst = instById[p.chits_installment_id];
+            if (!inst) return;
+            const row = awaitingByInst[inst.id] || { installment_no: inst.installment_no, due_date: inst.due_date, amount: 0, collected_on: p.payment_date || null };
+            row.amount = parseFloat((row.amount + (parseFloat(p.received_amount) || 0) + (parseFloat(p.penalty_paid) || 0)).toFixed(2));
+            awaitingByInst[inst.id] = row;
+        });
+        const awaitingConfirmation = Object.values(awaitingByInst).sort((a, b) => a.installment_no - b.installment_no);
         const singleChitAmount = parseFloat(group.chit_amount) || 0.00;
         const totalChitAmountForUser = singleChitAmount * userEnrollments.length;
         const groupPendingAmount = Math.max(0, totalChitAmountForUser - totalPaidAmount);
@@ -1155,7 +1207,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             where: {
                 enrollment_id: { [Op.in]: enrollmentIds },
                 id: {
-                    [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+                    [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" IN (0, 1) AND "chits_installment_id" IS NOT NULL)`)
                 }
             },
             order: [['due_date', 'ASC'], ['installment_no', 'ASC']]
@@ -1166,53 +1218,20 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             const dueAmount = parseFloat(upcomingInstallment.payable_amount) || 0.00;
             const grossAmount = parseFloat(group.installment_amount) || (singleChitAmount / totalMonthsCount) || 0.00;
 
-            const wonAuctions = await Auction.findAll({
-                where: {
-                    group_id,
-                    bidder_id: subscriber_id
-                }
-            });
-            const isWinner = wonAuctions.length > 0;
+            const dueTicket = userEnrollments.find((e) => e.id === upcomingInstallment.enrollment_id);
+            const isWinner = dueTicket ? !!(await ticketWin(dueTicket)) : false;
 
-            const penaltyRate = isWinner
-                ? (parseFloat(group.penality_for_ps) || 0.00)
-                : (parseFloat(group.penality_for_nps) || 0.00);
-
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             simulatedNow.setHours(0, 0, 0, 0);
             const dueDate = new Date(upcomingInstallment.due_date);
             dueDate.setHours(0, 0, 0, 0);
 
-            let overDueDaysCount = 0;
-            if (dueDate < simulatedNow) {
-                const diffTime = simulatedNow.getTime() - dueDate.getTime();
-                overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-            }
+            const overDueDaysCount = upcomingInstallment.over_due_days_count || 0;
             const isOverdue = overDueDaysCount > 0;
+            const penaltyAmount = Math.max(0, parseFloat(upcomingInstallment.penalty_amount) || 0);
 
-            let penaltyAmountPerDay = 0.00;
-            let displayPercentage = 2.0;
-
-            if (penaltyRate > 0) {
-                if (penaltyRate <= 20) {
-                    displayPercentage = penaltyRate;
-                    penaltyAmountPerDay = (penaltyRate / 100) * dueAmount;
-                } else {
-                    penaltyAmountPerDay = penaltyRate;
-                    displayPercentage = dueAmount > 0 ? parseFloat(((penaltyAmountPerDay / dueAmount) * 100).toFixed(1)) : 2.0;
-                }
-            } else {
-                displayPercentage = 2.0;
-                penaltyAmountPerDay = 0.02 * dueAmount;
-            }
-
-            const penaltyAmount = isOverdue
-                ? parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2))
-                : 0.00;
-
-            const dailyPenaltyAmount = parseFloat(penaltyAmountPerDay.toFixed(2));
-            const penaltyText = isOverdue
-                ? `${displayPercentage}% per day ${dailyPenaltyAmount} × ${overDueDaysCount} days`
+            const penaltyText = penaltyAmount > 0
+                ? `Penalty ₹${penaltyAmount} (${overDueDaysCount} days)`
                 : null;
 
             const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
@@ -1256,6 +1275,9 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 }
             ]
         });
+
+        // Auctions won by any of this member's tickets (joint tickets included).
+        const myWonAuctionIds = await auctionIdsWonBy(userEnrollments);
 
         // Determine current month count (latest auction number)
         let currentMonthCount = 1;
@@ -1314,7 +1336,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
 
             const rawBidAmount = parseFloat(auction.bid_amount) || 0.00;
             const bidWinningAmount = getSchemeWinningAmount(schemeConfig, auction.auction_number) ?? rawBidAmount;
-            const isWinnerStatus = auction.bidder_id === subscriber_id;
+            const isWinnerStatus = myWonAuctionIds.has(auction.id);
 
             const winnerInfo = auction.bidder ? {
                 winner_name: auction.bidder.name || 'N/A',
@@ -1424,43 +1446,10 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 let ticketPenaltyText = null;
 
                 if (geInstallment && ticketPending > 0) {
-                    const dueDate = geInstallment.due_date ? new Date(geInstallment.due_date) : null;
-                    if (dueDate) {
-                        const simulatedNow = await getSimulatedNow();
-                        simulatedNow.setHours(0, 0, 0, 0);
-                        dueDate.setHours(0, 0, 0, 0);
-
-                        if (dueDate < simulatedNow) {
-                            const diffTime = simulatedNow.getTime() - dueDate.getTime();
-                            const overDueDaysCount = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-
-                            if (overDueDaysCount > 0) {
-                                const isSubscriberWinner = auctions.some(a => a.bidder_id === subscriber_id);
-                                const penaltyRate = isSubscriberWinner
-                                    ? (parseFloat(group.penality_for_ps) || 0.00)
-                                    : (parseFloat(group.penality_for_nps) || 0.00);
-
-                                let penaltyAmountPerDay = 0.00;
-                                let displayPercentage = 2.0;
-
-                                if (penaltyRate > 0) {
-                                    if (penaltyRate <= 20) {
-                                        displayPercentage = penaltyRate;
-                                        penaltyAmountPerDay = (penaltyRate / 100) * ticketPending;
-                                    } else {
-                                        penaltyAmountPerDay = penaltyRate;
-                                        displayPercentage = ticketPending > 0 ? parseFloat(((penaltyAmountPerDay / ticketPending) * 100).toFixed(1)) : 2.0;
-                                    }
-                                } else {
-                                    displayPercentage = 2.0;
-                                    penaltyAmountPerDay = 0.02 * ticketPending;
-                                }
-
-                                const dailyPenaltyAmount = parseFloat(penaltyAmountPerDay.toFixed(2));
-                                ticketPenaltyAmount = parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2));
-                                ticketPenaltyText = `${displayPercentage}% per day ${dailyPenaltyAmount} × ${overDueDaysCount} days`;
-                            }
-                        }
+                    const overDueDaysCount = geInstallment.over_due_days_count || 0;
+                    ticketPenaltyAmount = Math.max(0, (parseFloat(geInstallment.penalty_amount) || 0) - ticketPenaltyPaid);
+                    if (ticketPenaltyAmount > 0) {
+                        ticketPenaltyText = `Penalty ₹${ticketPenaltyAmount} (${overDueDaysCount} days)`;
                     }
                 }
 
@@ -1474,6 +1463,16 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 monthAdvanceTotal += ticketAdvance;
                 monthPenaltyTotal += ticketPenaltyAmount;
                 monthTotalAmountSum += ticketTotalAmount;
+
+                let ticketPaymentState = 'unpaid';
+                if (geInstallment) {
+                    const paymentsForInst = userPayments.filter(p => p.chits_installment_id === geInstallment.id);
+                    if (paymentsForInst.some(p => p.payment_status === 0)) {
+                        ticketPaymentState = 'awaiting_confirmation';
+                    } else if (ticketPending <= 0) {
+                        ticketPaymentState = 'paid';
+                    }
+                }
 
                 memberBreakdown.push({
                     enrollment_id: ge.id,
@@ -1493,7 +1492,8 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     penalty_amount: parseFloat(ticketPenaltyAmount.toFixed(2)),
                     penalty_text: ticketPenaltyText,
                     total_amount: parseFloat(ticketTotalAmount.toFixed(2)),
-                    payment_history: ticketPaymentHistory
+                    payment_history: ticketPaymentHistory,
+                    payment_state: ticketPaymentState
                 });
             }
 
@@ -1569,6 +1569,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 running_status_label: group.chits_group_status === 1 ? 'Active chit' : (group.chits_group_status === 2 ? 'Completed' : 'Upcoming'),
                 badge_label: group.chits_group_status,
                 ticket_member_number: positionNumbersFormatted,
+                joint_with: [...new Set(Object.values(detailCoHolders).flat())],
                 collection_agent_name: collectionAgentName,
                 business_agent_name: agentName
             },
@@ -1580,7 +1581,8 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 total_pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
                 total_advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
                 advance_amount_status: groupAdvanceAmount > 0,
-                next_payment_due: nextPaymentDue
+                next_payment_due: nextPaymentDue,
+                awaiting_confirmation: awaitingConfirmation
             },
             scheme: schemeConfig ? {
                 ...schemeConfig.toJSON(),
@@ -1624,7 +1626,7 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id, from
         const active_chit_groups = await ChitsGroup.count({
             where: {
                 id: { [Op.in]: Array.from(uniqueGroups) },
-                chits_group_status: 1,
+                chits_group_status: { [Op.in]: [0, 1] },
                 is_deleted_status: 0
             }
         });
@@ -1633,7 +1635,7 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id, from
             where: {
                 enrollment_id: { [Op.in]: enrollmentIds },
                 id: {
-                    [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+                    [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" IN (0, 1) AND "chits_installment_id" IS NOT NULL)`)
                 }
             }
         });
@@ -1646,7 +1648,7 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id, from
         });
 
         const collectedInstallments = await CustomerPayment.findAll({
-            where: { payment_status: 1 },
+            where: { payment_status: { [Op.in]: [0, 1] } },
             include: [{
                 model: ChitsInstallment,
                 as: 'installment',
@@ -1686,7 +1688,7 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id, from
         const activeGroupsLimit3 = await ChitsGroup.findAll({
             where: {
                 id: { [Op.in]: Array.from(uniqueGroups) },
-                chits_group_status: 1,
+                chits_group_status: { [Op.in]: [0, 1] },
                 is_deleted_status: 0
             },
             limit: 3,
@@ -1781,7 +1783,7 @@ const getCollectionAgentActiveGroupsService = async (res, collection_agent_id, m
         const activeGroupsData = await ChitsGroup.findAndCountAll({
             where: {
                 id: { [Op.in]: uniqueGroups },
-                chits_group_status: 1, // Active
+                chits_group_status: { [Op.in]: [0, 1] }, // Upcoming & Active
                 is_deleted_status: 0
             },
             limit,
@@ -1799,7 +1801,7 @@ const getCollectionAgentActiveGroupsService = async (res, collection_agent_id, m
         });
 
         const groupPayments = await CustomerPayment.findAll({
-            where: { payment_status: 1 },
+            where: { payment_status: { [Op.in]: [0, 1] } },
             include: [{
                 model: ChitsInstallment,
                 as: 'installment',
@@ -1929,7 +1931,7 @@ const getTotalPendingCollectionService = async (res, collection_agent_id, min, m
         const payments = await CustomerPayment.findAll({
             where: {
                 chits_installment_id: { [Op.in]: installmentIds },
-                payment_status: 1
+                payment_status: { [Op.in]: [0, 1] }
             }
         });
 
@@ -2078,7 +2080,7 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
             dateStrFrom = new Date(from_date).toISOString().split('T')[0];
             dateStrTo = dateStrFrom;
         } else {
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             startOfPeriod = new Date(simulatedNow);
             startOfPeriod.setHours(0, 0, 0, 0);
             endOfPeriod = new Date(simulatedNow);
@@ -2276,7 +2278,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
         });
 
         const payments = await CustomerPayment.findAll({
-            where: { payment_status: 1 },
+            where: { payment_status: { [Op.in]: [0, 1] } },
             include: [{
                 model: ChitsInstallment,
                 as: 'installment',
@@ -2291,7 +2293,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
         let overdue_members_set = new Set();
         const memberMap = {};
 
-        const simulatedNow = await getSimulatedNow();
+        const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
         allInstallments.forEach(inst => {
             let thresholdDate = new Date(simulatedNow);
             if (inst.type === 2) {
@@ -2546,7 +2548,7 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
         });
 
         const payments = await CustomerPayment.findAll({
-            where: { payment_status: 1 },
+            where: { payment_status: { [Op.in]: [0, 1] } },
             include: [{
                 model: ChitsInstallment,
                 as: 'installment',
@@ -2580,7 +2582,7 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             const e = enrollments.find(en => en.id === inst.enrollment_id);
             const group = e ? e.group : null;
 
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             simulatedNow.setHours(0, 0, 0, 0);
             const dueDate = new Date(inst.due_date);
             dueDate.setHours(0, 0, 0, 0);
@@ -2592,31 +2594,15 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             }
 
             if (overDueDaysCount > 0) {
-                const isWinner = group ? wonGroupIds.has(group.id) : false;
-                const penaltyRate = isWinner
-                    ? (group ? parseFloat(group.penality_for_ps) || 0.00 : 0.00)
-                    : (group ? parseFloat(group.penality_for_nps) || 0.00 : 0.00);
-
-                let penaltyAmountPerDay = 0.00;
-                let displayPercentage = 2.0;
-
-                const dueAmount = pending; // calculate penalty on pending amount
-                if (penaltyRate > 0) {
-                    if (penaltyRate <= 20) {
-                        displayPercentage = penaltyRate;
-                        penaltyAmountPerDay = (penaltyRate / 100) * dueAmount;
-                    } else {
-                        penaltyAmountPerDay = penaltyRate;
-                        displayPercentage = dueAmount > 0 ? parseFloat(((penaltyAmountPerDay / dueAmount) * 100).toFixed(1)) : 2.0;
-                    }
+                const relatedPayments = payments.filter(p => p.chits_installment_id === inst.id);
+                const penaltyPaid = relatedPayments.reduce((sum, p) => sum + (parseFloat(p.penalty_paid) || 0), 0);
+                penalty_amount = Math.max(0, (parseFloat(inst.penalty_amount) || 0) - penaltyPaid);
+                
+                if (penalty_amount > 0) {
+                    penalty_text = `Penalty ₹${penalty_amount} (${overDueDaysCount} days)`;
                 } else {
-                    displayPercentage = 2.0;
-                    penaltyAmountPerDay = 0.02 * dueAmount;
+                    penalty_text = 'No penalty';
                 }
-
-                const dailyPenaltyAmount = parseFloat(penaltyAmountPerDay.toFixed(2));
-                penalty_amount = parseFloat((overDueDaysCount * penaltyAmountPerDay).toFixed(2));
-                penalty_text = `Penalty ${displayPercentage}% per day ${dailyPenaltyAmount} × ${overDueDaysCount} days`;
             }
         }
 
@@ -2813,7 +2799,7 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
 
             let pending_penalty = 0;
             const group = enrollments.find(e => e.id === inst.enrollment_id)?.group;
-            const simulatedNow = await getSimulatedNow();
+            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             if (pending_installment > 0 && new Date(inst.due_date) < simulatedNow) {
                 const expected_penalty = parseFloat(inst.penalty_amount) || 0;
                 pending_penalty = Math.max(0, expected_penalty - penaltyAlreadyPaid);
@@ -2865,7 +2851,7 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
                 await fcmService.sendPushToMember(
                     member,
                     'Payment Received',
-                    `Payment of ₹${amount} collected by ${agentName}. Status: Pending Verification.`,
+                    `Payment of ₹${amount} collected by ${agentName}. It shows as paid; your receipt number will appear once the office confirms it.`,
                     {
                         type: 'PAYMENT_COLLECTED',
                         submission_id: String(submission.id),
@@ -2968,7 +2954,7 @@ const getPaymentHistoryService = async (res, userPayload, group_id, min = 0, max
         const subscriber_id = userPayload.id;
 
         // Resolve member's enrollments
-        const enrollmentWhere = { subscriber_id, delete_status: 0 };
+        const enrollmentWhere = { ...(await ticketHolderWhere(subscriber_id)), delete_status: 0 };
         if (group_id) {
             enrollmentWhere.group_id = group_id;
         }
@@ -2987,7 +2973,7 @@ const getPaymentHistoryService = async (res, userPayload, group_id, min = 0, max
         const offset = parseInt(min, 10) || 0;
 
         const { count, rows } = await CustomerPayment.findAndCountAll({
-            where: { payment_status: 1 },
+            where: { payment_status: { [Op.in]: [0, 1, 2] } },
             include: [
                 {
                     model: ChitsInstallment,
@@ -3025,6 +3011,10 @@ const getPaymentHistoryService = async (res, userPayload, group_id, min = 0, max
             const received = parseFloat(payment.received_amount) || 0;
             const penalty = parseFloat(payment.penalty_paid) || 0;
 
+            let status_label = 'Confirmed';
+            if (payment.payment_status === 0) status_label = 'Awaiting office confirmation';
+            else if (payment.payment_status === 2) status_label = 'Not confirmed by office';
+
             return {
                 id: payment.id,
                 receipt_number: payment.receipt_number,
@@ -3036,7 +3026,9 @@ const getPaymentHistoryService = async (res, userPayload, group_id, min = 0, max
                 penalty_paid: penalty.toFixed(2),
                 total_paid: (received + penalty).toFixed(2),
                 payment_mode: payment.payment_mode,
-                transaction_reference: payment.transaction_reference
+                transaction_reference: payment.transaction_reference,
+                payment_status: payment.payment_status,
+                status_label
             };
         });
 
@@ -3111,7 +3103,7 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
         const enrollment = inst.enrollment;
         const submission = payment.collection_submission;
 
-        const isSubscriber = enrollment.subscriber_id === subscriber_id;
+        const isSubscriber = await isTicketHolder(enrollment, subscriber_id);
         const isAgentForPayment = submission && submission.collection_agent_id === subscriber_id;
 
         // Verify it belongs to this subscriber or was collected by this agent
@@ -3142,7 +3134,7 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
             payment_mode: payment.payment_mode,
             transaction_reference: payment.transaction_reference,
             payment_status: payment.payment_status,
-            member_name: subscriber ? subscriber.name : 'Unknown',
+            member_name: (await holderNamesByEnrollment([enrollment.id]))[enrollment.id] || (subscriber ? subscriber.name : 'Unknown'),
             member_code: subscriber ? (subscriber.member_id || `#${subscriber.id}`) : null,
             company_name: company ? company.company_name : 'Bonagiri Chits',
             company_address: company ? company.company_address : '',
@@ -3574,7 +3566,7 @@ const getMembersByGroupIdService = async (res, reqUser, group_id, search, min, m
                     model: ChitsGroup,
                     as: 'group',
                     attributes: [],
-                    where: { chits_group_status: 1, is_deleted_status: 0 }
+                    where: { chits_group_status: { [Op.in]: [0, 1] }, is_deleted_status: 0 }
                 }
             ],
             group: ['subscriber_id', 'group.id']
@@ -3653,7 +3645,7 @@ const getMembersByCollectionAgentIdService = async (res, collection_agent_id, se
                     model: ChitsGroup,
                     as: 'group',
                     attributes: [],
-                    where: { chits_group_status: 1, is_deleted_status: 0 }
+                    where: { chits_group_status: { [Op.in]: [0, 1] }, is_deleted_status: 0 }
                 }
             ],
             group: ['subscriber_id', 'group.id']
@@ -3699,7 +3691,7 @@ const getCustomerDetailsByIdService = async (res, payload) => {
             include: [{
                 model: ChitsGroup,
                 as: 'group',
-                where: { chits_group_status: 1 },
+                where: { chits_group_status: { [Op.in]: [0, 1] } },
                 attributes: ['id', 'group_name']
             }],
             attributes: ['group_position_number']
@@ -4022,7 +4014,7 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
                             model: Enrollment,
                             as: 'enrollment',
                             required: true,
-                            where: { subscriber_id: member_id, delete_status: 0 },
+                            where: { ...(await ticketHolderWhere(member_id)), delete_status: 0 },
                             include: [
                                 {
                                     model: ChitsGroup,
@@ -4084,6 +4076,10 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
             else if (payment.payment_mode === 4) paymentModeStr = 'Bank Transfer';
             else if (payment.payment_mode === 5) paymentModeStr = 'Others';
 
+            let status_label = 'Confirmed';
+            if (payment.payment_status === 0) status_label = 'Awaiting office confirmation';
+            else if (payment.payment_status === 2) status_label = 'Not confirmed by office';
+
             groupedData[dateKey].transactions.push({
                 payment_id: payment.id,
                 receipt_id: payment.receipt_number || null,
@@ -4094,6 +4090,7 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
                 amount: amount,
                 payment_mode: paymentModeStr,
                 status: payment.payment_status,
+                status_label,
                 collection_agent_name: collectionAgentName
             });
         });

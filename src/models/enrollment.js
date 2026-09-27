@@ -13,6 +13,8 @@ module.exports = (sequelize, DataTypes) => {
       Enrollment.belongsTo(models.Member, { foreignKey: 'collection_agent_id', as: 'collection_agent' });
       Enrollment.belongsTo(models.Area, { foreignKey: 'area_id', as: 'area' });
       Enrollment.belongsTo(models.City, { foreignKey: 'nominee_city_id', as: 'nominee_city' });
+      // Joint enrollment: other members holding this ticket with the main holder (subscriber).
+      Enrollment.hasMany(models.EnrollmentJointHolder, { foreignKey: 'enrollment_id', as: 'joint_holders' });
     }
   }
   Enrollment.init({
@@ -45,6 +47,19 @@ module.exports = (sequelize, DataTypes) => {
     delete_status: {
       type: DataTypes.INTEGER,
       defaultValue: 0
+    },
+    late_join_penalty_type: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    late_join_penalty_amount: {
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: true,
+    },
+    main_holder_share: {
+      type: DataTypes.DECIMAL(5, 2),
+      allowNull: false,
+      defaultValue: 100,
     }
   }, {
     sequelize,

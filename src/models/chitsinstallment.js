@@ -49,6 +49,14 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DECIMAL(15, 2),
       defaultValue: 0.00
     },
+    penalty_from_date: {
+      type: DataTypes.DATEONLY,
+      allowNull: true
+    },
+    penalty_last_applied_date: {
+      type: DataTypes.DATEONLY,
+      allowNull: true
+    },
     payable_amount: {
       type: DataTypes.DECIMAL(15, 2),
       allowNull: false

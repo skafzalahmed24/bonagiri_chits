@@ -390,6 +390,17 @@ const getDistrictsList = async (req, res) => {
   }
 };
 
+const lateJoinPreview = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    data.company_id = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.lateJoinPreviewService(res, data, req.user);
+  } catch (error) {
+    console.error('Error in lateJoinPreview:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const storeOrUpdateEnrollment = async (req, res) => {
   try {
     const data = { ...req.body };
@@ -397,6 +408,17 @@ const storeOrUpdateEnrollment = async (req, res) => {
     return await adminService.storeOrUpdateEnrollmentService(res, data);
   } catch (error) {
     console.error('Error in storeOrUpdateEnrollment:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateJointHolders = async (req, res) => {
+  try {
+    const data = { ...req.body };
+    data.company_id = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.updateJointHoldersService(res, data);
+  } catch (error) {
+    console.error('Error in updateJointHolders:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -1733,7 +1755,9 @@ module.exports = {
   getDistrictsList,
   deleteCity,
   fetchStaticDropdown,
+  lateJoinPreview,
   storeOrUpdateEnrollment,
+  updateJointHolders,
   getAllEnrollmentDetails,
   deleteEnrollment,
   getPositionNumbers,

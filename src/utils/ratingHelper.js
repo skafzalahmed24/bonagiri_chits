@@ -10,8 +10,10 @@ const {
   Auction,
   MemberDocument,
   SuitFileInformation,
-  MemberReferral
+  MemberReferral,
+  EnrollmentJointHolder
 } = require('../models');
+const { ticketWin } = require('./jointHolders');
 
 /**
  * Calculates a member's 360-degree financial health score and star rating.
@@ -47,9 +49,17 @@ const calculateMemberRating = async (memberId, preloadedMember = null) => {
 
     const mId = member.id;
 
-    // 1. Fetch active/completed Enrollments
+    // 1. Fetch active/completed Enrollments — every ticket the member holds, joint ones
+    // included: a joint ticket's payment record counts towards each holder's rating.
+    const jointIds = (await EnrollmentJointHolder.findAll({
+      where: { member_id: mId, removed_on: null },
+      attributes: ['enrollment_id']
+    })).map((j) => j.enrollment_id);
     const enrollments = await Enrollment.findAll({
-      where: { subscriber_id: mId, delete_status: 0 },
+      where: {
+        delete_status: 0,
+        [Op.or]: [{ subscriber_id: mId }, ...(jointIds.length ? [{ id: { [Op.in]: jointIds } }] : [])]
+      },
       include: [
         {
           model: ChitsGroup,
@@ -127,10 +137,12 @@ const calculateMemberRating = async (memberId, preloadedMember = null) => {
     const totalPendingAmount = Math.max(0, totalDemandedAmount - totalPaidAmount);
 
     // 3. Auctions Won
-    const wonAuctions = await Auction.findAll({
-      where: { bidder_id: mId },
-      attributes: ['id', 'group_id', 'bid_amount', 'auction_number']
-    });
+    // Auctions won by any of the member's tickets.
+    const wonAuctions = [];
+    for (const e of enrollments) {
+      const win = await ticketWin(e);
+      if (win) wonAuctions.push(win);
+    }
 
     // 4. Member Documents
     const documents = await MemberDocument.findAll({

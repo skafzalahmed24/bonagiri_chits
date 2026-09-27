@@ -4,7 +4,7 @@ const { Op } = require('sequelize');
 const { Banner, AssignedBannerToPeople, Member, Company, sequelize } = require('../models');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { getSimulatedNow } = require('../utils/timeSimulator');
+const SystemSettingsService = require('./systemSettingsService');
 
 const parseSubscriberIds = (input) => {
   if (!input) return [];
@@ -33,7 +33,7 @@ const resolveCompanyId = (userToken) => {
 
 const getValidOffersForSubscriberHelper = async (subscriberId, companyId = null, bannerType = 2) => {
   try {
-    const simulatedNow = await getSimulatedNow();
+    const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
     const todayStr = simulatedNow.toISOString().split('T')[0];
 
     // Find assigned banner IDs for this subscriber
@@ -437,7 +437,7 @@ const getUserValidOffersService = async (res, userPayload, body = {}) => {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
-    const simulatedNow = await getSimulatedNow();
+    const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
     const todayStr = simulatedNow.toISOString().split('T')[0];
 
     // Find assigned banner IDs for this subscriber (banner_type: 2 - particular subscribers)

@@ -21,7 +21,9 @@ const {
   MemberAdvance,
   sequelize,
 } = require('../models');
+const { getGroupStartDate } = require('./adminService');
 const { Op } = require('sequelize');
+const { prizedTicketIds, holderNamesByEnrollment } = require('../utils/jointHolders');
 
 // CustomerPayment has no company_id column; scope it through installment -> enrollment.
 const companyPaymentInclude = (company_id) => [{
@@ -374,13 +376,13 @@ class ReportService {
 
     // CustomerPayments
     if (account.account_type === 'UPI') {
-      const pmts = await CustomerPayment.findAll({ where: { upi_account_id: account.id, payment_date: rangeWhere } });
+      const pmts = await CustomerPayment.findAll({ where: { upi_account_id: account.id, payment_date: rangeWhere, payment_status: 1 } });
       pmts.forEach(p => { if (p.upi_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: `Receipt - UPI`, debit: 0, credit: p.upi_amount }); });
     } else if (account.account_type === 'BANK') {
-      const pmts = await CustomerPayment.findAll({ where: { bank_account_id: account.id, payment_date: rangeWhere } });
+      const pmts = await CustomerPayment.findAll({ where: { bank_account_id: account.id, payment_date: rangeWhere, payment_status: 1 } });
       pmts.forEach(p => { if (p.bank_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: `Receipt - Bank`, debit: 0, credit: p.bank_amount }); });
     } else if (account.account_type === 'CASH') {
-      const pmts = await CustomerPayment.findAll({ where: { payment_date: rangeWhere }, include: companyPaymentInclude(company_id) });
+      const pmts = await CustomerPayment.findAll({ where: { payment_date: rangeWhere, payment_status: 1 }, include: companyPaymentInclude(company_id) });
       pmts.forEach(p => { if (p.cash_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: `Receipt - Cash`, debit: 0, credit: p.cash_amount }); });
     }
 
@@ -465,7 +467,7 @@ class ReportService {
     const transactions = [];
 
     // CustomerPayments
-    const pmts = await CustomerPayment.findAll({ where: { payment_date: rangeWhere }, include: companyPaymentInclude(company_id) });
+    const pmts = await CustomerPayment.findAll({ where: { payment_date: rangeWhere, payment_status: 1 }, include: companyPaymentInclude(company_id) });
     pmts.forEach(p => {
       if (p.cash_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: 'Receipt - Cash', account_name: cashAccName, amount: p.cash_amount, debit_credit_flag: 'CREDIT' });
       if (p.upi_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: 'Receipt - UPI', account_name: accMap[p.upi_account_id] || 'UPI', amount: p.upi_amount, debit_credit_flag: 'CREDIT' });
@@ -695,9 +697,9 @@ class ReportService {
       penaltyPaidByInstallment[k] = (penaltyPaidByInstallment[k] || 0) + (parseFloat(p.penalty_paid) || 0);
     });
 
-    // Prized = this member has won an auction in this group.
-    const auctions = await Auction.findAll({ where: { company_id }, attributes: ['group_id', 'bidder_id'] });
-    const prized = new Set(auctions.filter((a) => a.bidder_id).map((a) => a.group_id + ':' + a.bidder_id));
+    // Prized = the ticket has won an auction (a joint ticket is prized whichever holder bid).
+    const prizedIds = await prizedTicketIds(enrollments);
+    const holderNames = await holderNamesByEnrollment(enrollments.map((e) => e.id));
 
     const suits = await SuitFileInformation.findAll({ where: { company_id }, attributes: ['group_id', 'subscriber_id'] });
     const suitFiled = new Set(suits.map((s) => s.group_id + ':' + s.subscriber_id));
@@ -714,7 +716,7 @@ class ReportService {
         case 'route':
           return { id: (e.area && e.area.route_id) || 'none', label: (e.area && e.area.route && e.area.route.route_name) || 'No route' };
         case 'ps_nps':
-          return prized.has(key) ? { id: 'PS', label: 'Prized (PS)' } : { id: 'NPS', label: 'Not prized (NPS)' };
+          return prizedIds.has(e.id) ? { id: 'PS', label: 'Prized (PS)' } : { id: 'NPS', label: 'Not prized (NPS)' };
         case 'suit_file':
           return suitFiled.has(key) ? { id: 'SUIT', label: 'Suit filed' } : { id: 'NOSUIT', label: 'No suit' };
         case 'group':
@@ -754,12 +756,12 @@ class ReportService {
         bucket.membersMap[mk] = {
           enrollment_id: e.id,
           member_id: e.subscriber.id,
-          name: e.subscriber.name,
+          name: holderNames[e.id] || e.subscriber.name,
           member_code: e.subscriber.member_id,
           mobile_number: e.subscriber.mobile_number,
           group_name: (e.group && e.group.group_name) || '',
           ticket_number: e.group_position_number,
-          is_prized: prized.has(e.group_id + ':' + e.subscriber_id),
+          is_prized: prizedIds.has(e.id),
           collection_agent: (e.collection_agent && e.collection_agent.name) || '',
           business_agent: (e.business_agent && e.business_agent.name) || '',
           area_name: (e.area && e.area.area_name) || '',
@@ -896,8 +898,8 @@ class ReportService {
         company_chit_number: group.company_chit_number || '',
         pso_date: group.pso_date || null,
         pso_number: group.pso_number || '',
-        commencement_date: group.commencement_date || null,
-        start_date: group.chit_start_date || null,
+        commencement_date: getGroupStartDate(group) || null,
+        start_date: getGroupStartDate(group) || null,
         end_date: group.chit_end_date || null,
         auction_date: group.auction_date || null,
         status: group.chits_group_status,
@@ -1000,6 +1002,7 @@ class ReportService {
       ? parseFloat(incidental_charges) || 0
       : parseFloat(company?.notice_charges) || 0;
 
+    const noticeNames = await holderNamesByEnrollment(inRange.map((e) => e.id));
     const rows = [];
     inRange.forEach((e) => {
       const mine = installments.filter((i) => i.enrollment_id === e.id);
@@ -1036,7 +1039,7 @@ class ReportService {
         enrollment_id: e.id,
         member: {
           id: e.subscriber.id,
-          name: e.subscriber.name,
+          name: noticeNames[e.id] || e.subscriber.name,
           member_code: e.subscriber.member_id,
           father_name: e.subscriber.parental_name || '',
           address: e.subscriber.address_info_street_name || '',
@@ -1205,6 +1208,7 @@ class ReportService {
         })
       : [];
     const agentBySub = subs.reduce((acc, s) => { acc[s.id] = s.collection_agent ? s.collection_agent.name : ''; return acc; }, {});
+    const holderNames = await holderNamesByEnrollment(payments.map((p) => p.installment.enrollment.id));
 
     const rows = payments.map((p) => {
       const e = p.installment.enrollment;
@@ -1230,7 +1234,7 @@ class ReportService {
         id: p.id,
         payment_date: p.payment_date,
         receipt_number: p.receipt_number || '',
-        member_name: e.subscriber ? e.subscriber.name : '',
+        member_name: holderNames[e.id] || (e.subscriber ? e.subscriber.name : ''),
         member_code: e.subscriber ? e.subscriber.member_id : '',
         group_name: e.group ? e.group.group_name : '',
         ticket_number: e.group_position_number,
@@ -1301,8 +1305,8 @@ class ReportService {
       order: [['group_id', 'ASC'], ['group_position_number', 'ASC']],
     });
 
-    const auctions = await Auction.findAll({ where: { company_id }, attributes: ['group_id', 'bidder_id'] });
-    const prized = new Set(auctions.filter((a) => a.bidder_id).map((a) => a.group_id + ':' + a.bidder_id));
+    const prizedIds = await prizedTicketIds(enrollments);
+    const holderNames = await holderNamesByEnrollment(enrollments.map((e) => e.id));
 
     const rows = enrollments
       .filter((e) => e.subscriber)
@@ -1310,7 +1314,7 @@ class ReportService {
         enrollment_id: e.id,
         member_id: e.subscriber.id,
         member_code: e.subscriber.member_id,
-        name: e.subscriber.name,
+        name: holderNames[e.id] || e.subscriber.name,
         father_name: e.subscriber.parental_name || '',
         mobile_number: e.subscriber.mobile_number || '',
         group_id: e.group_id,
@@ -1318,7 +1322,7 @@ class ReportService {
         chit_amount: parseFloat(e.group.chit_amount) || 0,
         ticket_number: e.group_position_number,
         enrollment_date: e.enrollment_date,
-        is_prized: prized.has(e.group_id + ':' + e.subscriber_id),
+        is_prized: prizedIds.has(e.id),
         collection_agent: (e.collection_agent && e.collection_agent.name) || '',
         business_agent: (e.business_agent && e.business_agent.name) || '',
         area_name: (e.area && e.area.area_name) || '',
@@ -1662,8 +1666,8 @@ class ReportService {
           attributes: ['chits_installment_id', 'received_amount', 'penalty_paid'],
         })
       : [];
-    const auctions = await Auction.findAll({ where: { company_id, group_id }, attributes: ['bidder_id'] });
-    const prized = new Set(auctions.map((a) => a.bidder_id).filter(Boolean));
+    const prizedIds = await prizedTicketIds(enrollments);
+    const holderNames = await holderNamesByEnrollment(enrollments.map((e) => e.id));
 
     const rows = enrollments.map((e) => {
       const mine = installments.filter((i) => i.enrollment_id === e.id);
@@ -1675,10 +1679,10 @@ class ReportService {
       return {
         enrollment_id: e.id,
         ticket_number: e.group_position_number,
-        member_name: e.subscriber ? e.subscriber.name : '',
+        member_name: holderNames[e.id] || (e.subscriber ? e.subscriber.name : ''),
         member_code: e.subscriber ? e.subscriber.member_id : '',
         mobile_number: e.subscriber ? e.subscriber.mobile_number || '' : '',
-        is_prized: prized.has(e.subscriber_id),
+        is_prized: prizedIds.has(e.id),
         installments_due: mine.filter((i) => String(i.due_date) <= asOn).length,
         due: round2(due),
         paid: round2(paid),
