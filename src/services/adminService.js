@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, sequelize } = require('../models');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, SelfTransfer, BorrowRepay, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
@@ -5788,9 +5788,14 @@ const getDashboardSummaryService = async (res, companyId) => {
       }
     });
 
-    // 3. commission_earned & dividend_distributed
+    // 3. commission_earned & dividend_distributed & self_transfer & borrow
     const commissionEarned = await Auction.sum('company_commission', { where: { company_id: companyId } });
     const dividendDistributed = await Auction.sum('dividend_payable', { where: { company_id: companyId } });
+    const selfTransferTotal = await SelfTransfer.sum('amount', { where: { company_id: companyId } }) || 0;
+
+    const totalBorrowed = await BorrowRepay.sum('amount', { where: { company_id: companyId, type: 'BORROW' } }) || 0;
+    const totalRepaid = await BorrowRepay.sum('amount', { where: { company_id: companyId, type: 'REPAY' } }) || 0;
+    const borrowOutstanding = Math.max(0, totalBorrowed - totalRepaid);
 
     // 4. Statistics
     const activeMembersCount = await Member.count({ where: { company_id: companyId, is_deleted_status: 0 } });
@@ -5924,14 +5929,19 @@ const getDashboardSummaryService = async (res, companyId) => {
         collection_month: collectionMonth || 0,
         outstanding_dues: outstandingDues, 
         commission_earned: commissionEarned || 0,
-        dividend_distributed: dividendDistributed || 0
+        dividend_distributed: dividendDistributed || 0,
+        self_transfer_total: selfTransferTotal || 0,
+        borrow_outstanding: borrowOutstanding || 0,
+        total_borrowed: totalBorrowed || 0,
+        total_repaid: totalRepaid || 0
       },
       statistics: {
         total_active_members: activeMembersCount || 0,
+        self_transfers_total: selfTransferTotal || 0,
+        borrow_outstanding: borrowOutstanding || 0,
         active_chit_groups: activeGroupsCount || 0,
         new_enrollments_this_month: newEnrollmentsCount || 0,
-        birthdays_this_month: birthdayList.length,
-        available_group_capacity: 0 // Will implement with slot_filled_count logic later if needed
+        birthdays_this_month: birthdayList.length
       },
       alerts: {
         upcoming_auctions: upcomingAuctions.map(g => ({ group_name: g.group_name, auction_date: g.auction_date })),
@@ -6191,6 +6201,22 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
       ];
     }
 
+    const enrollmentInclude = {
+      model: Enrollment,
+      as: 'enrollment',
+      required: true,
+      where: { company_id: companyId, ...(member_id && { subscriber_id: member_id }) },
+      include: [
+        { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'mobile_number'] },
+        { 
+          model: ChitsGroup, 
+          as: 'group', 
+          attributes: ['id', 'group_name'], 
+          ...(group_id && { where: { id: group_id } }) 
+        }
+      ]
+    };
+
     const { count, rows } = await CustomerPayment.findAndCountAll({
       where,
       include: [
@@ -6198,21 +6224,7 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
           model: ChitsInstallment,
           as: 'installment',
           required: true,
-          include: [{
-            model: Enrollment,
-            as: 'enrollment',
-            required: true,
-            where: { company_id: companyId, ...(member_id && { subscriber_id: member_id }) },
-            include: [
-              { model: Member, as: 'subscriber', attributes: ['id', 'name'] },
-              { 
-                model: ChitsGroup, 
-                as: 'group', 
-                attributes: ['id', 'group_name'], 
-                ...(group_id && { where: { id: group_id } }) 
-              }
-            ]
-          }]
+          include: [enrollmentInclude]
         },
         {
           model: CollectionAgentAmount,
@@ -6232,6 +6244,8 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
 
     const formatted = rows.map(p => {
       const isDirect = !p.collection_agent_amount_id;
+      const recAmt = parseFloat(p.received_amount || 0);
+      const penAmt = parseFloat(p.penalty_paid || 0);
       return {
         id: p.id,
         receipt_number: p.receipt_number,
@@ -6242,14 +6256,21 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
         upi_account: p.upi_account?.name || null,
         bank_amount: p.bank_amount || 0,
         bank_account: p.bank_account?.name || null,
+        cheque_number: p.cheque_number || null,
+        cheque_date: p.cheque_date || null,
+        narration: p.narration || null,
         is_advance: !!p.member_advance_id,
         transaction_reference: p.transaction_reference,
-        received_amount: p.received_amount,
-        penalty_paid: p.penalty_paid,
-        total_paid: (parseFloat(p.received_amount || 0) + parseFloat(p.penalty_paid || 0)).toFixed(2),
+        received_amount: recAmt,
+        penalty_paid: penAmt,
+        total_paid: (recAmt + penAmt).toFixed(2),
         member_name: p.installment?.enrollment?.subscriber?.name || null,
+        member_code: p.installment?.enrollment?.subscriber?.member_id || null,
+        phone_number: p.installment?.enrollment?.subscriber?.mobile_number || null,
         group_name: p.installment?.enrollment?.group?.group_name || null,
+        ticket_number: p.installment?.enrollment?.group_position_number || null,
         installment_no: p.installment?.installment_no || null,
+        installment_amount: p.installment?.payable_amount || null,
         source: isDirect ? 'direct' : 'collection_agent',
         recorded_by: isDirect
           ? { name: p.recorded_by_name, role: p.recorded_by_role }
@@ -6258,7 +6279,79 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
       };
     });
 
-    return successResponse(res, statusCodes.OK, 'Receipts retrieved successfully', { count, rows: formatted });
+    // Summary calculation for all matching items
+    let summary = {
+      total_receipts: count,
+      total_amount: '0.00',
+      total_received: '0.00',
+      total_penalty: '0.00',
+      total_cash: '0.00',
+      total_upi: '0.00',
+      total_bank: '0.00'
+    };
+
+    try {
+      const allMatching = await CustomerPayment.findAll({
+        where,
+        attributes: [
+          [sequelize.fn('SUM', sequelize.col('received_amount')), 'sum_received'],
+          [sequelize.fn('SUM', sequelize.col('penalty_paid')), 'sum_penalty'],
+          [sequelize.fn('SUM', sequelize.col('cash_amount')), 'sum_cash'],
+          [sequelize.fn('SUM', sequelize.col('upi_amount')), 'sum_upi'],
+          [sequelize.fn('SUM', sequelize.col('bank_amount')), 'sum_bank'],
+        ],
+        include: [
+          {
+            model: ChitsInstallment,
+            as: 'installment',
+            required: true,
+            attributes: [],
+            include: [{
+              model: Enrollment,
+              as: 'enrollment',
+              required: true,
+              attributes: [],
+              where: { company_id: companyId, ...(member_id && { subscriber_id: member_id }) },
+              ...(group_id && {
+                include: [{
+                  model: ChitsGroup,
+                  as: 'group',
+                  attributes: [],
+                  where: { id: group_id }
+                }]
+              })
+            }]
+          },
+          ...(collection_agent_id ? [{
+            model: CollectionAgentAmount,
+            as: 'collection_submission',
+            required: true,
+            attributes: [],
+            where: { collection_agent_id }
+          }] : [])
+        ],
+        raw: true
+      });
+
+      if (allMatching && allMatching[0]) {
+        const row = allMatching[0];
+        const sRec = parseFloat(row.sum_received || 0);
+        const sPen = parseFloat(row.sum_penalty || 0);
+        summary = {
+          total_receipts: count,
+          total_amount: (sRec + sPen).toFixed(2),
+          total_received: sRec.toFixed(2),
+          total_penalty: sPen.toFixed(2),
+          total_cash: (parseFloat(row.sum_cash || 0)).toFixed(2),
+          total_upi: (parseFloat(row.sum_upi || 0)).toFixed(2),
+          total_bank: (parseFloat(row.sum_bank || 0)).toFixed(2)
+        };
+      }
+    } catch (sumErr) {
+      console.warn('Could not compute aggregate summary:', sumErr.message);
+    }
+
+    return successResponse(res, statusCodes.OK, 'Receipts retrieved successfully', { count, rows: formatted, summary });
   } catch (error) {
     console.error('Error in getAllReceiptsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
