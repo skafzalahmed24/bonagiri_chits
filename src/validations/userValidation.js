@@ -248,6 +248,12 @@ const getMemberDocumentsSchema = Joi.object({
   member_id: Joi.number().integer().required()
 });
 
+const getDocumentSubmissionsSchema = Joi.object({
+  collection_agent_id: Joi.number().integer().required(),
+  min: Joi.number().integer().min(0).default(0),
+  max: Joi.number().integer().min(1).default(50)
+});
+
 const DOCUMENT_TYPE_KEYS = ['aadhar', 'pan_card', 'bank_statement', 'photos', 'bond_paper_100', 'pay_slips', 'id_cards', 'property_documents', 'cheques'];
 const docTick = Joi.object({
   document_type: Joi.string().valid(...DOCUMENT_TYPE_KEYS).required(),
@@ -386,6 +392,7 @@ module.exports = {
   getSubmissionsSchema,
   submitCollectionPaymentSchema,
   getMemberDocumentsSchema,
+  getDocumentSubmissionsSchema,
   uploadMemberDocumentSchema,
   getAllGallerySchema,
   registerTokenSchema,

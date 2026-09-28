@@ -3204,6 +3204,107 @@ const getMemberDocumentsService = async (res, userPayload, group_id, member_id) 
     }
 };
 
+const getDocumentSubmissionsService = async (res, userPayload, body) => {
+    try {
+        const { collection_agent_id, min, max } = body;
+        const limit = parseInt(max, 10) || 50;
+        const offset = parseInt(min, 10) || 0;
+
+        const enrollments = await Enrollment.findAll({
+            where: { collection_agent_id, delete_status: 0 },
+            include: [
+                { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id'] },
+                { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name'] }
+            ],
+            raw: true,
+            nest: true
+        });
+
+        const uniqueKeys = new Set();
+        const targets = [];
+        for (const e of enrollments) {
+            if (!e.subscriber || !e.group) continue;
+            const key = `${e.group_id}_${e.subscriber.id}`;
+            if (!uniqueKeys.has(key)) {
+                uniqueKeys.add(key);
+                targets.push({
+                    group_id: e.group_id,
+                    group_name: e.group.group_name,
+                    member_id: e.subscriber.id,
+                    member_name: e.subscriber.name,
+                    member_code: e.subscriber.member_id
+                });
+            }
+        }
+
+        const groupIds = [...new Set(targets.map(t => t.group_id))];
+        const memberIds = [...new Set(targets.map(t => t.member_id))];
+
+        const documents = await MemberDocument.findAll({
+            where: {
+                group_id: { [Op.in]: groupIds },
+                member_id: { [Op.in]: memberIds }
+            },
+            raw: true
+        });
+
+        const docMap = {};
+        for (const d of documents) {
+            docMap[`${d.group_id}_${d.member_id}`] = d;
+        }
+
+        const rows = [];
+        for (const t of targets) {
+            const key = `${t.group_id}_${t.member_id}`;
+            const docRecord = docMap[key];
+            if (!docRecord || !docRecord.documents) continue;
+
+            const docs = Object.values(docRecord.documents);
+            let submitted_count = 0;
+            let last_submitted_at = null;
+            let hasSubmittedOrRejected = false;
+
+            for (const d of docs) {
+                if (d.status >= 1) hasSubmittedOrRejected = true;
+                if (d.status === 1) {
+                    submitted_count++;
+                    if (d.uploaded_at) {
+                        if (!last_submitted_at || new Date(d.uploaded_at) > new Date(last_submitted_at)) {
+                            last_submitted_at = d.uploaded_at;
+                        }
+                    }
+                }
+            }
+
+            if (hasSubmittedOrRejected) {
+                rows.push({
+                    ...t,
+                    submitted_count,
+                    total_count: 4,
+                    last_submitted_at
+                });
+            }
+        }
+
+        rows.sort((a, b) => {
+            const dateA = a.last_submitted_at ? new Date(a.last_submitted_at).getTime() : 0;
+            const dateB = b.last_submitted_at ? new Date(b.last_submitted_at).getTime() : 0;
+            return dateB - dateA;
+        });
+
+        const total = rows.length;
+        const paginatedRows = rows.slice(offset, offset + limit);
+
+        return successResponse(res, statusCodes.OK, 'Document submissions retrieved successfully', {
+            rows: paginatedRows,
+            total
+        });
+    } catch (error) {
+        console.error('Error in getDocumentSubmissionsService:', error);
+        return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+    }
+};
+
 const uploadMemberDocumentService = async (res, body, userPayload) => {
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
@@ -4732,6 +4833,7 @@ module.exports = {
     markNotificationReadService,
     markAllNotificationsReadService,
     deleteNotificationService,
+    getDocumentSubmissionsService,
     getMemberDocumentsService,
     memberDocumentsView,
     uploadMemberDocumentService,

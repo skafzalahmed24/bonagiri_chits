@@ -412,6 +412,15 @@ const deleteNotification = async (req, res) => {
   }
 };
 
+const getDocumentSubmissions = async (req, res) => {
+  try {
+    return await userService.getDocumentSubmissionsService(res, req.user, req.body);
+  } catch (error) {
+    console.error('Error in getDocumentSubmissions:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getMemberDocuments = async (req, res) => {
   try {
     const { group_id, member_id } = req.body;
@@ -577,6 +586,7 @@ module.exports = {
   markNotificationRead,
   markAllNotificationsRead,
   deleteNotification,
+  getDocumentSubmissions,
   getMemberDocuments,
   uploadMemberDocument,
   getGroupsByCollectionAgentId,
