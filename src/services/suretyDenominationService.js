@@ -1,5 +1,6 @@
 const { Surety, CashDenomination, Enrollment, Member, ChitsGroup, PaymentAccount } = require('../models');
 const { Op } = require('sequelize');
+const { DOCUMENT_KEYS, DOC_STATUS, checklist, checklistSummary } = require('../utils/documentChecklist');
 
 const round2 = (n) => parseFloat(Number(n || 0).toFixed(2));
 
@@ -12,6 +13,7 @@ const SURETY_FIELDS = [
 
 const suretyRow = (s) => {
   const e = s.enrollment;
+  const documents = checklist(s.documents);
   return {
     id: s.id,
     enrollment_id: s.enrollment_id,
@@ -22,8 +24,16 @@ const suretyRow = (s) => {
     group_name: e && e.group ? e.group.group_name : '',
     ticket_number: e ? e.group_position_number : null,
     created_at: s.createdAt,
+    // Added with the collection-agent surety flow; existing office rows read source 'office'.
+    alternate_mobile_number: s.alternate_mobile_number || null,
+    source: s.source || 'office',
+    added_by_name: s.added_by_member ? s.added_by_member.name : null,
+    documents,
+    documents_summary: checklistSummary(documents),
   };
 };
+
+const addedByInclude = { model: Member, as: 'added_by_member', attributes: ['id', 'name'], required: false };
 
 const enrollmentInclude = {
   model: Enrollment,
@@ -38,7 +48,7 @@ const enrollmentInclude = {
 async function listSureties({ company_id, enrollment_id, group_id }) {
   const where = { company_id, is_deleted_status: 0 };
   if (enrollment_id) where.enrollment_id = enrollment_id;
-  const include = [{ ...enrollmentInclude, ...(group_id ? { where: { group_id }, required: true } : {}) }];
+  const include = [{ ...enrollmentInclude, ...(group_id ? { where: { group_id }, required: true } : {}) }, addedByInclude];
   const rows = await Surety.findAll({ where, include, order: [['createdAt', 'DESC']] });
   return { count: rows.length, rows: rows.map(suretyRow) };
 }
@@ -52,6 +62,10 @@ async function saveSurety({ company_id, data }) {
 
   const patch = Object.fromEntries(SURETY_FIELDS.map((f) => [f, data[f] === '' ? null : data[f] ?? null]));
   patch.name = String(data.name).trim();
+  // Only when the form sends it, so a screen without the field never wipes an agent's entry.
+  if (Object.prototype.hasOwnProperty.call(data, 'alternate_mobile_number')) {
+    patch.alternate_mobile_number = data.alternate_mobile_number === '' ? null : data.alternate_mobile_number ?? null;
+  }
 
   let surety;
   if (data.id) {
@@ -61,7 +75,36 @@ async function saveSurety({ company_id, data }) {
   } else {
     surety = await Surety.create({ ...patch, company_id, enrollment_id: enrollment.id });
   }
-  const fresh = await Surety.findByPk(surety.id, { include: [enrollmentInclude] });
+  const fresh = await Surety.findByPk(surety.id, { include: [enrollmentInclude, addedByInclude] });
+  return suretyRow(fresh);
+}
+
+/**
+ * The office verifies or rejects one surety document (status 'verified' | 'rejected').
+ * Works on documents the agent ticked and on ones handed in at the office. A rejection needs a
+ * reason; the agent sees it and can collect the document again.
+ */
+async function reviewSuretyDocument({ company_id, data, reviewer }) {
+  const { surety_id, document_type, status } = data || {};
+  if (!DOCUMENT_KEYS.includes(document_type)) throw new Error('Unknown document type');
+  if (!['verified', 'rejected'].includes(status)) throw new Error("Status must be 'verified' or 'rejected'");
+  const reason = String(data.rejection_reason || '').trim();
+  if (status === 'rejected' && !reason) throw new Error('Give a reason for rejecting the document');
+
+  const surety = await Surety.findOne({ where: { id: surety_id, company_id, is_deleted_status: 0 } });
+  if (!surety) throw new Error('Surety not found');
+
+  const documents = { ...(surety.documents || {}) };
+  documents[document_type] = {
+    status: status === 'verified' ? DOC_STATUS.VERIFIED : DOC_STATUS.REJECTED,
+    rejection_reason: status === 'rejected' ? reason : null,
+    updated_at: new Date().toISOString(),
+    updated_by: reviewer || 'office',
+  };
+  surety.set('documents', documents);
+  surety.changed('documents', true);
+  await surety.save();
+  const fresh = await Surety.findByPk(surety.id, { include: [enrollmentInclude, addedByInclude] });
   return suretyRow(fresh);
 }
 
@@ -120,6 +163,6 @@ async function saveDenomination({ company_id, data, counted_by }) {
 }
 
 module.exports = {
-  listSureties, saveSurety, deleteSurety,
+  listSureties, saveSurety, deleteSurety, reviewSuretyDocument,
   getDenomination, saveDenomination, denominationTotal, NOTES,
 };

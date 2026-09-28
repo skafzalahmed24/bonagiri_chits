@@ -396,6 +396,7 @@ router.post('/reports/day-book', authMiddleware.authenticateToken, authMiddlewar
 router.post('/surety/get-all', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.T_SURETY_ENTRY, MODULES.R_SURETY_LIST]), suretyDenominationController.listSureties);
 router.post('/surety/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SURETY_ENTRY), suretyDenominationController.saveSurety);
 router.post('/surety/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SURETY_ENTRY), suretyDenominationController.deleteSurety);
+router.post('/surety/documents/review', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SURETY_ENTRY), suretyDenominationController.reviewSuretyDocument);
 router.post('/denomination/get-by-date', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_DENOMINATIONS), suretyDenominationController.getDenomination);
 router.post('/denomination/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_DENOMINATIONS), suretyDenominationController.saveDenomination);
 // Picker lookups (names and ids only) for any office user; portal members are refused.

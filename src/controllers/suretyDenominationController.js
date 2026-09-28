@@ -25,6 +25,10 @@ exports.listSureties = handle(
 );
 exports.saveSurety = handle((req, company_id) => svc.saveSurety({ company_id, data: req.body }), 'Surety saved successfully');
 exports.deleteSurety = handle((req, company_id) => svc.deleteSurety({ company_id, id: req.body.id }), 'Surety removed');
+exports.reviewSuretyDocument = handle(
+  (req, company_id) => svc.reviewSuretyDocument({ company_id, data: req.body, reviewer: countedBy(req.user) }),
+  'Document updated'
+);
 
 exports.getDenomination = handle(
   (req, company_id) => svc.getDenomination({ company_id, count_date: req.body.count_date }),

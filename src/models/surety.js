@@ -5,6 +5,7 @@ module.exports = (sequelize, DataTypes) => {
   class Surety extends Model {
     static associate(models) {
       Surety.belongsTo(models.Enrollment, { foreignKey: 'enrollment_id', as: 'enrollment' });
+      Surety.belongsTo(models.Member, { foreignKey: 'added_by', as: 'added_by_member', constraints: false });
     }
   }
 
@@ -21,6 +22,11 @@ module.exports = (sequelize, DataTypes) => {
     id_proof_type: DataTypes.STRING,
     id_proof_number: DataTypes.STRING,
     remarks: DataTypes.TEXT,
+    alternate_mobile_number: DataTypes.STRING,
+    // { <document_type>: { status, rejection_reason?, updated_at, updated_by } } — see utils/documentChecklist.js
+    documents: DataTypes.JSON,
+    source: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'office' },
+    added_by: DataTypes.INTEGER,
     is_deleted_status: { type: DataTypes.INTEGER, defaultValue: 0 },
   }, {
     sequelize,

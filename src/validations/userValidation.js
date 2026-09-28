@@ -329,7 +329,35 @@ const getUserValidOffersSchema = Joi.object({
   max: Joi.number().integer().min(1).optional()
 });
 
+// Sureties collected by collection agents (services/agentSuretyService.js)
+const suretyDocumentTypes = ['aadhar', 'pan_card', 'bank_statement', 'photos', 'bond_paper_100', 'pay_slips', 'id_cards', 'property_documents', 'cheques'];
+const listAgentSuretiesSchema = Joi.object({
+  group_id: Joi.string().uuid().required(),
+  member_id: Joi.number().integer().required(),
+});
+const saveAgentSuretySchema = Joi.object({
+  id: Joi.number().integer().optional(),
+  enrollment_id: Joi.number().integer().required(),
+  name: Joi.string().trim().max(100).required().messages({ 'any.required': "Enter the surety's name", 'string.empty': "Enter the surety's name" }),
+  mobile_number: Joi.string().trim().max(20).required().messages({ 'any.required': 'Enter a valid 10-digit mobile number', 'string.empty': 'Enter a valid 10-digit mobile number' }),
+  alternate_mobile_number: Joi.string().trim().max(20).allow('', null).optional(),
+  relation: Joi.string().trim().max(50).required().messages({ 'any.required': 'Choose how the surety is related to the member', 'string.empty': 'Choose how the surety is related to the member' }),
+  address: Joi.string().trim().max(500).allow('', null).optional(),
+});
+const setAgentSuretyDocumentSchema = Joi.object({
+  surety_id: Joi.number().integer().required(),
+  document_type: Joi.string().valid(...suretyDocumentTypes).required(),
+  submitted: Joi.boolean().required(),
+});
+const removeAgentSuretySchema = Joi.object({
+  surety_id: Joi.number().integer().required(),
+});
+
 module.exports = {
+  listAgentSuretiesSchema,
+  saveAgentSuretySchema,
+  setAgentSuretyDocumentSchema,
+  removeAgentSuretySchema,
   getUserValidOffersSchema,
   getChitTypesSchema,
   getHomeRecordSchema,
