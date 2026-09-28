@@ -1,6 +1,6 @@
 const userService = require('../services/userService');
 const adminService = require('../services/adminService');
-const { errorResponse } = require('../utils/responseHelper');
+const { errorResponse, successResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 const { ConfigureBusinessAgentCommission } = require('../models');
 const { isBusinessAgent } = require('../utils/authHelpers');
@@ -424,6 +424,18 @@ const getMemberDocuments = async (req, res) => {
 
 const uploadMemberDocument = async (req, res) => {
   try {
+    // The Documents screen's single Save: member ticks + sureties in one call (documents[] / sureties[]).
+    // Without those arrays this is the single-document upload, unchanged.
+    if (req.body && (Array.isArray(req.body.documents) || Array.isArray(req.body.sureties))) {
+      const agentSuretyService = require('../services/agentSuretyService');
+      try {
+        const data = await agentSuretyService.saveAll(req.user, req.body);
+        return successResponse(res, statusCodes.OK, 'Documents saved', data);
+      } catch (err) {
+        if (err instanceof agentSuretyService.HttpError) return errorResponse(res, err.status, err.message);
+        throw err;
+      }
+    }
     return await userService.uploadMemberDocumentService(res, req.body, req.user);
   } catch (error) {
     console.error('Error in uploadMemberDocument:', error);

@@ -8,7 +8,7 @@
  * office's Surety Entry screen and Surety List report show agent-added sureties too.
  */
 const { Op } = require('sequelize');
-const { Surety, Enrollment, Member, EnrollmentJointHolder } = require('../models');
+const { Surety, Enrollment, Member, EnrollmentJointHolder, MemberDocument, NotificationHistory, sequelize } = require('../models');
 const { DOCUMENT_KEYS, DOC_STATUS, checklist, checklistSummary } = require('../utils/documentChecklist');
 
 const MAX_SURETIES_PER_TICKET = 2;
@@ -77,14 +77,12 @@ const holderMobiles = async (enrollment) => {
 
 // ------------------------------------------------------------------ list
 
-/** Every ticket this member holds in the group (as main or joint holder) that the agent collects for. */
-async function listForMember(userPayload, { group_id, member_id }) {
-  const agent = await agentOf(userPayload);
+/** The member's tickets in the group (as main or joint holder) that the agent collects for. */
+const memberTickets = async (agent, group_id, member_id) => {
   const jointIds = (await EnrollmentJointHolder.findAll({
     where: { member_id, removed_on: null }, attributes: ['enrollment_id'],
   })).map((j) => j.enrollment_id);
-
-  const tickets = await Enrollment.findAll({
+  return Enrollment.findAll({
     where: {
       group_id,
       company_id: agent.company_id,
@@ -92,9 +90,14 @@ async function listForMember(userPayload, { group_id, member_id }) {
       delete_status: 0,
       [Op.or]: [{ subscriber_id: member_id }, ...(jointIds.length ? [{ id: { [Op.in]: jointIds } }] : [])],
     },
-    attributes: ['id', 'group_position_number'],
     order: [['group_position_number', 'ASC']],
   });
+};
+
+/** Every ticket this member holds in the group that the agent collects for, with its sureties. */
+async function listForMember(userPayload, { group_id, member_id }) {
+  const agent = await agentOf(userPayload);
+  const tickets = await memberTickets(agent, group_id, member_id);
   if (!tickets.length) throw new HttpError(404, 'Member not found in your collections for this group');
 
   const sureties = await Surety.findAll({
@@ -117,96 +120,227 @@ async function listForMember(userPayload, { group_id, member_id }) {
   };
 }
 
-// ------------------------------------------------------------------ save
+// ----------------------------------------------------------- one save
 
-async function saveSurety(userPayload, body) {
+const MEMBER_DOC_STATUSES = [DOC_STATUS.NOT_SUBMITTED, DOC_STATUS.SUBMITTED];
+
+/** Surety details as sent, in stored form (not yet validated). */
+const readDetails = (e) => ({
+  name: String(e.name || '').trim(),
+  mobile_number: digits(e.mobile_number),
+  alternate_mobile_number: digits(e.alternate_mobile_number) || null,
+  relation: String(e.relation || '').trim(),
+  address: String(e.address || '').trim() || null,
+});
+
+/** Validate details that are being saved (new, or changed). */
+const checkDetails = (v, fail) => {
+  if (!v.name) fail(400, "Enter the surety's name");
+  if (v.mobile_number.length !== 10) fail(400, 'Enter a valid 10-digit mobile number');
+  if (v.alternate_mobile_number && v.alternate_mobile_number.length !== 10) fail(400, 'Enter a valid 10-digit alternate mobile number');
+  if (v.alternate_mobile_number && v.alternate_mobile_number === v.mobile_number) fail(400, 'The alternate mobile is the same as the mobile number');
+  if (!v.relation) fail(400, 'Choose how the surety is related to the member');
+};
+
+// Stored rows may be office-entered (spaces in numbers, blank relation), so compare in the same normal form.
+const DETAIL_FIELDS = ['name', 'mobile_number', 'alternate_mobile_number', 'relation', 'address'];
+const detailsChanged = (surety, values) => {
+  const stored = readDetails(surety);
+  return DETAIL_FIELDS.some((f) => String(stored[f] ?? '') !== String(values[f] ?? ''));
+};
+
+/** Apply ticks (0 / 1) to a stored surety checklist; verified documents are never changed here. */
+const applyTicks = (stored, ticks, who) => {
+  const next = { ...(stored || {}) };
+  let changed = false;
+  for (const t of ticks || []) {
+    const cur = next[t.document_type] || {};
+    const curStatus = Number.isInteger(cur.status) ? cur.status : DOC_STATUS.NOT_SUBMITTED;
+    const want = Number(t.status);
+    if (curStatus === DOC_STATUS.VERIFIED) continue; // only the office changes a verified document
+    if (![DOC_STATUS.NOT_SUBMITTED, DOC_STATUS.SUBMITTED].includes(want)) continue; // 2 / 3 sent back as shown: no change
+    if (want === curStatus) continue;
+    next[t.document_type] = { status: want, rejection_reason: null, updated_at: new Date().toISOString(), updated_by: who };
+    changed = true;
+  }
+  return { next, changed };
+};
+
+/**
+ * The Documents screen's single Save: the member's document ticks and the member's sureties
+ * (add, edit, remove, and each surety's document ticks) in one call, all or nothing.
+ *
+ *   documents: [{ document_type, status }]              member ticks: 1 submitted, 0 not submitted
+ *   sureties:  [{ id?, enrollment_id?, remove?, name, mobile_number, alternate_mobile_number?,
+ *                 relation, address?, documents?: [{ document_type, status }] }]
+ *
+ * Everything is checked before anything is written, and only what changed is written.
+ */
+async function saveAll(userPayload, { group_id, member_id, documents = [], sureties = [] }) {
   const agent = await agentOf(userPayload);
-  const enrollment = await agentTicket(agent, body.enrollment_id);
+  const tickets = await memberTickets(agent, group_id, member_id);
+  if (!tickets.length) throw new HttpError(404, 'Member not found in your collections for this group');
 
-  const name = String(body.name || '').trim();
-  const mobile = digits(body.mobile_number);
-  const altMobile = digits(body.alternate_mobile_number);
-  const relation = String(body.relation || '').trim();
-  const address = String(body.address || '').trim();
-  if (!name) throw new HttpError(400, "Enter the surety's name");
-  if (mobile.length !== 10) throw new HttpError(400, 'Enter a valid 10-digit mobile number');
-  if (altMobile && altMobile.length !== 10) throw new HttpError(400, 'Enter a valid 10-digit alternate mobile number');
-  if (altMobile && altMobile === mobile) throw new HttpError(400, 'The alternate mobile is the same as the mobile number');
-  if (!relation) throw new HttpError(400, 'Choose how the surety is related to the member');
-
-  if ((await holderMobiles(enrollment)).has(mobile)) {
-    throw new HttpError(400, "The surety can't be the member (or a holder of this ticket)");
+  // ---- member documents
+  for (const d of documents) {
+    if (!DOCUMENT_KEYS.includes(d.document_type)) throw new HttpError(400, `Unknown document type: ${d.document_type}`);
+    if (!MEMBER_DOC_STATUSES.includes(Number(d.status))) throw new HttpError(400, 'Document status must be 1 (submitted) or 0 (not submitted)');
   }
 
-  let surety = null;
-  if (body.id) {
-    surety = await agentSurety(agent, body.id);
-    if (surety.enrollment_id !== enrollment.id) throw new HttpError(404, 'Surety not found');
-    if (surety.source !== 'agent') throw new HttpError(403, 'Only the office can change this surety');
-    if (hasVerifiedDocument(surety)) throw new HttpError(400, "The office has already verified this surety's documents; ask the office to change it");
-  }
-
-  const others = await Surety.findAll({
-    where: { enrollment_id: enrollment.id, is_deleted_status: 0, ...(surety ? { id: { [Op.ne]: surety.id } } : {}) },
-    attributes: ['id', 'mobile_number'],
+  // ---- sureties: check everything and build a plan
+  const existing = await Surety.findAll({
+    where: { enrollment_id: { [Op.in]: tickets.map((t) => t.id) }, company_id: agent.company_id, is_deleted_status: 0 },
   });
-  if (others.some((o) => digits(o.mobile_number) === mobile)) throw new HttpError(400, 'This person is already a surety on this ticket');
-  if (!surety && others.length >= MAX_SURETIES_PER_TICKET) {
-    throw new HttpError(400, `A ticket can have at most ${MAX_SURETIES_PER_TICKET} sureties`);
+  const byId = new Map(existing.map((x) => [x.id, x]));
+  const plan = [];
+  const holders = {};
+  for (const [i, e] of sureties.entries()) {
+    const label = sureties.length > 1 ? `Surety ${i + 1}: ` : '';
+    const fail = (status, msg) => { throw new HttpError(status, label + msg); };
+
+    let surety = null;
+    let ticket;
+    if (e.id) {
+      surety = byId.get(Number(e.id));
+      if (!surety) fail(404, 'Surety not found');
+      ticket = tickets.find((t) => t.id === surety.enrollment_id);
+    } else {
+      if (e.remove) continue; // a surety added and removed on screen before saving: nothing to do
+      ticket = e.enrollment_id
+        ? tickets.find((t) => t.id === Number(e.enrollment_id))
+        : (tickets.length === 1 ? tickets[0] : null);
+      if (!ticket) {
+        if (e.enrollment_id) fail(404, 'Ticket not found in your collections');
+        fail(400, 'This member has more than one ticket in this group; send enrollment_id to choose the ticket');
+      }
+    }
+    for (const d of e.documents || []) {
+      if (!DOCUMENT_KEYS.includes(d.document_type)) fail(400, `Unknown document type: ${d.document_type}`);
+    }
+
+    if (e.remove) {
+      if (surety.source !== 'agent') fail(403, 'Only the office can remove this surety');
+      if (hasVerifiedDocument(surety)) fail(400, "The office has already verified this surety's documents; ask the office to remove it");
+      plan.push({ kind: 'remove', surety, ticket });
+      continue;
+    }
+
+    const values = readDetails(e);
+    const changed = !surety || detailsChanged(surety, values);
+    if (surety && changed) {
+      if (surety.source !== 'agent') fail(403, 'Only the office can change this surety');
+      if (hasVerifiedDocument(surety)) fail(400, "The office has already verified this surety's documents; ask the office to change it");
+    }
+    if (changed) {
+      // Unchanged details are not re-checked: ticking documents on an office-entered surety must still work.
+      checkDetails(values, fail);
+      holders[ticket.id] = holders[ticket.id] || await holderMobiles(ticket);
+      if (holders[ticket.id].has(values.mobile_number)) fail(400, "The surety can't be the member (or a holder of this ticket)");
+    }
+    plan.push({ kind: surety ? 'update' : 'create', surety, ticket, values, changed, documents: e.documents || [] });
   }
 
-  const values = { name, mobile_number: mobile, alternate_mobile_number: altMobile || null, relation, address: address || null };
-  if (surety) {
-    await surety.update(values);
-  } else {
-    surety = await Surety.create({
-      ...values,
-      company_id: agent.company_id,
-      enrollment_id: enrollment.id,
-      source: 'agent',
-      added_by: agent.id,
-      documents: {},
-    });
+  // ---- the result per ticket: at most 2 sureties, no person twice
+  for (const t of tickets) {
+    const mobiles = [];
+    for (const x of existing.filter((y) => y.enrollment_id === t.id)) {
+      const p = plan.find((q) => q.surety && q.surety.id === x.id);
+      if (p && p.kind === 'remove') continue;
+      mobiles.push(p ? p.values.mobile_number : digits(x.mobile_number));
+    }
+    plan.filter((p) => p.kind === 'create' && p.ticket.id === t.id).forEach((p) => mobiles.push(p.values.mobile_number));
+    if (mobiles.length > MAX_SURETIES_PER_TICKET) throw new HttpError(400, `A ticket can have at most ${MAX_SURETIES_PER_TICKET} sureties`);
+    if (new Set(mobiles).size !== mobiles.length) throw new HttpError(400, 'This person is already a surety on this ticket');
   }
-  return suretyView(await Surety.findByPk(surety.id), agent.id);
-}
 
-// ------------------------------------------------------------ documents
+  // ---- write, all or nothing
+  const who = `agent:${agent.id}`;
+  const changedMemberDocs = [];
+  await sequelize.transaction(async (transaction) => {
+    if (documents.length) {
+      let rec = await MemberDocument.findOne({ where: { group_id, member_id }, transaction });
+      const stored = rec && rec.documents ? { ...rec.documents } : {};
+      for (const d of documents) {
+        const cur = stored[d.document_type] || {};
+        const want = Number(d.status);
+        const curStatus = cur.status !== undefined && cur.status !== null ? Number(cur.status) : 0;
+        if (curStatus === want) continue;
+        stored[d.document_type] = { ...cur, url: cur.url ?? null, status: want, uploaded_at: new Date().toISOString() };
+        changedMemberDocs.push(d.document_type);
+      }
+      if (changedMemberDocs.length) {
+        if (!rec) {
+          await MemberDocument.create({ group_id, member_id, documents: stored, uploaded_by: agent.id, status: 1 }, { transaction });
+        } else {
+          rec.set('documents', stored);
+          rec.changed('documents', true);
+          rec.uploaded_by = agent.id;
+          rec.status = 1;
+          await rec.save({ transaction });
+        }
+      }
+    }
 
-/** Tick (submitted) or untick one document. A verified document can't be changed by the agent. */
-async function setDocument(userPayload, { surety_id, document_type, submitted }) {
-  const agent = await agentOf(userPayload);
-  if (!DOCUMENT_KEYS.includes(document_type)) throw new HttpError(400, 'Unknown document type');
-  const surety = await agentSurety(agent, surety_id);
+    for (const p of plan) {
+      if (p.kind === 'remove') {
+        await p.surety.update({ is_deleted_status: 1 }, { transaction }); // soft delete: guarantor history is evidence
+        continue;
+      }
+      let row = p.surety;
+      if (p.kind === 'create') {
+        row = await Surety.create({
+          ...p.values, company_id: agent.company_id, enrollment_id: p.ticket.id, source: 'agent', added_by: agent.id, documents: {},
+        }, { transaction });
+      } else if (p.changed) {
+        await row.update(p.values, { transaction });
+      }
+      const ticks = applyTicks(row.documents, p.documents, who);
+      if (ticks.changed) {
+        row.set('documents', ticks.next);
+        row.changed('documents', true);
+        await row.save({ transaction });
+      }
+    }
+  });
 
-  const documents = { ...(surety.documents || {}) };
-  const current = documents[document_type] || {};
-  if (current.status === DOC_STATUS.VERIFIED) throw new HttpError(400, 'The office has already verified this document');
+  // One note to the office when member documents changed (the single-document upload sends one per document).
+  if (changedMemberDocs.length) {
+    try {
+      const member = await Member.findByPk(member_id, { attributes: ['id', 'name', 'company_id'] });
+      if (member && member.company_id) {
+        await NotificationHistory.create({
+          user_id: String(member.company_id),
+          user_type: 'STAFF',
+          company_id: member.company_id,
+          title: 'Member Documents Updated',
+          body: `${agent.name || 'Collection agent'} updated ${changedMemberDocs.length} document(s) for member ${member.name || 'Member'}.`,
+          data_payload: { type: 'DOCUMENT_UPLOADED', member_id: String(member_id), group_id: String(group_id), document_types: changedMemberDocs },
+          is_read: false,
+        });
+      }
+    } catch (err) {
+      console.error('[NOTIF] Failed to save documents-updated notification:', err.message);
+    }
+  }
 
-  documents[document_type] = {
-    status: submitted ? DOC_STATUS.SUBMITTED : DOC_STATUS.NOT_SUBMITTED,
-    rejection_reason: null, // a resubmission clears the old rejection
-    updated_at: new Date().toISOString(),
-    updated_by: `agent:${agent.id}`,
+  const { memberDocumentsView } = require('./userService');
+  return {
+    documents: await memberDocumentsView(group_id, member_id),
+    sureties: await listForMember(userPayload, { group_id, member_id }),
   };
-  surety.set('documents', documents);
-  surety.changed('documents', true);
-  await surety.save();
-  return suretyView(surety, agent.id);
 }
 
-// --------------------------------------------------------------- remove
-
-async function removeSurety(userPayload, { surety_id }) {
-  const agent = await agentOf(userPayload);
-  const surety = await agentSurety(agent, surety_id);
-  if (surety.source !== 'agent') throw new HttpError(403, 'Only the office can remove this surety');
-  if (hasVerifiedDocument(surety)) throw new HttpError(400, "The office has already verified this surety's documents; ask the office to remove it");
-  await surety.update({ is_deleted_status: 1 }); // soft delete: guarantor history is evidence
-  return { id: surety.id };
+/** The sureties block for the documents list API; empty when the member isn't in the agent's collections. */
+async function suretiesBlock(userPayload, { group_id, member_id }) {
+  try {
+    return await listForMember(userPayload, { group_id, member_id });
+  } catch (err) {
+    if (err instanceof HttpError) return { max_sureties_per_ticket: MAX_SURETIES_PER_TICKET, relations: RELATIONS, tickets: [] };
+    throw err;
+  }
 }
 
 module.exports = {
-  listForMember, saveSurety, setDocument, removeSurety,
+  listForMember, saveAll, suretiesBlock,
   HttpError, MAX_SURETIES_PER_TICKET, RELATIONS,
 };

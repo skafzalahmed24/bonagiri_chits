@@ -3149,48 +3149,55 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
     }
 };
 
+/** The member's 9-document checklist in one group (shared by the documents list and the one-Save upload). */
+const memberDocumentsView = async (group_id, member_id) => {
+    const docRecord = await MemberDocument.findOne({ where: { group_id, member_id } });
+    const documents = docRecord && docRecord.documents ? docRecord.documents : {};
+    const documentDefinitions = [
+        { key: 'aadhar', title: 'Aadhaar Card _ (Both sides)', aliases: ['aadhaar', 'aadhaar_card'] },
+        { key: 'pan_card', title: 'PAN Card', aliases: ['pan'] },
+        { key: 'bank_statement', title: 'Bank Statement', aliases: ['bank_id'] },
+        { key: 'photos', title: "Photo's", aliases: ['photo'] },
+        { key: 'bond_paper_100', title: '100 ruppees Bond Paper', aliases: ['bond_paper'] },
+        { key: 'pay_slips', title: 'Pay Slips', aliases: ['pay_slip', 'salary_slips'] },
+        { key: 'id_cards', title: 'ID Cards (Employee Card)', aliases: ['id_card', 'employee_card'] },
+        { key: 'property_documents', title: 'Property Dcoments Zerox', aliases: ['property_documents_xerox'] },
+        { key: 'cheques', title: "Cheque's", aliases: ['cheque'] }
+    ];
+
+    const result = documentDefinitions.map(def => {
+        let doc = documents[def.key];
+        if (!doc && def.aliases) {
+            for (const alias of def.aliases) {
+                if (documents[alias]) {
+                    doc = documents[alias];
+                    break;
+                }
+            }
+        }
+        doc = doc || { url: null, status: 0 };
+        return {
+            document_type: def.key,
+            document_title: def.title,
+            document_url: doc.url || null,
+            status: doc.status !== undefined && doc.status !== null ? doc.status : 0
+        };
+    });
+
+    return result;
+};
+
 const getMemberDocumentsService = async (res, userPayload, group_id, member_id) => {
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
-        const docRecord = await MemberDocument.findOne({
-            where: { group_id, member_id }
-        });
+        const result = await memberDocumentsView(group_id, member_id);
 
-        let documents = docRecord && docRecord.documents ? docRecord.documents : {};
+        // Optional sureties on the member's ticket(s) this agent collects for (empty otherwise).
+        const { suretiesBlock } = require('./agentSuretyService');
+        const sureties = await suretiesBlock(userPayload, { group_id, member_id });
 
-        const documentDefinitions = [
-            { key: 'aadhar', title: 'Aadhaar Card _ (Both sides)', aliases: ['aadhaar', 'aadhaar_card'] },
-            { key: 'pan_card', title: 'PAN Card', aliases: ['pan'] },
-            { key: 'bank_statement', title: 'Bank Statement', aliases: ['bank_id'] },
-            { key: 'photos', title: "Photo's", aliases: ['photo'] },
-            { key: 'bond_paper_100', title: '100 ruppees Bond Paper', aliases: ['bond_paper'] },
-            { key: 'pay_slips', title: 'Pay Slips', aliases: ['pay_slip', 'salary_slips'] },
-            { key: 'id_cards', title: 'ID Cards (Employee Card)', aliases: ['id_card', 'employee_card'] },
-            { key: 'property_documents', title: 'Property Dcoments Zerox', aliases: ['property_documents_xerox'] },
-            { key: 'cheques', title: "Cheque's", aliases: ['cheque'] }
-        ];
-
-        const result = documentDefinitions.map(def => {
-            let doc = documents[def.key];
-            if (!doc && def.aliases) {
-                for (const alias of def.aliases) {
-                    if (documents[alias]) {
-                        doc = documents[alias];
-                        break;
-                    }
-                }
-            }
-            doc = doc || { url: null, status: 0 };
-            return {
-                document_type: def.key,
-                document_title: def.title,
-                document_url: doc.url || null,
-                status: doc.status !== undefined && doc.status !== null ? doc.status : 0
-            };
-        });
-
-        return successResponse(res, statusCodes.OK, 'Member documents retrieved', { documents: result });
+        return successResponse(res, statusCodes.OK, 'Member documents retrieved', { documents: result, sureties });
     } catch (error) {
         console.error('Error in getMemberDocumentsService:', error);
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -4726,6 +4733,7 @@ module.exports = {
     markAllNotificationsReadService,
     deleteNotificationService,
     getMemberDocumentsService,
+    memberDocumentsView,
     uploadMemberDocumentService,
     getGroupsByCollectionAgentIdService,
     getMembersByGroupIdService,

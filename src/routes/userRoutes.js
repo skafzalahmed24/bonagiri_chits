@@ -8,7 +8,6 @@ const userValidation = require('../validations/userValidation');
 const adminValidation = require('../validations/adminValidation');
 const platformSupportController = require('../controllers/platformSupportController');
 const bannerController = require('../controllers/bannerController');
-const agentSuretyController = require('../controllers/agentSuretyController');
 const { authRateLimiter } = require('../middlewares/rateLimiter');
 
 // get home record based on subscriber_id
@@ -57,11 +56,6 @@ router.post('/collection-agent/submissions', authMiddleware.authenticateToken, v
 router.post('/collection-agent/submit-payment', authMiddleware.authenticateToken, validate(userValidation.submitCollectionPaymentSchema), userController.submitCollectionPayment);
 router.post('/collection-agent/documents/list', authMiddleware.authenticateToken, validate(userValidation.getMemberDocumentsSchema), userController.getMemberDocuments);
 router.post('/collection-agent/documents/upload', authMiddleware.authenticateToken, validate(userValidation.uploadMemberDocumentSchema), userController.uploadMemberDocument);
-// Sureties collected with the documents (optional, per ticket) — only on tickets the agent collects for.
-router.post('/collection-agent/sureties/list', authMiddleware.authenticateToken, validate(userValidation.listAgentSuretiesSchema), agentSuretyController.list);
-router.post('/collection-agent/sureties/save', authMiddleware.authenticateToken, validate(userValidation.saveAgentSuretySchema), agentSuretyController.save);
-router.post('/collection-agent/sureties/document', authMiddleware.authenticateToken, validate(userValidation.setAgentSuretyDocumentSchema), agentSuretyController.setDocument);
-router.post('/collection-agent/sureties/remove', authMiddleware.authenticateToken, validate(userValidation.removeAgentSuretySchema), agentSuretyController.remove);
 router.post('/collection-agent/groups-by-agent', authMiddleware.authenticateToken, validate(userValidation.getGroupsByCollectionAgentIdSchema), userController.getGroupsByCollectionAgentId);
 router.post('/collection-agent/members-by-group', authMiddleware.authenticateToken, validate(userValidation.getMembersByGroupIdSchema), userController.getMembersByGroupId);
 router.post('/collection-agent/members', authMiddleware.authenticateToken, validate(userValidation.getMembersByCollectionAgentIdSchema), userController.getMembersByCollectionAgentId);

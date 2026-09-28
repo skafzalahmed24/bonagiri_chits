@@ -248,9 +248,17 @@ const getMemberDocumentsSchema = Joi.object({
   member_id: Joi.number().integer().required()
 });
 
+const DOCUMENT_TYPE_KEYS = ['aadhar', 'pan_card', 'bank_statement', 'photos', 'bond_paper_100', 'pay_slips', 'id_cards', 'property_documents', 'cheques'];
+const docTick = Joi.object({
+  document_type: Joi.string().valid(...DOCUMENT_TYPE_KEYS).required(),
+  status: Joi.number().integer().valid(0, 1, 2, 3).required(),
+});
+
 const uploadMemberDocumentSchema = Joi.object({
   group_id: Joi.string().uuid().required(),
   member_id: Joi.number().integer().required(),
+
+  // ---- Single-document upload (unchanged): one member document per call.
   document_type: Joi.string().valid(
     'aadhar', 'aadhaar', 'aadhaar_card',
     'pan_card', 'pan',
@@ -263,11 +271,30 @@ const uploadMemberDocumentSchema = Joi.object({
     'cheques', 'cheque',
     'upi_details',
     'certificates'
-  ).required(),
+  ).when('documents', {
+    is: Joi.exist(),
+    then: Joi.optional(),
+    otherwise: Joi.when('sureties', { is: Joi.exist(), then: Joi.optional(), otherwise: Joi.required() }),
+  }),
   document_url: Joi.string().allow('', null).optional(),
-  status: Joi.number().integer().valid(0, 1, 2).optional()
-});
+  status: Joi.number().integer().valid(0, 1, 2).optional(),
 
+  // ---- The Documents screen's single Save: send these instead of document_type.
+  // Member ticks (status 1 submitted, 0 not submitted).
+  documents: Joi.array().items(docTick).max(20).optional(),
+  // The member's sureties: new (no id), edited (id), or removed (id + remove: true); at most 2 per ticket.
+  sureties: Joi.array().max(10).items(Joi.object({
+    id: Joi.number().integer().optional(),
+    enrollment_id: Joi.number().integer().optional(),
+    remove: Joi.boolean().optional(),
+    name: Joi.string().trim().max(100).allow('', null).optional(),
+    mobile_number: Joi.string().trim().max(20).allow('', null).optional(),
+    alternate_mobile_number: Joi.string().trim().max(20).allow('', null).optional(),
+    relation: Joi.string().trim().max(50).allow('', null).optional(),
+    address: Joi.string().trim().max(500).allow('', null).optional(),
+    documents: Joi.array().items(docTick).max(20).optional(),
+  })).optional(),
+});
 
 const getAllGallerySchema = Joi.object({
   company_id: Joi.string().uuid().optional(),
@@ -329,35 +356,7 @@ const getUserValidOffersSchema = Joi.object({
   max: Joi.number().integer().min(1).optional()
 });
 
-// Sureties collected by collection agents (services/agentSuretyService.js)
-const suretyDocumentTypes = ['aadhar', 'pan_card', 'bank_statement', 'photos', 'bond_paper_100', 'pay_slips', 'id_cards', 'property_documents', 'cheques'];
-const listAgentSuretiesSchema = Joi.object({
-  group_id: Joi.string().uuid().required(),
-  member_id: Joi.number().integer().required(),
-});
-const saveAgentSuretySchema = Joi.object({
-  id: Joi.number().integer().optional(),
-  enrollment_id: Joi.number().integer().required(),
-  name: Joi.string().trim().max(100).required().messages({ 'any.required': "Enter the surety's name", 'string.empty': "Enter the surety's name" }),
-  mobile_number: Joi.string().trim().max(20).required().messages({ 'any.required': 'Enter a valid 10-digit mobile number', 'string.empty': 'Enter a valid 10-digit mobile number' }),
-  alternate_mobile_number: Joi.string().trim().max(20).allow('', null).optional(),
-  relation: Joi.string().trim().max(50).required().messages({ 'any.required': 'Choose how the surety is related to the member', 'string.empty': 'Choose how the surety is related to the member' }),
-  address: Joi.string().trim().max(500).allow('', null).optional(),
-});
-const setAgentSuretyDocumentSchema = Joi.object({
-  surety_id: Joi.number().integer().required(),
-  document_type: Joi.string().valid(...suretyDocumentTypes).required(),
-  submitted: Joi.boolean().required(),
-});
-const removeAgentSuretySchema = Joi.object({
-  surety_id: Joi.number().integer().required(),
-});
-
 module.exports = {
-  listAgentSuretiesSchema,
-  saveAgentSuretySchema,
-  setAgentSuretyDocumentSchema,
-  removeAgentSuretySchema,
   getUserValidOffersSchema,
   getChitTypesSchema,
   getHomeRecordSchema,
