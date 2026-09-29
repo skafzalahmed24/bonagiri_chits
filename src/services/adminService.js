@@ -5,7 +5,7 @@ const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
 const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, EnrollmentJointHolder, SelfTransfer, BorrowRepay, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
-const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials } = require('../utils/schemeHelpers');
+const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials, nextOpenAuctionNumber, isFinalOpenMonth, dividendTargetMonth, lastInstalmentDate } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 const SystemSettingsService = require('./systemSettingsService');
 const twilioService = require('./twilioService');
@@ -1061,9 +1061,20 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
       chitsGroupData.chit_start_date = chitsGroupData.commencement_date;
     }
 
+    // The end date is derived (the last instalment's due date); the form has no field for it, so
+    // whatever the client sends (its default is today) is ignored.
+    delete chitsGroupData.chit_end_date;
+    const deriveEndDate = (existing = {}) => lastInstalmentDate(
+      toDateStr(chitsGroupData.commencement_date ?? existing.commencement_date ?? chitsGroupData.chit_start_date ?? existing.chit_start_date),
+      chitsGroupData.no_of_installments ?? existing.no_of_installments,
+      chitsGroupData.due_date_number_count !== undefined ? chitsGroupData.due_date_number_count : existing.due_date_number_count
+    );
+
     if (id) {
       const chitsGroup = await ChitsGroup.findByPk(id);
       if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+      const derivedEnd = deriveEndDate(chitsGroup);
+      if (derivedEnd) chitsGroupData.chit_end_date = derivedEnd;
 
       // Schedule change detection
       const scheduleFieldsChanged =
@@ -1104,6 +1115,8 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
       return successResponse(res, statusCodes.OK, 'Chits group updated successfully', chitsGroup);
     } else {
       console.log('Creating new ChitsGroup with data:', chitsGroupData);
+      const derivedEnd = deriveEndDate();
+      if (derivedEnd) chitsGroupData.chit_end_date = derivedEnd;
       const tempGroupData = { ...chitsGroupData, chits_group_status: 0 };
       const statusToSet = await computeGroupStatus(tempGroupData);
       tempGroupData.chits_group_status = statusToSet;
@@ -1236,8 +1249,7 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search,
     const rowsWithCounts = await Promise.all(chitsGroups.rows.map(async (group) => {
       const groupData = group.toJSON();
       const enrollmentsCount = await Enrollment.count({ where: { group_id: groupData.id, delete_status: 0 } });
-      const selfChitsCount = await SelfChit.count({ where: { group_id: groupData.id, is_deleted_status: 0 } });
-      groupData.slot_filled_count = enrollmentsCount + selfChitsCount;
+      groupData.slot_filled_count = await takenSeatCount(groupData.id);
       groupData.active_members_count = enrollmentsCount;
       return groupData;
     }));
@@ -1350,9 +1362,7 @@ const checkChitsGroupCapacityService = async (res, id) => {
     if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
 
     const enrollmentsCount = await Enrollment.count({ where: { group_id: id, delete_status: 0 } });
-    const selfChitsCount = await SelfChit.count({ where: { group_id: id, is_deleted_status: 0 } });
-
-    const totalTaken = enrollmentsCount + selfChitsCount;
+    const totalTaken = await takenSeatCount(id);
     const requiredPositions = parseInt(chitsGroup.no_of_installments) || 0;
     const isFull = totalTaken >= requiredPositions;
 
@@ -1519,6 +1529,19 @@ const fetchStaticDropdownService = async (res, type_id, search) => {
     console.error('Error in fetchStaticDropdownService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
+};
+
+/**
+ * Seats taken in a group. A self chit only reserves a seat; the company's own chit is both an
+ * enrollment and a self chit on the same seat, so a self chit counts only when no enrollment
+ * already sits on its slot.
+ */
+const takenSeatCount = async (group_id, transaction) => {
+  const opts = transaction ? { transaction } : {};
+  const enrollments = await Enrollment.findAll({ where: { group_id, delete_status: 0 }, attributes: ['group_position_number'], ...opts });
+  const selfChits = await SelfChit.findAll({ where: { group_id, is_deleted_status: 0 }, attributes: ['slot_id'], ...opts });
+  const occupied = new Set(enrollments.map((e) => String(e.group_position_number)));
+  return enrollments.length + selfChits.filter((sc) => !occupied.has(String(sc.slot_id))).length;
 };
 
 const checkAndUpdateChitFullStatus = async (group_id) => {
@@ -1706,8 +1729,7 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
           return { error: 'BAD_REQUEST', msg: 'This chit group is completed; members can\'t join it.' };
         }
 
-        const taken = await Enrollment.count({ where: { group_id: group.id, delete_status: 0 }, transaction: t })
-          + await SelfChit.count({ where: { group_id: group.id, is_deleted_status: 0 }, transaction: t });
+        const taken = await takenSeatCount(group.id, t);
         const positions = parseInt(group.no_of_installments) || 0;
         if (taken >= positions) {
           return { error: 'BAD_REQUEST', msg: `This chit group is full (${taken}/${positions} positions taken).` };
@@ -2285,6 +2307,21 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       transaction
     }) : null;
 
+    // Open auction, new record: the auction number skips the company's month, the last instalment is
+    // recorded at the full chit amount (no discount, no dividend), and the dividend is booked against
+    // the next non-company month.
+    let openAuctionNumber = null;
+    if (!id && groupForMath && !groupForMath.scheme_configuration_id) {
+      const lastForNumber = await Auction.findOne({ where: { group_id: targetGroupId }, order: [['auction_number', 'DESC']], transaction });
+      openAuctionNumber = nextOpenAuctionNumber(lastForNumber ? lastForNumber.auction_number : 0, groupForMath);
+      if (openAuctionNumber > (parseInt(groupForMath.no_of_installments, 10) || 0)) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Auction schedule is already finished for this group');
+      }
+      if (isFinalOpenMonth(openAuctionNumber, groupForMath)) auctionData.bid_amount = groupForMath.chit_amount;
+      auctionData.dividend_installment_no = dividendTargetMonth(openAuctionNumber, groupForMath);
+    }
+
     if (groupForMath && !groupForMath.scheme_configuration_id && auctionData.bid_amount) {
       const bid_amount = parseFloat(auctionData.bid_amount);
       const chitAmount = parseFloat(groupForMath.chit_amount) || 0;
@@ -2330,7 +2367,7 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
           transaction
         });
         const lastRecorded = lastAuction ? parseInt(lastAuction.auction_number, 10) : 0;
-        auctionData.auction_number = lastRecorded + 1;
+        auctionData.auction_number = openAuctionNumber != null ? openAuctionNumber : lastRecorded + 1;
 
         // Duplicate-winner guard for new auctions
         if (auctionData.bidder_id) {
@@ -2432,17 +2469,6 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Group is not started, does not exist, or you have no access');
     }
 
-    // Bid discount floor check
-    if (reqBody.bid_amount && !group.scheme_configuration_id) {
-      const maxDiscountPct = parseFloat(group.max_ceiling_in) || 0;
-      const chitAmount = parseFloat(group.chit_amount) || 0;
-      const minBid = chitAmount * (1 - maxDiscountPct / 100);
-      if (parseFloat(reqBody.bid_amount) < minBid) {
-        await transaction.rollback();
-        return errorResponse(res, statusCodes.BAD_REQUEST, `Bid amount cannot be lower than the maximum discount floor (₹${minBid})`);
-      }
-    }
-
     // 2. Bidder checks
     // A member may bid through any ticket they hold (as main or joint holder). The
     // ticket that wins is their first ticket in the group that hasn't won yet.
@@ -2494,7 +2520,8 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       }
     }
 
-    const nextAuctionNumber = Math.max(lastRecorded, companyMonths) + 1;
+    // Open auction: skip the company's month. Fixed schemes: skip their company months.
+    const nextAuctionNumber = schemeConfig ? Math.max(lastRecorded, companyMonths) + 1 : nextOpenAuctionNumber(lastRecorded, group);
 
     // Guard against exceeding schedule
     if (nextAuctionNumber > (group.no_of_installments || 0)) {
@@ -2522,13 +2549,24 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       }
       auctionData.bid_amount = derivedWinningAmount;
     } else {
-      const bid_amount = parseFloat(reqBody.bid_amount);
+      const chitAmount = parseFloat(group.chit_amount) || 0;
+      // The last instalment has no auction discount: its winner is recorded at the full chit amount.
+      const isFinalMonth = isFinalOpenMonth(nextAuctionNumber, group);
+      const bid_amount = isFinalMonth ? chitAmount : parseFloat(reqBody.bid_amount);
       if (isNaN(bid_amount) || bid_amount <= 0) {
         await transaction.rollback();
         return errorResponse(res, statusCodes.BAD_REQUEST, 'bid_amount is required for Open Auction groups');
       }
+      if (!isFinalMonth) {
+        const maxDiscountPct = parseFloat(group.max_ceiling_in) || 0;
+        const minBid = chitAmount * (1 - maxDiscountPct / 100);
+        if (bid_amount < minBid) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, `Bid amount cannot be lower than the maximum discount floor (₹${minBid})`);
+        }
+      }
       auctionData.bid_amount = bid_amount;
-      const chitAmount = parseFloat(group.chit_amount) || 0;
+      auctionData.dividend_installment_no = dividendTargetMonth(nextAuctionNumber, group);
       const installments = parseInt(group.no_of_installments, 10) || 1;
       const companyCommissionPct = parseFloat(group.company_commission) || 0;
 

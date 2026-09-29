@@ -680,14 +680,19 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
             const schemeConfig = group && group.scheme_configuration_id
                 ? schemeConfigs.find(sc => sc.id === group.scheme_configuration_id)
                 : null;
-            const auction = allAuctions.find(a => a.group_id === group.id && a.auction_number === installment.installment_no);
+            // The auction whose dividend reduced this instalment (an open auction's dividend lands on the next non-company month)
+            const auction = allAuctions.find(a => a.group_id === group.id && dividendMonthOf(a) === installment.installment_no);
             const totalMembersCount = (group && groupCountMap[group.id]) || parseInt(group?.no_of_installments, 10) || 20;
 
             const fallbackInstallment = parseFloat(group?.installment_amount) || (parseFloat(group?.chit_amount) / (parseInt(group?.no_of_installments, 10) || 12)) || parseFloat(installment.payable_amount) || 0.00;
             const originalAmount = (auction || schemeConfig ? getSchemeOriginalAmount(schemeConfig, auction) : fallbackInstallment) || fallbackInstallment;
             
             let profitAmount = 0.00;
-            if (auction) {
+            if (auction && !schemeConfig) {
+                // Open auction: the dividend is what was actually taken off this instalment. (The stored
+                // dividend is the whole pool, so dividing it here would guess the per-member share.)
+                profitAmount = Math.max(0, originalAmount - (parseFloat(installment.payable_amount) || originalAmount));
+            } else if (auction) {
                 if (auction.dividend && parseFloat(auction.dividend) > 0) {
                     const divVal = parseFloat(auction.dividend);
                     profitAmount = divVal < originalAmount ? divVal : divVal / (totalMembersCount || 20);
@@ -880,7 +885,7 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
     }
 };
 
-const { getSchemeWinningAmount, getSchemeOriginalAmount } = require('../utils/schemeHelpers');
+const { getSchemeWinningAmount, getSchemeOriginalAmount, dividendMonthOf, lastInstalmentDate } = require('../utils/schemeHelpers');
 
 const getBidDetailsService = async (res, group_id, userPayload, bodySubscriberId = null) => {
     try {
@@ -1153,12 +1158,8 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         let endDateVal = group.chit_end_date || group.term_date || group.maturity_date;
 
         if (!endDateVal && startDateVal) {
-            const sDate = new Date(startDateVal);
-            if (!isNaN(sDate.getTime())) {
-                const eDate = new Date(sDate);
-                eDate.setMonth(eDate.getMonth() + totalMonthsCount);
-                endDateVal = eDate.toISOString().split('T')[0];
-            }
+            // Instalment 1 falls on the start date, so the last one is (instalments - 1) months later.
+            endDateVal = lastInstalmentDate(startDateVal, totalMonthsCount, group.due_date_number_count);
         }
 
         const startDateFormatted = formatDateDMY(startDateVal);
@@ -1353,9 +1354,17 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
 
             const matchingInstallment = allUserInstallments.find(inst => inst.installment_no === auction.auction_number);
 
+            // The dividend that reduces this month's instalment comes from the auction that targets this
+            // month: the previous auction for open-auction groups, the same one for older auctions.
+            const dividendAuction = auctions.find(a => dividendMonthOf(a) === auction.auction_number) || null;
+
             // Calculate profit primarily from auction dividend if available
-            if (auction.dividend && parseFloat(auction.dividend) > 0) {
-                const divVal = parseFloat(auction.dividend);
+            if (dividendAuction && !schemeConfig && matchingInstallment) {
+                // Open auction: the dividend is what was actually taken off this instalment.
+                const payableVal = parseFloat(matchingInstallment.payable_amount);
+                profitAmountPerTicket = Math.max(0, originalAmountPerTicket - (Number.isNaN(payableVal) ? originalAmountPerTicket : payableVal));
+            } else if (dividendAuction && dividendAuction.dividend && parseFloat(dividendAuction.dividend) > 0) {
+                const divVal = parseFloat(dividendAuction.dividend);
                 if (divVal < originalAmountPerTicket) {
                     profitAmountPerTicket = divVal;
                 } else {

@@ -36,7 +36,8 @@ module.exports = (sequelize, DataTypes) => {
     dividend_payable: DataTypes.DECIMAL(15, 2),
     subscription_amount: DataTypes.DECIMAL(15, 2),
     dividend: DataTypes.DECIMAL(15, 2),
-    net_payable: DataTypes.DECIMAL(15, 2)
+    net_payable: DataTypes.DECIMAL(15, 2),
+    dividend_installment_no: DataTypes.INTEGER
   }, {
     sequelize,
     modelName: 'Auction',
