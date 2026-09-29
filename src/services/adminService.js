@@ -1064,7 +1064,7 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
     // The end date is derived (the last instalment's due date); the form has no field for it, so
     // whatever the client sends (its default is today) is ignored.
     delete chitsGroupData.chit_end_date;
-    const deriveEndDate = (existing = {}) => lastInstalmentDate(
+    const deriveEndDate = (existing = {}) => require('../utils/schemeHelpers').lastInstalmentDate(
       toDateStr(chitsGroupData.commencement_date ?? existing.commencement_date ?? chitsGroupData.chit_start_date ?? existing.chit_start_date),
       chitsGroupData.no_of_installments ?? existing.no_of_installments,
       chitsGroupData.due_date_number_count !== undefined ? chitsGroupData.due_date_number_count : existing.due_date_number_count
