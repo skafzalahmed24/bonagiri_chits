@@ -1070,6 +1070,14 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     model: Member,
                     as: 'subscriber',
                     attributes: ['id', 'name', 'member_id']
+                },
+                {
+                    model: EnrollmentJointHolder,
+                    as: 'joint_holders',
+                    required: false,
+                    where: { removed_on: null },
+                    attributes: ['id', 'member_id', 'share_percent'],
+                    include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'rep_by_first_name', 'sur_name', 'member_id'] }]
                 }
             ],
             order: [['group_position_number', 'ASC']]
@@ -1079,6 +1087,56 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         if (!userEnrollments || userEnrollments.length === 0) {
             return errorResponse(res, statusCodes.NOT_FOUND, 'No enrollment found for this subscriber in this group');
         }
+
+        const ALPHABETS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+
+        const getEnrollmentHoldersInfo = (enr, currentMemberId) => {
+            const isMain = Number(enr.subscriber_id) === Number(currentMemberId);
+            const mainHolderName = enr.subscriber ? (enr.subscriber.name || `${enr.subscriber.rep_by_first_name || ''} ${enr.subscriber.sur_name || ''}`.trim() || 'Unknown') : 'Unknown';
+            const mainHolder = {
+                letter: 'A',
+                member_id: enr.subscriber_id,
+                name: mainHolderName,
+                is_main_holder: true,
+                share_percent: parseFloat(enr.main_holder_share) || ((enr.joint_holders && enr.joint_holders.length > 0) ? 50 : 100)
+            };
+
+            const jointList = (enr.joint_holders || []).filter(j => !j.removed_on).map((j, idx) => ({
+                letter: ALPHABETS[idx + 1] || String.fromCharCode(66 + idx),
+                member_id: j.member_id,
+                name: j.member ? (j.member.name || `${j.member.rep_by_first_name || ''} ${j.member.sur_name || ''}`.trim() || 'Joint Member') : 'Joint Member',
+                is_main_holder: false,
+                share_percent: parseFloat(j.share_percent) || 0
+            }));
+
+            const allHolders = [mainHolder, ...jointList];
+            const isJoint = allHolders.length > 1;
+
+            let currentHolder = allHolders.find(h => Number(h.member_id) === Number(currentMemberId));
+            if (!currentHolder) {
+                currentHolder = isMain ? mainHolder : (allHolders[0] || mainHolder);
+            }
+
+            const posNumber = enr.group_position_number;
+            const formattedTicketNo = "#" + String(posNumber).padStart(2, '0');
+            const ticketCode = isJoint ? `${formattedTicketNo}-${currentHolder.letter}` : formattedTicketNo;
+
+            return {
+                allHolders,
+                isJoint,
+                currentHolder,
+                myLetter: isJoint ? currentHolder.letter : null,
+                ticketNumber: formattedTicketNo,
+                ticketCode,
+                holderName: currentHolder.name,
+                mySharePercent: currentHolder.share_percent
+            };
+        };
+
+        const getUserEnrollmentSharePercent = (enr, currentMemberId) => {
+            const info = getEnrollmentHoldersInfo(enr, currentMemberId);
+            return info.mySharePercent;
+        };
 
         // Helper date formatting functions
         const formatDateDMY = (dateStr) => {
@@ -1199,7 +1257,21 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         });
         const awaitingConfirmation = Object.values(awaitingByInst).sort((a, b) => a.installment_no - b.installment_no);
         const singleChitAmount = parseFloat(group.chit_amount) || 0.00;
-        const totalChitAmountForUser = singleChitAmount * userEnrollments.length;
+
+        // Calculate member's share-weighted chit amount and monthly bid amount
+        let totalUserShareChitAmount = 0;
+        let totalUserShareMonthlyBid = 0;
+
+        userEnrollments.forEach((enr) => {
+            const sharePercent = getUserEnrollmentSharePercent(enr, subscriber_id);
+            const chitAmt = singleChitAmount;
+            const monthlyAmt = parseFloat(group.installment_amount) || (chitAmt / totalMonthsCount) || 0;
+
+            totalUserShareChitAmount += (chitAmt * (sharePercent / 100));
+            totalUserShareMonthlyBid += (monthlyAmt * (sharePercent / 100));
+        });
+
+        const totalChitAmountForUser = totalUserShareChitAmount;
         const groupPendingAmount = Math.max(0, totalChitAmountForUser - totalPaidAmount);
         const groupAdvanceAmount = Math.max(0, totalPaidAmount - totalChitAmountForUser);
 
@@ -1216,11 +1288,20 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
 
         let nextPaymentDue = null;
         if (upcomingInstallment) {
-            const dueAmount = parseFloat(upcomingInstallment.payable_amount) || 0.00;
-            const grossAmount = parseFloat(group.installment_amount) || (singleChitAmount / totalMonthsCount) || 0.00;
-
             const dueTicket = userEnrollments.find((e) => e.id === upcomingInstallment.enrollment_id);
             const isWinner = dueTicket ? !!(await ticketWin(dueTicket)) : false;
+
+            const upcomingSharePercent = dueTicket ? getUserEnrollmentSharePercent(dueTicket, subscriber_id) : 100;
+
+            const rawDueAmount = parseFloat(upcomingInstallment.payable_amount) || 0.00;
+            const rawGrossAmount = parseFloat(group.installment_amount) || (singleChitAmount / totalMonthsCount) || 0.00;
+            const rawPenaltyAmount = Math.max(0, parseFloat(upcomingInstallment.penalty_amount) || 0);
+
+            // Proportional to member's share
+            const dueAmount = parseFloat((rawDueAmount * (upcomingSharePercent / 100)).toFixed(2));
+            const grossAmount = parseFloat((rawGrossAmount * (upcomingSharePercent / 100)).toFixed(2));
+            const penaltyAmount = parseFloat((rawPenaltyAmount * (upcomingSharePercent / 100)).toFixed(2));
+            const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
 
             const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
             simulatedNow.setHours(0, 0, 0, 0);
@@ -1229,38 +1310,32 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
 
             const overDueDaysCount = upcomingInstallment.over_due_days_count || 0;
             const isOverdue = overDueDaysCount > 0;
-            const penaltyAmount = Math.max(0, parseFloat(upcomingInstallment.penalty_amount) || 0);
 
             const penaltyText = penaltyAmount > 0
                 ? `Penalty ₹${penaltyAmount} (${overDueDaysCount} days)`
                 : null;
 
-            const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
-
-            let countdownStart = new Date(simulatedNow);
-            if (group && group.auction_date) {
-                const groupAuctionDate = new Date(group.auction_date);
-                groupAuctionDate.setHours(0, 0, 0, 0);
-                if (groupAuctionDate > countdownStart) {
-                    countdownStart = groupAuctionDate;
-                }
-            }
-            const days_left = !isOverdue ? Math.ceil((dueDate.getTime() - countdownStart.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+            const days_left = !isOverdue ? Math.max(0, Math.ceil((dueDate.getTime() - simulatedNow.getTime()) / (1000 * 60 * 60 * 24))) : 0;
 
             nextPaymentDue = {
                 installment_no: upcomingInstallment.installment_no,
                 due_date: upcomingInstallment.due_date,
                 due_date_formatted: formatDateToOrdinal(upcomingInstallment.due_date),
-                due_amount: parseFloat(dueAmount.toFixed(2)),
-                gross_installment_amount: parseFloat(grossAmount.toFixed(2)),
-                penalty_amount: parseFloat(penaltyAmount.toFixed(2)),
+                due_amount: dueAmount,
+                gross_installment_amount: grossAmount,
+                penalty_amount: penaltyAmount,
                 over_due_days_count: overDueDaysCount,
                 penalty_text: penaltyText,
-                final_payable_amount: parseFloat(finalPayableAmount.toFixed(2)),
+                final_payable_amount: finalPayableAmount,
                 is_overdue: isOverdue,
                 days_left: days_left,
-                days_left_text: `${days_left} days left`,
-                paid_amount: 0.00
+                days_left_text: `${days_left} ${days_left === 1 ? 'day' : 'days'} left`,
+                paid_amount: 0.00,
+                ...(upcomingSharePercent < 100 && {
+                    my_share_percent: upcomingSharePercent,
+                    ticket_due_amount: parseFloat(rawDueAmount.toFixed(2)),
+                    ticket_gross_installment_amount: parseFloat(rawGrossAmount.toFixed(2))
+                })
             };
         }
 
@@ -1398,6 +1473,9 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             let monthTotalAmountSum = 0.00;
 
             for (const ge of userEnrollments) {
+                const holderInfo = getEnrollmentHoldersInfo(ge, subscriber_id);
+                const shareRatio = (holderInfo.mySharePercent || 100) / 100;
+
                 const ticketOriginal = originalAmountPerTicket;
                 const ticketProfit = profitAmountPerTicket;
                 const ticketPayable = payableAmountPerTicket;
@@ -1464,43 +1542,103 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
 
                 const ticketTotalAmount = parseFloat((ticketPending + ticketPenaltyAmount).toFixed(2));
 
-                monthOriginalTotal += ticketOriginal;
-                monthProfitTotal += ticketProfit;
-                monthPayableTotal += ticketPayable;
-                monthPaidTotal += ticketPaidAmount;
-                monthPendingTotal += ticketPending;
-                monthAdvanceTotal += ticketAdvance;
-                monthPenaltyTotal += ticketPenaltyAmount;
-                monthTotalAmountSum += ticketTotalAmount;
+                // Share-proportional amounts for current member (if joint ticket)
+                const shareOriginal = parseFloat((ticketOriginal * shareRatio).toFixed(2));
+                const shareProfit = parseFloat((ticketProfit * shareRatio).toFixed(2));
+                const sharePayable = parseFloat((ticketPayable * shareRatio).toFixed(2));
+                const sharePaid = parseFloat((ticketPaidAmount * shareRatio).toFixed(2));
+                const sharePending = parseFloat((ticketPending * shareRatio).toFixed(2));
+                const shareAdvance = parseFloat((ticketAdvance * shareRatio).toFixed(2));
+                const sharePenalty = parseFloat((ticketPenaltyAmount * shareRatio).toFixed(2));
+                const shareTotalAmount = parseFloat((ticketTotalAmount * shareRatio).toFixed(2));
+
+                monthOriginalTotal += (holderInfo.isJoint ? shareOriginal : ticketOriginal);
+                monthProfitTotal += (holderInfo.isJoint ? shareProfit : ticketProfit);
+                monthPayableTotal += (holderInfo.isJoint ? sharePayable : ticketPayable);
+                monthPaidTotal += (holderInfo.isJoint ? sharePaid : ticketPaidAmount);
+                monthPendingTotal += (holderInfo.isJoint ? sharePending : ticketPending);
+                monthAdvanceTotal += (holderInfo.isJoint ? shareAdvance : ticketAdvance);
+                monthPenaltyTotal += (holderInfo.isJoint ? sharePenalty : ticketPenaltyAmount);
+                monthTotalAmountSum += (holderInfo.isJoint ? shareTotalAmount : ticketTotalAmount);
 
                 let ticketPaymentState = 'unpaid';
                 if (geInstallment) {
                     const paymentsForInst = userPayments.filter(p => p.chits_installment_id === geInstallment.id);
                     if (paymentsForInst.some(p => p.payment_status === 0)) {
                         ticketPaymentState = 'awaiting_confirmation';
-                    } else if (ticketPending <= 0) {
+                    } else if (ticketPending <= 0 && ticketPaidAmount > 0) {
                         ticketPaymentState = 'paid';
                     }
                 }
 
+                // Joint holders breakdown list
+                const jointBreakdown = holderInfo.allHolders.map(h => {
+                    const r = (h.share_percent || 0) / 100;
+                    const hCode = holderInfo.isJoint ? `${holderInfo.ticketNumber}-${h.letter}` : holderInfo.ticketNumber;
+                    return {
+                        letter: h.letter,
+                        member_id: h.member_id,
+                        name: h.name,
+                        is_main_holder: h.is_main_holder,
+                        share_percent: h.share_percent,
+                        ticket_code: hCode,
+                        ticket_number: holderInfo.ticketNumber,
+                        original_amount: parseFloat((ticketOriginal * r).toFixed(2)),
+                        profit_amount: parseFloat((ticketProfit * r).toFixed(2)),
+                        payable: parseFloat((ticketPayable * r).toFixed(2)),
+                        paid_amount: parseFloat((ticketPaidAmount * r).toFixed(2)),
+                        pending_amount: parseFloat((ticketPending * r).toFixed(2)),
+                        advance_payment: parseFloat((ticketAdvance * r).toFixed(2)),
+                        advance_amount_status: (ticketAdvance * r) > 0,
+                        penalty_amount: parseFloat((ticketPenaltyAmount * r).toFixed(2)),
+                        total_amount: parseFloat((ticketTotalAmount * r).toFixed(2)),
+                        display_label: `${h.name} ${hCode}`
+                    };
+                });
+
+                const displayLabel = `${holderInfo.holderName} ${holderInfo.ticketCode}`;
+                const positionLabel = `Member ${holderInfo.ticketCode}`;
+
                 memberBreakdown.push({
                     enrollment_id: ge.id,
+                    ticket_id: ge.id,
+                    ticket_number: holderInfo.ticketNumber,
+                    ticket_code: holderInfo.ticketCode,
+                    ticket_letter: holderInfo.myLetter,
+                    holder_name: holderInfo.holderName,
+                    display_label: displayLabel,
                     name: ge.subscriber ? ge.subscriber.name : 'Unknown Subscriber',
-                    position_label: `Member #${ge.group_position_number}`,
+                    position_label: positionLabel,
                     group_position_number: ge.group_position_number,
-                    ticket_number: `#${String(ge.group_position_number).padStart(2, '0')}`,
                     subscriber_id: ge.subscriber_id,
                     subscriber_name: ge.subscriber ? ge.subscriber.name : 'Unknown Subscriber',
-                    original_amount: parseFloat(ticketOriginal.toFixed(2)),
-                    profit_amount: parseFloat(ticketProfit.toFixed(2)),
-                    payable: parseFloat(ticketPayable.toFixed(2)),
-                    paid_amount: parseFloat(ticketPaidAmount.toFixed(2)),
-                    pending_amount: parseFloat(ticketPending.toFixed(2)),
-                    advance_payment: parseFloat(ticketAdvance.toFixed(2)),
-                    advance_amount_status: ticketAdvance > 0,
-                    penalty_amount: parseFloat(ticketPenaltyAmount.toFixed(2)),
+                    is_joint: holderInfo.isJoint,
+                    my_share_percent: holderInfo.mySharePercent,
+
+                    // Proportional amounts for the logged-in holder (matching the UI screenshot)
+                    original_amount: holderInfo.isJoint ? shareOriginal : parseFloat(ticketOriginal.toFixed(2)),
+                    profit_amount: holderInfo.isJoint ? shareProfit : parseFloat(ticketProfit.toFixed(2)),
+                    payable: holderInfo.isJoint ? sharePayable : parseFloat(ticketPayable.toFixed(2)),
+                    paid_amount: holderInfo.isJoint ? sharePaid : parseFloat(ticketPaidAmount.toFixed(2)),
+                    pending_amount: holderInfo.isJoint ? sharePending : parseFloat(ticketPending.toFixed(2)),
+                    advance_payment: holderInfo.isJoint ? shareAdvance : parseFloat(ticketAdvance.toFixed(2)),
+                    advance_amount_status: (holderInfo.isJoint ? shareAdvance : ticketAdvance) > 0,
+                    penalty_amount: holderInfo.isJoint ? sharePenalty : parseFloat(ticketPenaltyAmount.toFixed(2)),
                     penalty_text: ticketPenaltyText,
-                    total_amount: parseFloat(ticketTotalAmount.toFixed(2)),
+                    total_amount: holderInfo.isJoint ? shareTotalAmount : parseFloat(ticketTotalAmount.toFixed(2)),
+                    total_amount_formatted_label: `(${displayLabel})`,
+
+                    // Full ticket amounts
+                    ticket_original_amount: parseFloat(ticketOriginal.toFixed(2)),
+                    ticket_profit_amount: parseFloat(ticketProfit.toFixed(2)),
+                    ticket_payable: parseFloat(ticketPayable.toFixed(2)),
+                    ticket_paid_amount: parseFloat(ticketPaidAmount.toFixed(2)),
+                    ticket_pending_amount: parseFloat(ticketPending.toFixed(2)),
+                    ticket_total_amount: parseFloat(ticketTotalAmount.toFixed(2)),
+
+                    // Joint holders breakdown list
+                    joint_holders_breakdown: jointBreakdown,
+
                     payment_history: ticketPaymentHistory,
                     payment_state: ticketPaymentState
                 });
@@ -1557,6 +1695,251 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             });
         }
 
+        // If Month 1 has no completed auction record (e.g. commencement month or upcoming chit), show Month 1 installment
+        if (!auctions.some((a) => a.auction_number === 1)) {
+            const month1Installment = allUserInstallments.find((i) => i.installment_no === 1);
+            if (month1Installment || group.chits_group_status !== 2) {
+                const month1DateStr = month1Installment ? month1Installment.due_date : startDateVal;
+                let month1Name = 'Month 1';
+                if (month1DateStr) {
+                    const md = new Date(month1DateStr);
+                    if (!isNaN(md.getTime())) {
+                        month1Name = monthsList[md.getMonth()];
+                    }
+                }
+
+                const memberBreakdown = [];
+                let monthOriginalTotal = 0.00;
+                let monthProfitTotal = 0.00;
+                let monthPayableTotal = 0.00;
+                let monthPaidTotal = 0.00;
+                let monthPendingTotal = 0.00;
+                let monthAdvanceTotal = 0.00;
+                let monthPenaltyTotal = 0.00;
+                let monthTotalAmountSum = 0.00;
+
+                const defaultInstAmt = parseFloat(group.installment_amount) || (singleChitAmount / totalMonthsCount) || 0.00;
+
+                for (const ge of userEnrollments) {
+                    const holderInfo = getEnrollmentHoldersInfo(ge, subscriber_id);
+                    const shareRatio = (holderInfo.mySharePercent || 100) / 100;
+
+                    const geInstallment = allUserInstallments.find((inst) => inst.enrollment_id === ge.id && inst.installment_no === 1);
+                    const ticketOriginal = geInstallment ? (parseFloat(geInstallment.payable_amount) || defaultInstAmt) : defaultInstAmt;
+                    const ticketProfit = 0.00;
+                    const ticketPayable = ticketOriginal;
+
+                    let ticketPaidAmount = 0.00;
+                    let ticketPenaltyPaid = 0.00;
+                    let ticketPaymentHistory = [];
+
+                    if (geInstallment) {
+                        const paymentsForInst = userPayments.filter((p) => p.chits_installment_id === geInstallment.id);
+                        ticketPaymentHistory = paymentsForInst.map((p) => {
+                            const pReceived = parseFloat(p.received_amount) || 0.00;
+                            const pPenalty = parseFloat(p.penalty_paid) || 0.00;
+                            const pDate = p.payment_date || (p.createdAt ? new Date(p.createdAt).toISOString().split('T')[0] : null);
+                            const pDateFormatted = formatDateDMY(pDate);
+                            const pDateShort = formatDateShortDMY(pDate);
+                            const pMode = p.payment_mode || 1;
+                            const pModeLabel = getPaymentModeLabel(pMode);
+
+                            return {
+                                id: p.id,
+                                payment_id: p.id,
+                                receipt_number: p.receipt_number || null,
+                                transaction_reference: p.transaction_reference || null,
+                                paid_date: pDate,
+                                paid_date_formatted: pDateFormatted,
+                                paid_date_short: pDateShort,
+                                payment_text: pDateShort ? `Paid - ${pDateShort}` : 'Paid',
+                                payment_mode: pMode,
+                                payment_mode_label: pModeLabel,
+                                received_amount: parseFloat(pReceived.toFixed(2)),
+                                penalty_paid: parseFloat(pPenalty.toFixed(2))
+                            };
+                        });
+
+                        ticketPaidAmount = ticketPaymentHistory.reduce((sum, p) => sum + p.received_amount, 0);
+                        ticketPenaltyPaid = ticketPaymentHistory.reduce((sum, p) => sum + p.penalty_paid, 0);
+                    }
+
+                    let ticketPending = 0.00;
+                    let ticketAdvance = 0.00;
+                    if (ticketPaidAmount >= ticketPayable) {
+                        ticketPending = 0.00;
+                        ticketAdvance = parseFloat((ticketPaidAmount - ticketPayable).toFixed(2));
+                    } else {
+                        ticketPending = parseFloat((ticketPayable - ticketPaidAmount).toFixed(2));
+                        ticketAdvance = 0.00;
+                    }
+
+                    let ticketPenaltyAmount = 0.00;
+                    let ticketPenaltyText = null;
+
+                    if (geInstallment && ticketPending > 0) {
+                        const overDueDaysCount = geInstallment.over_due_days_count || 0;
+                        ticketPenaltyAmount = Math.max(0, (parseFloat(geInstallment.penalty_amount) || 0) - ticketPenaltyPaid);
+                        if (ticketPenaltyAmount > 0) {
+                            ticketPenaltyText = `Penalty ₹${ticketPenaltyAmount} (${overDueDaysCount} days)`;
+                        }
+                    }
+
+                    const ticketTotalAmount = parseFloat((ticketPending + ticketPenaltyAmount).toFixed(2));
+
+                    // Share-proportional amounts for current member (if joint ticket)
+                    const shareOriginal = parseFloat((ticketOriginal * shareRatio).toFixed(2));
+                    const shareProfit = parseFloat((ticketProfit * shareRatio).toFixed(2));
+                    const sharePayable = parseFloat((ticketPayable * shareRatio).toFixed(2));
+                    const sharePaid = parseFloat((ticketPaidAmount * shareRatio).toFixed(2));
+                    const sharePending = parseFloat((ticketPending * shareRatio).toFixed(2));
+                    const shareAdvance = parseFloat((ticketAdvance * shareRatio).toFixed(2));
+                    const sharePenalty = parseFloat((ticketPenaltyAmount * shareRatio).toFixed(2));
+                    const shareTotalAmount = parseFloat((ticketTotalAmount * shareRatio).toFixed(2));
+
+                    monthOriginalTotal += (holderInfo.isJoint ? shareOriginal : ticketOriginal);
+                    monthProfitTotal += (holderInfo.isJoint ? shareProfit : ticketProfit);
+                    monthPayableTotal += (holderInfo.isJoint ? sharePayable : ticketPayable);
+                    monthPaidTotal += (holderInfo.isJoint ? sharePaid : ticketPaidAmount);
+                    monthPendingTotal += (holderInfo.isJoint ? sharePending : ticketPending);
+                    monthAdvanceTotal += (holderInfo.isJoint ? shareAdvance : ticketAdvance);
+                    monthPenaltyTotal += (holderInfo.isJoint ? sharePenalty : ticketPenaltyAmount);
+                    monthTotalAmountSum += (holderInfo.isJoint ? shareTotalAmount : ticketTotalAmount);
+
+                    let ticketPaymentState = 'unpaid';
+                    if (geInstallment) {
+                        const paymentsForInst = userPayments.filter((p) => p.chits_installment_id === geInstallment.id);
+                        if (paymentsForInst.some((p) => p.payment_status === 0)) {
+                            ticketPaymentState = 'awaiting_confirmation';
+                        } else if (ticketPending <= 0 && ticketPaidAmount > 0) {
+                            ticketPaymentState = 'paid';
+                        }
+                    }
+
+                    const jointBreakdown = holderInfo.allHolders.map(h => {
+                        const r = (h.share_percent || 0) / 100;
+                        const hCode = holderInfo.isJoint ? `${holderInfo.ticketNumber}-${h.letter}` : holderInfo.ticketNumber;
+                        return {
+                            letter: h.letter,
+                            member_id: h.member_id,
+                            name: h.name,
+                            is_main_holder: h.is_main_holder,
+                            share_percent: h.share_percent,
+                            ticket_code: hCode,
+                            ticket_number: holderInfo.ticketNumber,
+                            original_amount: parseFloat((ticketOriginal * r).toFixed(2)),
+                            profit_amount: parseFloat((ticketProfit * r).toFixed(2)),
+                            payable: parseFloat((ticketPayable * r).toFixed(2)),
+                            paid_amount: parseFloat((ticketPaidAmount * r).toFixed(2)),
+                            pending_amount: parseFloat((ticketPending * r).toFixed(2)),
+                            advance_payment: parseFloat((ticketAdvance * r).toFixed(2)),
+                            advance_amount_status: (ticketAdvance * r) > 0,
+                            penalty_amount: parseFloat((ticketPenaltyAmount * r).toFixed(2)),
+                            total_amount: parseFloat((ticketTotalAmount * r).toFixed(2)),
+                            display_label: `${h.name} ${hCode}`
+                        };
+                    });
+
+                    const displayLabel = `${holderInfo.holderName} ${holderInfo.ticketCode}`;
+                    const positionLabel = `Member ${holderInfo.ticketCode}`;
+
+                    memberBreakdown.push({
+                        enrollment_id: ge.id,
+                        ticket_id: ge.id,
+                        ticket_number: holderInfo.ticketNumber,
+                        ticket_code: holderInfo.ticketCode,
+                        ticket_letter: holderInfo.myLetter,
+                        holder_name: holderInfo.holderName,
+                        display_label: displayLabel,
+                        name: ge.subscriber ? ge.subscriber.name : 'Unknown Subscriber',
+                        position_label: positionLabel,
+                        group_position_number: ge.group_position_number,
+                        subscriber_id: ge.subscriber_id,
+                        subscriber_name: ge.subscriber ? ge.subscriber.name : 'Unknown Subscriber',
+                        is_joint: holderInfo.isJoint,
+                        my_share_percent: holderInfo.mySharePercent,
+
+                        // Proportional amounts for the logged-in holder (matching the UI screenshot)
+                        original_amount: holderInfo.isJoint ? shareOriginal : parseFloat(ticketOriginal.toFixed(2)),
+                        profit_amount: holderInfo.isJoint ? shareProfit : parseFloat(ticketProfit.toFixed(2)),
+                        payable: holderInfo.isJoint ? sharePayable : parseFloat(ticketPayable.toFixed(2)),
+                        paid_amount: holderInfo.isJoint ? sharePaid : parseFloat(ticketPaidAmount.toFixed(2)),
+                        pending_amount: holderInfo.isJoint ? sharePending : parseFloat(ticketPending.toFixed(2)),
+                        advance_payment: holderInfo.isJoint ? shareAdvance : parseFloat(ticketAdvance.toFixed(2)),
+                        advance_amount_status: (holderInfo.isJoint ? shareAdvance : ticketAdvance) > 0,
+                        penalty_amount: holderInfo.isJoint ? sharePenalty : parseFloat(ticketPenaltyAmount.toFixed(2)),
+                        penalty_text: ticketPenaltyText,
+                        total_amount: holderInfo.isJoint ? shareTotalAmount : parseFloat(ticketTotalAmount.toFixed(2)),
+                        total_amount_formatted_label: `(${displayLabel})`,
+
+                        // Full ticket amounts
+                        ticket_original_amount: parseFloat(ticketOriginal.toFixed(2)),
+                        ticket_profit_amount: parseFloat(ticketProfit.toFixed(2)),
+                        ticket_payable: parseFloat(ticketPayable.toFixed(2)),
+                        ticket_paid_amount: parseFloat(ticketPaidAmount.toFixed(2)),
+                        ticket_pending_amount: parseFloat(ticketPending.toFixed(2)),
+                        ticket_total_amount: parseFloat(ticketTotalAmount.toFixed(2)),
+
+                        // Joint holders breakdown list
+                        joint_holders_breakdown: jointBreakdown,
+
+                        payment_history: ticketPaymentHistory,
+                        payment_state: ticketPaymentState
+                    });
+                }
+
+                let monthPenaltyText = null;
+                const itemWithPenalty = memberBreakdown.find((m) => m.penalty_text);
+                if (itemWithPenalty) {
+                    monthPenaltyText = itemWithPenalty.penalty_text;
+                }
+
+                monthlyActivity.unshift({
+                    id: month1Installment ? month1Installment.id : null,
+                    auction_number: 1,
+                    month_count: 1,
+                    total_months_count: totalMonthsCount,
+                    month_badge: `1/${totalMonthsCount}`,
+                    month_name: month1Name,
+                    auction_date: month1DateStr,
+                    auction_date_formatted: formatDateDMY(month1DateStr),
+                    bid_amount: 0.00,
+                    bid_winning_amount: 0.00,
+                    winner_name: 'N/A',
+                    winner_member_id: 'N/A',
+                    winner_info: null,
+                    is_winner_status: false,
+
+                    // Amounts (supports all UI cards & screens)
+                    original_amount: parseFloat(monthOriginalTotal.toFixed(2)),
+                    profit_amount: parseFloat(monthProfitTotal.toFixed(2)),
+                    payable: parseFloat(monthPayableTotal.toFixed(2)),
+                    paid_amount: parseFloat(monthPaidTotal.toFixed(2)),
+                    pending_amount: parseFloat(monthPendingTotal.toFixed(2)),
+                    advance_payment: parseFloat(monthAdvanceTotal.toFixed(2)),
+                    advance_amount_status: monthAdvanceTotal > 0,
+                    penalty_amount: parseFloat(monthPenaltyTotal.toFixed(2)),
+                    penalty_text: monthPenaltyText,
+                    total_amount: parseFloat(monthTotalAmountSum.toFixed(2)),
+
+                    // Per-ticket breakdown and summary for Screen 5
+                    member_breakdown: memberBreakdown,
+                    breakdown_summary: {
+                        total_original: parseFloat(monthOriginalTotal.toFixed(2)),
+                        total_profit: parseFloat(monthProfitTotal.toFixed(2)),
+                        total_payable: parseFloat(monthPayableTotal.toFixed(2)),
+                        total_paid: parseFloat(monthPaidTotal.toFixed(2)),
+                        total_paid_amount: parseFloat(monthPaidTotal.toFixed(2)),
+                        total_pending: parseFloat(monthPendingTotal.toFixed(2)),
+                        total_advance: parseFloat(monthAdvanceTotal.toFixed(2)),
+                        advance_amount_status: monthAdvanceTotal > 0,
+                        total_amount: parseFloat(monthTotalAmountSum.toFixed(2)),
+                        total_penalty: parseFloat(monthPenaltyTotal.toFixed(2))
+                    }
+                });
+            }
+        }
+
         // Assemble final beautiful structured response matching all 5 screens
         const responsePayload = {
             chit_group_details: {
@@ -1564,7 +1947,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 group_name: group.group_name || 'Unknown Chit',
                 start_date: startDateFormatted,
                 end_date: endDateFormatted,
-                total_amount: parseInt(singleChitAmount, 10) || 0,
+                total_amount: parseInt(totalChitAmountForUser, 10) || 0,
                 pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
                 advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
                 advance_amount_status: groupAdvanceAmount > 0,
@@ -1585,7 +1968,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             auction_type: resolvedAuctionType,
             auction_type_label: resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard'),
             my_chit_overview: {
-                monthly_bid_amount: parseFloat((parseFloat(group.installment_amount) || (singleChitAmount / totalMonthsCount) || 0.00).toFixed(2)),
+                monthly_bid_amount: parseFloat(totalUserShareMonthlyBid.toFixed(2)),
                 total_paid_amount: parseFloat(totalPaidAmount.toFixed(2)),
                 total_pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
                 total_advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
