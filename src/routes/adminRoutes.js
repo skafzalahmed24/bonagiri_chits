@@ -245,7 +245,7 @@ router.post('/configure-business-agent-commission/chit-detail', authMiddleware.a
 
 // collection-agent submissions update
 router.post('/collection-agent/submissions/update-status', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.updateCollectionSubmissionStatusSchema), adminController.updateCollectionSubmissionStatus);
-router.post('/collection-agent/submissions/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_COLLECTION_VERIFY), validate(adminValidation.getAllCollectionSubmissionsSchema), adminController.getAllCollectionSubmissions);
+router.post('/collection-agent/submissions/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermissionOrUserRole(MODULES.T_COLLECTION_VERIFY, 'member'), validate(adminValidation.getAllCollectionSubmissionsSchema), adminController.getAllCollectionSubmissions);
 
 // member documents
 router.post('/member/documents/list', authMiddleware.authenticateToken, validate(adminValidation.getMemberDocumentsAdminSchema), adminController.getMemberDocumentsAdmin);

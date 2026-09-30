@@ -1389,8 +1389,11 @@ const applyAdvance = async (req, res) => {
 
 const getAllCollectionSubmissions = async (req, res) => {
   try {
-    const { collection_agent_id, type, min, max, from_date, to_date, group_id } = req.body;
+    let { collection_agent_id, type, min, max, from_date, to_date, group_id } = req.body || {};
     const companyId = (req.user.role === 'staff' || req.user.role === 'member') ? req.user.company_id : req.user.id;
+    if (req.user.role === 'member') {
+      collection_agent_id = req.user.id;
+    }
     return await adminService.getAllCollectionSubmissionsService(res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id);
   } catch (error) {
     console.error('Error in getAllCollectionSubmissions:', error);
