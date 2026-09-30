@@ -1187,10 +1187,10 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             }
         };
 
-        // Combine formatted ticket position numbers (e.g. "#08, #07")
-        const positionNumbersFormatted = userEnrollments.map(e => {
-            const pos = e.group_position_number;
-            return "#" + String(pos).padStart(2, '0');
+        // Combine formatted ticket position numbers with alphabet suffixes for joint tickets (e.g. "#02-A" or "#08, #07-A")
+        const positionNumbersFormatted = userEnrollments.map((e) => {
+            const holderInfo = getEnrollmentHoldersInfo(e, subscriber_id);
+            return holderInfo.ticketCode;
         }).join(', ');
 
         // 3. Resolve Business Agent and Collection Agent Names
