@@ -80,6 +80,7 @@ const { isCollectionAgent, isBusinessAgent } = require('../utils/authHelpers');
 const { calculateMemberRating } = require('../utils/ratingHelper');
 const fcmService = require('./fcmService');
 const { getGroupStartDate } = require('./adminService');
+const { getBannersForSubscriberHelper } = require('./bannerService');
 
 const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) => {
     const subscriber_id = (userPayload && userPayload.id) ? userPayload.id : reqSubscriberId;
@@ -208,42 +209,13 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
             console.error('Error calculating member rating in getHomeRecordService:', ratingErr);
         }
 
-        // 7. Fetch active regular banners (banner_type: 1)
+        // 7. Fetch active banners (Regular type 1 + Targeted type 2 assigned to this subscriber)
         let banners = [];
         try {
-            const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
-            const todayStr = simulatedNow.toISOString().split('T')[0];
             const company_id = member ? member.company_id : (userPayload ? userPayload.company_id : null);
-
-            const bannerWhere = {
-                banner_type: 1,
-                is_deleted_status: 0,
-                status: 1,
-                banner_start_date: { [Op.lte]: todayStr },
-                banner_end_date: { [Op.gte]: todayStr }
-            };
-
-            if (company_id) {
-                bannerWhere.company_id = company_id;
-            }
-
-            const bannerRows = await Banner.findAll({
-                where: bannerWhere,
-                order: [['banner_start_date', 'DESC'], ['id', 'DESC']],
-                attributes: ['id', 'company_id', 'banner_image', 'banner_type', 'status', 'banner_start_date', 'banner_end_date', 'createdAt']
-            });
-
-            banners = bannerRows.map(b => ({
-                id: b.id,
-                banner_image: b.banner_image,
-                banner_type: b.banner_type,
-                banner_type_label: 'Regular',
-                banner_start_date: b.banner_start_date,
-                banner_end_date: b.banner_end_date,
-                status: b.status
-            }));
+            banners = await getBannersForSubscriberHelper(subscriber_id, company_id);
         } catch (bannerErr) {
-            console.error('Error fetching regular banners in getHomeRecordService:', bannerErr);
+            console.error('Error fetching banners in getHomeRecordService:', bannerErr);
         }
 
         const responseData = {
@@ -2893,18 +2865,22 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
     }
 };
 
-const getMemberDuesService = async (res, member_id, userPayload) => {
+const getMemberDuesService = async (res, member_id, userPayload, groupId = null) => {
     try {
         if (userPayload) {
             if (userPayload.role === 'member') {
                 if (String(userPayload.id) !== String(member_id)) {
                     // If accessing someone else's dues, verify they are a collection agent assigned to this member
+                    const authWhere = {
+                        subscriber_id: member_id,
+                        collection_agent_id: userPayload.id,
+                        delete_status: 0
+                    };
+                    if (groupId) {
+                        authWhere.group_id = groupId;
+                    }
                     const isAssigned = await Enrollment.findOne({
-                        where: {
-                            subscriber_id: member_id,
-                            collection_agent_id: userPayload.id,
-                            delete_status: 0
-                        }
+                        where: authWhere
                     });
                     if (!isAssigned) {
                         return errorResponse(res, 403, 'You are not authorized to view this member\'s dues');
@@ -2915,10 +2891,33 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
         const member = await Member.findByPk(member_id);
         if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
 
+        const enrollmentWhere = { subscriber_id: member_id, delete_status: 0 };
+        if (groupId) {
+            enrollmentWhere.group_id = groupId;
+        }
+
         const enrollments = await Enrollment.findAll({
-            where: { subscriber_id: member_id, delete_status: 0 },
+            where: enrollmentWhere,
             include: [{ model: ChitsGroup, as: 'group' }]
         });
+
+        if (enrollments.length === 0) {
+            return successResponse(res, statusCodes.OK, 'Member dues', {
+                id: member.id,
+                name: member.name,
+                member_id: member.member_id,
+                profile_image: member.upload_image,
+                gender: member.gender,
+                group_id: groupId || null,
+                group_name: null,
+                total_due: 0,
+                total_paid: 0,
+                balance: 0,
+                penalty_amount: 0,
+                penalty_text: 'No penalty',
+                older_due_months: null
+            });
+        }
 
         let total_due = 0;
         let total_paid = 0;
@@ -2926,10 +2925,14 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
         let penalty_amount = 0;
         let oldest_due = null;
         let penalty_text = 'No penalty';
-        let group_names = enrollments.map(e => e.group ? e.group.group_name : '').join(', ');
+        let group_names = enrollments.map(e => e.group ? e.group.group_name : '').filter(Boolean).join(', ');
 
+        const wonAuctionWhere = { bidder_id: member_id };
+        if (groupId) {
+            wonAuctionWhere.group_id = groupId;
+        }
         const wonAuctions = await Auction.findAll({
-            where: { bidder_id: member_id },
+            where: wonAuctionWhere,
             attributes: ['group_id']
         });
         const wonGroupIds = new Set(wonAuctions.map(a => a.group_id));
@@ -3006,6 +3009,7 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             member_id: member.member_id,
             profile_image: member.upload_image,
             gender: member.gender,
+            group_id: groupId || (enrollments.length === 1 ? enrollments[0].group_id : null),
             group_name: group_names,
             total_due,
             total_paid,
@@ -3015,7 +3019,7 @@ const getMemberDuesService = async (res, member_id, userPayload) => {
             older_due_months: oldest_due
         });
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error in getMemberDuesService:', error);
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
     }
 };

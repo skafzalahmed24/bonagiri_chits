@@ -31,34 +31,75 @@ const resolveCompanyId = (userToken) => {
   return (userToken.role === 'staff' || userToken.role === 'member') ? userToken.company_id : userToken.id;
 };
 
-const getValidOffersForSubscriberHelper = async (subscriberId, companyId = null, bannerType = 2) => {
+const formatDateToYYYYMMDD = (dateObj) => {
+  const d = new Date(dateObj);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const getBannersForSubscriberHelper = async (subscriberId, companyId = null) => {
   try {
     const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
-    const todayStr = simulatedNow.toISOString().split('T')[0];
+    const todayStr = formatDateToYYYYMMDD(simulatedNow);
 
-    // Find assigned banner IDs for this subscriber
-    const assignedRecords = await AssignedBannerToPeople.findAll({
-      where: { subscriber_id: subscriberId },
-      attributes: ['assigned_banner_id']
-    });
-    const assignedBannerIds = assignedRecords.map(r => r.assigned_banner_id);
+    let subIdInt = parseInt(subscriberId, 10);
+    if ((isNaN(subIdInt) || subIdInt <= 0) && subscriberId) {
+      const member = await Member.findOne({
+        where: {
+          [Op.or]: [
+            { member_id: String(subscriberId) },
+            { other_info_user_code: parseInt(subscriberId, 10) || -1 }
+          ]
+        },
+        attributes: ['id', 'company_id']
+      });
+      if (member) {
+        subIdInt = member.id;
+        if (!companyId) companyId = member.company_id;
+      }
+    }
 
-    if (assignedBannerIds.length === 0) {
-      return [];
+    // 1. Find assigned banner IDs for this subscriber
+    let assignedBannerIds = [];
+    if (subIdInt && !isNaN(subIdInt)) {
+      const assignedRecords = await AssignedBannerToPeople.findAll({
+        where: { subscriber_id: subIdInt },
+        attributes: ['assigned_banner_id']
+      });
+      assignedBannerIds = assignedRecords.map(r => r.assigned_banner_id);
+    }
+
+    // 2. Build where clause: match Regular banners (type 1) OR Targeted banners (type 2) assigned to subscriber
+    const typeConditions = [{ banner_type: 1 }];
+    if (assignedBannerIds.length > 0) {
+      typeConditions.push({
+        banner_type: 2,
+        id: { [Op.in]: assignedBannerIds }
+      });
+    }
+
+    const andConditions = [
+      { [Op.or]: typeConditions }
+    ];
+
+    if (companyId) {
+      andConditions.push({
+        [Op.or]: [
+          { company_id: companyId },
+          { company_id: null }
+        ]
+      });
     }
 
     const whereClause = {
-      id: { [Op.in]: assignedBannerIds },
-      banner_type: bannerType,
       is_deleted_status: 0,
       status: 1,
       banner_start_date: { [Op.lte]: todayStr },
-      banner_end_date: { [Op.gte]: todayStr }
+      banner_end_date: { [Op.gte]: todayStr },
+      [Op.and]: andConditions
     };
-
-    if (companyId) {
-      whereClause.company_id = companyId;
-    }
 
     const banners = await Banner.findAll({
       where: whereClause,
@@ -68,6 +109,87 @@ const getValidOffersForSubscriberHelper = async (subscriberId, companyId = null,
 
     return banners.map(b => ({
       id: b.id,
+      company_id: b.company_id,
+      banner_image: b.banner_image,
+      banner_type: b.banner_type,
+      banner_type_label: b.banner_type === 1 ? 'Regular' : 'Targeted',
+      banner_start_date: b.banner_start_date,
+      banner_end_date: b.banner_end_date,
+      status: b.status
+    }));
+  } catch (error) {
+    console.error('Error in getBannersForSubscriberHelper:', error);
+    return [];
+  }
+};
+
+const getValidOffersForSubscriberHelper = async (subscriberId, companyId = null, bannerType = 2) => {
+  try {
+    const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
+    const todayStr = formatDateToYYYYMMDD(simulatedNow);
+
+    let subIdInt = parseInt(subscriberId, 10);
+    if ((isNaN(subIdInt) || subIdInt <= 0) && subscriberId) {
+      const member = await Member.findOne({
+        where: {
+          [Op.or]: [
+            { member_id: String(subscriberId) },
+            { other_info_user_code: parseInt(subscriberId, 10) || -1 }
+          ]
+        },
+        attributes: ['id', 'company_id']
+      });
+      if (member) {
+        subIdInt = member.id;
+        if (!companyId) companyId = member.company_id;
+      }
+    }
+
+    // Find assigned banner IDs for this subscriber
+    let assignedBannerIds = [];
+    if (subIdInt && !isNaN(subIdInt)) {
+      const assignedRecords = await AssignedBannerToPeople.findAll({
+        where: { subscriber_id: subIdInt },
+        attributes: ['assigned_banner_id']
+      });
+      assignedBannerIds = assignedRecords.map(r => r.assigned_banner_id);
+    }
+
+    if (assignedBannerIds.length === 0) {
+      return [];
+    }
+
+    const andConditions = [
+      { id: { [Op.in]: assignedBannerIds } },
+      { banner_type: bannerType }
+    ];
+
+    if (companyId) {
+      andConditions.push({
+        [Op.or]: [
+          { company_id: companyId },
+          { company_id: null }
+        ]
+      });
+    }
+
+    const whereClause = {
+      is_deleted_status: 0,
+      status: 1,
+      banner_start_date: { [Op.lte]: todayStr },
+      banner_end_date: { [Op.gte]: todayStr },
+      [Op.and]: andConditions
+    };
+
+    const banners = await Banner.findAll({
+      where: whereClause,
+      order: [['banner_start_date', 'DESC'], ['id', 'DESC']],
+      attributes: ['id', 'company_id', 'banner_image', 'banner_type', 'status', 'banner_start_date', 'banner_end_date', 'createdAt']
+    });
+
+    return banners.map(b => ({
+      id: b.id,
+      company_id: b.company_id,
       banner_image: b.banner_image,
       banner_type: b.banner_type,
       banner_type_label: b.banner_type === 1 ? 'Regular' : 'Targeted',
@@ -438,37 +560,66 @@ const getUserValidOffersService = async (res, userPayload, body = {}) => {
     const offset = parseInt(min, 10) || 0;
 
     const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
-    const todayStr = simulatedNow.toISOString().split('T')[0];
+    const todayStr = formatDateToYYYYMMDD(simulatedNow);
 
     // Find assigned banner IDs for this subscriber (banner_type: 2 - particular subscribers)
-    const assignedRecords = await AssignedBannerToPeople.findAll({
-      where: { subscriber_id: effectiveMemberId },
-      attributes: ['assigned_banner_id']
-    });
-    const assignedBannerIds = assignedRecords.map(r => r.assigned_banner_id);
+    let assignedBannerIds = [];
+    if (effectiveMemberId) {
+      const assignedRecords = await AssignedBannerToPeople.findAll({
+        where: { subscriber_id: effectiveMemberId },
+        attributes: ['assigned_banner_id']
+      });
+      assignedBannerIds = assignedRecords.map(r => r.assigned_banner_id);
+    }
 
-    if (assignedBannerIds.length === 0) {
-      return successResponse(res, statusCodes.OK, 'Valid offers retrieved successfully', {
-        count: 0,
-        rows: []
+    const andConditions = [];
+
+    // Check if client requested a specific banner_type
+    const requestedType = body.banner_type !== undefined && body.banner_type !== null && body.banner_type !== ''
+      ? parseInt(body.banner_type, 10)
+      : null;
+
+    if (requestedType === 1) {
+      andConditions.push({ banner_type: 1 });
+    } else if (requestedType === 2) {
+      if (assignedBannerIds.length === 0) {
+        return successResponse(res, statusCodes.OK, 'Valid offers retrieved successfully', {
+          count: 0,
+          rows: []
+        });
+      }
+      andConditions.push({
+        banner_type: 2,
+        id: { [Op.in]: assignedBannerIds }
+      });
+    } else {
+      // Default: Return both Regular banners (type 1) and Targeted banners assigned to this subscriber (type 2)
+      const typeConditions = [{ banner_type: 1 }];
+      if (assignedBannerIds.length > 0) {
+        typeConditions.push({
+          banner_type: 2,
+          id: { [Op.in]: assignedBannerIds }
+        });
+      }
+      andConditions.push({ [Op.or]: typeConditions });
+    }
+
+    if (companyId) {
+      andConditions.push({
+        [Op.or]: [
+          { company_id: companyId },
+          { company_id: null }
+        ]
       });
     }
 
     const whereClause = {
-      id: { [Op.in]: assignedBannerIds },
-      banner_type: 2,
       is_deleted_status: 0,
       status: 1,
       banner_start_date: { [Op.lte]: todayStr },
-      banner_end_date: { [Op.gte]: todayStr }
+      banner_end_date: { [Op.gte]: todayStr },
+      [Op.and]: andConditions
     };
-
-    if (companyId) {
-      whereClause[Op.or] = [
-        { company_id: companyId },
-        { company_id: null }
-      ];
-    }
 
     const { count, rows } = await Banner.findAndCountAll({
       where: whereClause,
@@ -480,9 +631,10 @@ const getUserValidOffersService = async (res, userPayload, body = {}) => {
 
     const formattedRows = rows.map(b => ({
       id: b.id,
+      company_id: b.company_id,
       banner_image: b.banner_image,
       banner_type: b.banner_type,
-      banner_type_label: 'Targeted',
+      banner_type_label: b.banner_type === 1 ? 'Regular' : 'Targeted',
       banner_start_date: b.banner_start_date,
       banner_end_date: b.banner_end_date,
       status: b.status
@@ -505,5 +657,6 @@ module.exports = {
   deleteBannerService,
   changeBannerStatusService,
   getUserValidOffersService,
-  getValidOffersForSubscriberHelper
+  getValidOffersForSubscriberHelper,
+  getBannersForSubscriberHelper
 };

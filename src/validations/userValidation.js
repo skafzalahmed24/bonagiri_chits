@@ -221,7 +221,8 @@ const storeCustomerVisitSchema = Joi.object({
 });
 
 const getMemberDuesSchema = Joi.object({
-  member_id: Joi.number().integer().required()
+  member_id: Joi.number().integer().required(),
+  group_id: Joi.alternatives().try(Joi.string(), Joi.number()).optional()
 });
 
 const getSubmissionsSchema = Joi.object({
@@ -358,6 +359,7 @@ const getChitTypesSchema = Joi.object({
 const getUserValidOffersSchema = Joi.object({
   subscriber_id: Joi.alternatives().try(Joi.number().integer(), Joi.string()).optional(),
   member_id: Joi.alternatives().try(Joi.number().integer(), Joi.string()).optional(),
+  banner_type: Joi.alternatives().try(Joi.number().integer(), Joi.string()).optional(),
   min: Joi.number().integer().min(0).optional(),
   max: Joi.number().integer().min(1).optional()
 });
