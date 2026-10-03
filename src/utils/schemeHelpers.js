@@ -172,17 +172,19 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
 
   // Act standard: divide dividend among ALL N members (including winner)
   const divisor = allEnrollments.length > 0 ? allEnrollments.length : 1;
-  const dividendPerMember = (parseFloat(auctionData.dividend) || 0) / divisor;
+  const rawDividend = parseFloat(auctionData.dividend) || 0;
+  const dividendPerMember = divisor > 0 ? rawDividend / divisor : 0;
   const subscription = parseFloat(auctionData.subscription_amount) || 0;
-  const netPayableFromAuction = auctionData.net_payable && parseFloat(auctionData.net_payable) > 0
+  const rawNet = auctionData.net_payable !== undefined && auctionData.net_payable !== null && !isNaN(parseFloat(auctionData.net_payable))
     ? parseFloat(auctionData.net_payable)
     : Math.max(0, subscription - dividendPerMember);
+  const netPayableFromAuction = isNaN(rawNet) || rawNet <= 0 ? (subscription > 0 ? subscription : 0) : rawNet;
 
   // Apply dividend to ALL members (including winner)
   for (const enrollment of allEnrollments) {
     // Track cumulative dividends for accounting/reporting
     const currentBalance = parseFloat(enrollment.dividend_credit_balance) || 0;
-    const newBalance = currentBalance + dividendPerMember;
+    const newBalance = currentBalance + (isNaN(dividendPerMember) ? 0 : dividendPerMember);
     await enrollment.update({ dividend_credit_balance: newBalance }, options);
 
     // Use THIS auction's dividend only — not the cumulative balance
@@ -202,19 +204,37 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
   }
 }
 
-function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, commissionPct, memberCount }) {
-  const subscription = chitAmount / installments;
-  const commission = chitAmount * (commissionPct / 100);
-  const gstPct = 18; // Fixed GST rate
+function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, commissionPct, memberCount, gstPercentage = 18 }) {
+  const cAmt = parseFloat(chitAmount) || 0;
+  const instCount = parseInt(installments, 10) || 1;
+  const bidAmt = parseFloat(bidAmount) || 0;
+  const commPct = parseFloat(commissionPct) || 0;
+  const mCount = parseInt(memberCount, 10) || instCount || 1;
+
+  const subscription = cAmt / (instCount > 0 ? instCount : 1);
+  const commission = cAmt * (commPct / 100);
+  const gstPct = (gstPercentage !== undefined && gstPercentage !== null && !isNaN(parseFloat(gstPercentage)))
+    ? parseFloat(gstPercentage)
+    : 18;
   const gst = commission * (gstPct / 100);
-  const bidDiscount = chitAmount - bidAmount;
+  const bidDiscount = cAmt - bidAmt;
   const totalDividend = Math.max(0, bidDiscount - commission - gst);
-  const divisor = memberCount > 0 ? memberCount : 1; // all N members (Act standard)
+  const divisor = mCount > 0 ? mCount : 1; // all N members (Act standard)
   const dividendPerMember = totalDividend / divisor;
-  const netPayable = subscription - dividendPerMember;
-  const winnerReceives = bidAmount; // full bid amount — commission deducted from pool only, not from winner
+  const netPayable = Math.max(0, subscription - dividendPerMember);
+  const winnerReceives = bidAmt; // full bid amount — commission deducted from pool only, not from winner
   
-  return { subscription, commission, gst, bidDiscount, totalDividend, dividendPerMember, netPayable, winnerReceives };
+  return {
+    subscription: isNaN(subscription) ? 0 : subscription,
+    commission: isNaN(commission) ? 0 : commission,
+    gst: isNaN(gst) ? 0 : gst,
+    bidDiscount: isNaN(bidDiscount) ? 0 : bidDiscount,
+    totalDividend: isNaN(totalDividend) ? 0 : totalDividend,
+    dividendPerMember: isNaN(dividendPerMember) ? 0 : dividendPerMember,
+    netPayable: isNaN(netPayable) ? subscription : netPayable,
+    winnerReceives: isNaN(winnerReceives) ? 0 : winnerReceives,
+    gstPct
+  };
 }
 
 module.exports = {

@@ -12,6 +12,7 @@ const {
 const { Op } = require('sequelize');
 const { memberTicketsInGroup, ticketWin, holderNamesByEnrollment } = require('../utils/jointHolders');
 const { generateReceiptNumber } = require('../utils/receiptGenerator');
+const { getSchemeWinningAmount, getSchemeOriginalAmount, dividendMonthOf, lastInstalmentDate } = require('../utils/schemeHelpers');
 
 // ---- Joint enrollment: a member's tickets are the ones they hold as main holder
 // (Enrollment.subscriber_id) or as an active joint holder.
@@ -47,6 +48,22 @@ const isTicketHolder = async (enrollment, memberId) => {
     if (Number(enrollment.subscriber_id) === Number(memberId)) return true;
     const row = await EnrollmentJointHolder.findOne({ where: { enrollment_id: enrollment.id, member_id: memberId, removed_on: null } });
     return !!row;
+};
+
+/**
+ * Format penalty display text showing breakdown: Penalty ₹[dailyRate] * [days] = ₹[totalPenalty]
+ */
+const formatPenaltyCalculationText = (penaltyAmount, days = 0) => {
+    const pen = parseFloat(penaltyAmount) || 0;
+    if (pen <= 0) return null;
+    const d = parseInt(days, 10) || 0;
+    if (d > 1) {
+        const dailyRate = parseFloat((pen / d).toFixed(2));
+        return `Penalty ₹${dailyRate} * ${d} days = ₹${parseFloat(pen.toFixed(2))}`;
+    } else if (d === 1) {
+        return `Penalty ₹${parseFloat(pen.toFixed(2))} * 1 day = ₹${parseFloat(pen.toFixed(2))}`;
+    }
+    return `Penalty ₹${parseFloat(pen.toFixed(2))}`;
 };
 
 /**
@@ -113,55 +130,128 @@ const getEnrollmentHolders = (enr) => {
  * Calculate dues, payments, pending balances, and penalties per holder on an installment.
  */
 const getHolderInstallmentDues = (inst, enrollment, holders, relatedPayments, simulatedNow = null, overridePayable = null) => {
-    let totalPayable = overridePayable != null
-        ? parseFloat(overridePayable)
-        : (inst && parseFloat(inst.payable_amount) > 0 ? parseFloat(inst.payable_amount) : 0);
+    let totalPayable = 0;
+    if (overridePayable != null) {
+        totalPayable = parseFloat(overridePayable) || 0;
+    } else if (inst && parseFloat(inst.payable_amount) > 0) {
+        totalPayable = parseFloat(inst.payable_amount);
+    } else if (enrollment && enrollment.group) {
+        const grp = enrollment.group;
+        totalPayable = parseFloat(grp.installment_amount) || ((parseFloat(grp.chit_amount) || 0) / (parseInt(grp.no_of_installments, 10) || 12)) || 0;
+    }
     if (isNaN(totalPayable) || totalPayable < 0) totalPayable = 0;
     const totalInstPenalty = parseFloat(inst ? inst.penalty_amount : 0) || 0;
     const isOverdue = simulatedNow && inst && inst.due_date && new Date(inst.due_date) < simulatedNow;
+    const instDueDateStr = inst && inst.due_date ? String(inst.due_date).slice(0, 10) : null;
 
-    return holders.map(h => {
+    // 1. Calculate each holder's payable, received, on-time received, and pending amount
+    const holderDues = holders.map(h => {
         const holderPayable = totalPayable * h.shareRatio;
-        const holderExpectedPenalty = isOverdue ? (totalInstPenalty * h.shareRatio) : 0;
-
         let holderReceived = 0;
+        let holderOnTimeReceived = 0;
         let holderPenaltyPaid = 0;
 
         relatedPayments.forEach(p => {
             const payerId = p.collection_submission ? Number(p.collection_submission.member_id) : (p.payer_member_id ? Number(p.payer_member_id) : null);
             const pRecv = parseFloat(p.received_amount) || 0;
             const pPen = parseFloat(p.penalty_paid) || 0;
+            const pDateStr = p.payment_date ? String(p.payment_date).slice(0, 10) : (p.createdAt ? String(new Date(p.createdAt).toISOString()).slice(0, 10) : null);
+            const isOnTime = instDueDateStr && pDateStr ? pDateStr <= instDueDateStr : true;
 
             if (payerId != null) {
                 if (payerId === Number(h.member_id)) {
                     holderReceived += pRecv;
                     holderPenaltyPaid += pPen;
+                    if (isOnTime) {
+                        holderOnTimeReceived += pRecv;
+                    }
                 }
             } else {
                 if (holders.length === 1) {
                     holderReceived += pRecv;
                     holderPenaltyPaid += pPen;
+                    if (isOnTime) {
+                        holderOnTimeReceived += pRecv;
+                    }
                 } else {
                     holderReceived += pRecv * h.shareRatio;
                     holderPenaltyPaid += pPen * h.shareRatio;
+                    if (isOnTime) {
+                        holderOnTimeReceived += pRecv * h.shareRatio;
+                    }
                 }
             }
         });
 
         const holderPending = Math.max(0, holderPayable - holderReceived);
-        const holderPenalty = Math.max(0, holderExpectedPenalty - holderPenaltyPaid);
+        const holderLatePaid = Math.max(0, holderReceived - holderOnTimeReceived);
+        const holderUnpaidOrLate = holderPending + holderLatePaid;
 
         return {
             holder: h,
             payable: holderPayable,
             received: holderReceived,
             pending: holderPending,
-            expectedPenalty: holderExpectedPenalty,
             penaltyPaid: holderPenaltyPaid,
-            penalty: holderPenalty,
-            isOverdue: isOverdue && holderPending > 0
+            holderUnpaidOrLate
         };
     });
+
+    // 2. Distribute penalty proportionally to the holder(s) who actually caused overdue dues (unpaid or late)
+    const totalUnpaidOrLate = holderDues.reduce((sum, hd) => sum + hd.holderUnpaidOrLate, 0);
+
+    return holderDues.map(hd => {
+        let holderExpectedPenalty = 0;
+        if (isOverdue && totalInstPenalty > 0) {
+            if (totalUnpaidOrLate > 0) {
+                holderExpectedPenalty = totalInstPenalty * (hd.holderUnpaidOrLate / totalUnpaidOrLate);
+            } else {
+                holderExpectedPenalty = totalInstPenalty * hd.holder.shareRatio;
+            }
+        }
+        const holderPenalty = Math.max(0, holderExpectedPenalty - hd.penaltyPaid);
+
+        return {
+            holder: hd.holder,
+            payable: hd.payable,
+            received: hd.received,
+            pending: hd.pending,
+            expectedPenalty: holderExpectedPenalty,
+            penaltyPaid: hd.penaltyPaid,
+            penalty: holderPenalty,
+            isOverdue: isOverdue && (hd.pending > 0 || holderPenalty > 0)
+        };
+    });
+};
+
+/**
+ * Calculate effective installment payable dynamically considering auction dividends.
+ */
+const calculateEffectiveInstallmentPayable = (inst, enrollment, group = null, auctions = []) => {
+    const grp = (enrollment && enrollment.group) || group;
+    const fallbackInstAmt = grp
+        ? (parseFloat(grp.installment_amount) || ((parseFloat(grp.chit_amount) || 0) / (parseInt(grp.no_of_installments, 10) || 12)))
+        : 0.00;
+    let effectivePayable = parseFloat(inst ? inst.payable_amount : 0) || 0.00;
+
+    if (auctions && auctions.length > 0 && inst) {
+        const divAuction = auctions.find(a => (enrollment && a.group_id ? a.group_id === enrollment.group_id : true) && dividendMonthOf(a) === inst.installment_no);
+        if (divAuction) {
+            if (divAuction.net_payable && parseFloat(divAuction.net_payable) > 0) {
+                effectivePayable = parseFloat(divAuction.net_payable);
+            } else if (divAuction.dividend && parseFloat(divAuction.dividend) > 0) {
+                const divVal = parseFloat(divAuction.dividend);
+                const count = parseInt(grp ? grp.no_of_installments : 6, 10) || 6;
+                const bonus = divVal < fallbackInstAmt ? divVal : (divVal / count);
+                effectivePayable = Math.max(0, fallbackInstAmt - bonus);
+            }
+        }
+    }
+
+    if (effectivePayable <= 0) {
+        effectivePayable = fallbackInstAmt;
+    }
+    return effectivePayable;
 };
 
 const SystemSettingsService = require('./systemSettingsService');
@@ -806,7 +896,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
 
             const penaltyAmount = Math.max(0, (parseFloat(installment.penalty_amount) || 0) - (penaltyPaidByInstallment[installment.id] || 0));
             const penaltyText = penaltyAmount > 0
-                ? `Penalty ₹${penaltyAmount} (${overDueDaysCount} days)`
+                ? formatPenaltyCalculationText(penaltyAmount, overDueDaysCount)
                 : null;
 
             const finalPayableAmount = parseFloat((dueAmount + penaltyAmount).toFixed(2));
@@ -973,8 +1063,6 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
         return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
     }
 };
-
-const { getSchemeWinningAmount, getSchemeOriginalAmount, dividendMonthOf, lastInstalmentDate } = require('../utils/schemeHelpers');
 
 const getBidDetailsService = async (res, group_id, userPayload, bodySubscriberId = null) => {
     try {
@@ -1476,7 +1564,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     : 0;
 
                 const penaltyText = myDue.penalty > 0
-                    ? `Penalty ₹${parseFloat(myDue.penalty.toFixed(2))} (${overDueDaysCount} days)`
+                    ? formatPenaltyCalculationText(myDue.penalty, overDueDaysCount)
                     : null;
 
                 const days_left = !myDue.isOverdue ? Math.max(0, Math.ceil((dueDate.getTime() - simulatedNow.getTime()) / (1000 * 60 * 60 * 24))) : 0;
@@ -1519,6 +1607,14 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     model: Member,
                     as: 'subscriber',
                     attributes: ['id', 'name', 'member_id']
+                },
+                {
+                    model: EnrollmentJointHolder,
+                    as: 'joint_holders',
+                    required: false,
+                    where: { removed_on: null },
+                    attributes: ['id', 'member_id', 'share_percent'],
+                    include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'rep_by_first_name', 'sur_name', 'member_id'] }]
                 }
             ],
             order: [['group_position_number', 'ASC']]
@@ -1577,6 +1673,14 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             let winnerInfo = null;
 
             if (auction) {
+                const winningEnrollment = allGroupEnrollments.find(e =>
+                    (auction.ticket_number && Number(e.group_position_number) === Number(auction.ticket_number)) ||
+                    (!auction.ticket_number && (Number(e.subscriber_id) === Number(auction.bidder_id) || (e.joint_holders || []).some(j => Number(j.member_id) === Number(auction.bidder_id))))
+                );
+
+                const winningHolders = winningEnrollment ? getEnrollmentHolders(winningEnrollment) : [];
+                const isJointWinner = winningHolders.length > 1;
+
                 winnerTicketFormatted = auction.ticket_number
                     ? '#' + String(auction.ticket_number).padStart(2, '0')
                     : (auction.bidder && auction.bidder.member_id ? `#${auction.bidder.member_id}` : 'N/A');
@@ -1587,20 +1691,55 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     winnerPositionLabel = `P${auction.bidder.member_id}`;
                 }
 
-                rawBidAmount = parseFloat(auction.bid_amount) || 0.00;
-                bidWinningAmount = getSchemeWinningAmount(schemeConfig, auction.auction_number) ?? rawBidAmount;
-                isWinnerStatus = myWonAuctionIds.has(auction.id);
+                const fullRawBidAmount = parseFloat(auction.bid_amount) || 0.00;
+                const fullBidWinningAmount = getSchemeWinningAmount(schemeConfig, auction.auction_number) ?? fullRawBidAmount;
+
+                // Scale bid amounts to the logged-in member's share (e.g. 50% = 10,500 instead of 21,000)
+                const memberShareRatio = userEnrollments.length > 0
+                    ? (userEnrollments.reduce((sum, e) => sum + (getUserEnrollmentSharePercent(e, subscriber_id) || 100), 0) / (userEnrollments.length * 100))
+                    : 1;
+
+                rawBidAmount = fullRawBidAmount * memberShareRatio;
+                bidWinningAmount = fullBidWinningAmount * memberShareRatio;
+
+                isWinnerStatus = myWonAuctionIds.has(auction.id) || (winningHolders.length > 0 && winningHolders.some(h => Number(h.member_id) === Number(subscriber_id)));
+
+                let winnerDisplayName = auction.bidder ? (auction.bidder.name || 'N/A') : 'N/A';
+                if (isJointWinner && winningHolders.length > 0) {
+                    winnerDisplayName = winningHolders.map(h => `${h.name} (${h.sharePercent}%)`).join(', ');
+                }
 
                 winnerInfo = auction.bidder ? {
-                    winner_name: auction.bidder.name || 'N/A',
+                    winner_name: winnerDisplayName,
                     winner_member_id: winnerTicketFormatted,
                     ticket_number: auction.ticket_number || null,
                     position_label: winnerPositionLabel,
                     is_self_winner: isWinnerStatus,
-                    bid_winning_amount: parseFloat(bidWinningAmount.toFixed(2))
+                    bid_winning_amount: parseFloat(bidWinningAmount.toFixed(2)),
+                    ticket_full_bid_amount: parseFloat(fullRawBidAmount.toFixed(2)),
+                    is_joint: isJointWinner,
+                    ...(isJointWinner && {
+                        joint_holders: winningHolders.map((h, idx) => {
+                            const letter = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'][idx] || String.fromCharCode(65 + idx);
+                            const r = (h.sharePercent || 0) / 100;
+                            return {
+                                member_id: h.member_id,
+                                name: h.name,
+                                ticket_code: `${winnerTicketFormatted}-${letter}`,
+                                share_percent: h.sharePercent,
+                                is_main_holder: h.is_main_holder,
+                                bid_share: parseFloat((fullRawBidAmount * r).toFixed(2)),
+                                prize_share: parseFloat(((singleChitAmount - fullRawBidAmount) * r).toFixed(2))
+                            };
+                        })
+                    })
                 } : null;
             } else if (schemeConfig) {
-                bidWinningAmount = getSchemeWinningAmount(schemeConfig, m) ?? 0.00;
+                const fullBidWinningAmount = getSchemeWinningAmount(schemeConfig, m) ?? 0.00;
+                const memberShareRatio = userEnrollments.length > 0
+                    ? (userEnrollments.reduce((sum, e) => sum + (getUserEnrollmentSharePercent(e, subscriber_id) || 100), 0) / (userEnrollments.length * 100))
+                    : 1;
+                bidWinningAmount = fullBidWinningAmount * memberShareRatio;
             }
 
             // Math card stats per ticket
@@ -1768,19 +1907,26 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 if (geInstallment) {
                     rawPenaltyAmount = parseFloat(geInstallment.penalty_amount) || 0;
                     overDueDaysCount = geInstallment.over_due_days_count || 0;
+                    if (overDueDaysCount === 0 && geInstallment.due_date && simulatedNow) {
+                        const dueDate = new Date(geInstallment.due_date);
+                        dueDate.setHours(0, 0, 0, 0);
+                        if (dueDate < simulatedNow) {
+                            overDueDaysCount = Math.max(0, Math.floor((simulatedNow.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)));
+                        }
+                    }
                 }
                 const ticketRemainingPenalty = Math.max(0, rawPenaltyAmount - ticketPenaltyPaid);
                 let ticketPenaltyAmount = 0;
                 let ticketPenaltyText = null;
                 if (ticketRemainingPenalty > 0) {
                     ticketPenaltyAmount = ticketRemainingPenalty;
-                    ticketPenaltyText = `Penalty ₹${ticketRemainingPenalty} (${overDueDaysCount} days)`;
+                    ticketPenaltyText = formatPenaltyCalculationText(ticketRemainingPenalty, overDueDaysCount);
                 } else if (ticketPenaltyPaid > 0) {
                     ticketPenaltyAmount = ticketPenaltyPaid;
-                    ticketPenaltyText = `Penalty ₹${ticketPenaltyPaid} (Paid)`;
+                    ticketPenaltyText = `Penalty ₹${parseFloat(ticketPenaltyPaid.toFixed(2))} (Paid)`;
                 } else if (rawPenaltyAmount > 0) {
                     ticketPenaltyAmount = rawPenaltyAmount;
-                    ticketPenaltyText = `Penalty ₹${rawPenaltyAmount} (${overDueDaysCount} days)`;
+                    ticketPenaltyText = formatPenaltyCalculationText(rawPenaltyAmount, overDueDaysCount);
                 }
                 const ticketTotalAmount = parseFloat((ticketPending + ticketRemainingPenalty).toFixed(2));
 
@@ -1865,7 +2011,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                         advance_amount_status: hAdvance > 0,
                         penalty_amount: parseFloat(hPenalty.toFixed(2)),
                         penalty_paid: parseFloat(hPenaltyPaid.toFixed(2)),
-                        penalty_text: hPenalty > 0 ? `Penalty ₹${parseFloat(hPenalty.toFixed(2))}` : null,
+                        penalty_text: hPenalty > 0 ? formatPenaltyCalculationText(hPenalty, overDueDaysCount) : null,
                         total_amount: parseFloat(hTotal.toFixed(2)),
                         display_label: `${h.name} ${hCode}`
                     };
@@ -1929,7 +2075,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     advance_amount_status: (holderInfo.isJoint ? shareAdvance : ticketAdvance) > 0,
                     penalty_amount: holderInfo.isJoint ? sharePenalty : parseFloat(ticketPenaltyAmount.toFixed(2)),
                     penalty_paid: holderInfo.isJoint ? sharePenaltyPaid : parseFloat(ticketPenaltyPaid.toFixed(2)),
-                    penalty_text: sharePenalty > 0 ? `Penalty ₹${sharePenalty}` : ticketPenaltyText,
+                    penalty_text: sharePenalty > 0 ? formatPenaltyCalculationText(sharePenalty, overDueDaysCount) : ticketPenaltyText,
                     total_amount: holderInfo.isJoint ? shareTotalAmount : parseFloat(ticketTotalAmount.toFixed(2)),
                     total_amount_formatted_label: `(${displayLabel})`,
 
@@ -1970,7 +2116,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 auction_date_formatted: auctionDateFormatted,
                 bid_amount: parseFloat(rawBidAmount.toFixed(2)),
                 bid_winning_amount: parseFloat(bidWinningAmount.toFixed(2)),
-                winner_name: auction && auction.bidder ? (auction.bidder.name || 'N/A') : 'N/A',
+                winner_name: winnerInfo ? winnerInfo.winner_name : (auction && auction.bidder ? (auction.bidder.name || 'N/A') : 'N/A'),
                 winner_member_id: winnerTicketFormatted,
                 winner_info: winnerInfo,
                 is_winner_status: isWinnerStatus,
@@ -2382,8 +2528,7 @@ const getTotalPendingCollectionService = async (res, collection_agent_id, min, m
         const enrollmentIds = enrollments.map(e => e.id);
 
         const installmentWhere = {
-            enrollment_id: { [Op.in]: enrollmentIds },
-            payable_amount: { [Op.gt]: 0 }
+            enrollment_id: { [Op.in]: enrollmentIds }
         };
 
         if (from_date && to_date) {
@@ -2402,7 +2547,7 @@ const getTotalPendingCollectionService = async (res, collection_agent_id, min, m
 
         const installments = await ChitsInstallment.findAll({
             where: installmentWhere,
-            order: [['due_date', 'ASC']]
+            order: [['due_date', 'ASC'], ['installment_no', 'ASC']]
         });
 
         const installmentIds = installments.map(i => i.id);
@@ -2742,6 +2887,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
         const enrollments = await Enrollment.findAll({
             where: whereClause,
             include: [
+                { model: ChitsGroup, as: 'group' },
                 { model: Member, as: 'subscriber' },
                 {
                     model: EnrollmentJointHolder,
@@ -2763,8 +2909,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
 
         const auctions = await Auction.findAll({
             where: { group_id },
-            order: [['auction_number', 'ASC']],
-            attributes: ['auction_number']
+            order: [['auction_number', 'ASC']]
         });
 
         let currentMonthCount = 1;
@@ -2810,7 +2955,8 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
         }
 
         const allInstallments = await ChitsInstallment.findAll({
-            where: { enrollment_id: { [Op.in]: enrollmentIds } }
+            where: { enrollment_id: { [Op.in]: enrollmentIds } },
+            order: [['due_date', 'ASC'], ['installment_no', 'ASC']]
         });
 
         const payments = await CustomerPayment.findAll({
@@ -2839,9 +2985,10 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
             const e = enrollments.find(e => e.id === inst.enrollment_id);
             if (!e) return;
 
+            const effectiveInstPayable = calculateEffectiveInstallmentPayable(inst, e, e.group || group, auctions);
             const holders = getEnrollmentHolders(e);
             const relatedPayments = payments.filter(p => p.chits_installment_id === inst.id);
-            const dues = getHolderInstallmentDues(inst, e, holders, relatedPayments, simulatedNow);
+            const dues = getHolderInstallmentDues(inst, e, holders, relatedPayments, simulatedNow, effectiveInstPayable);
 
             dues.forEach(d => {
                 total_payable += d.payable;
@@ -2951,9 +3098,9 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
         const enrollmentIds = enrollments.map(e => e.id);
         const installments = await ChitsInstallment.findAll({
             where: {
-                enrollment_id: { [Op.in]: enrollmentIds },
-                payable_amount: { [Op.gt]: 0 }
-            }
+                enrollment_id: { [Op.in]: enrollmentIds }
+            },
+            order: [['due_date', 'ASC'], ['installment_no', 'ASC']]
         });
 
         const payments = await CustomerPayment.findAll({
@@ -2989,9 +3136,11 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
 
         const auctions = group_id ? await Auction.findAll({
             where: { group_id },
-            order: [['auction_number', 'ASC']],
-            attributes: ['auction_number']
-        }) : [];
+            order: [['auction_number', 'ASC']]
+        }) : await Auction.findAll({
+            where: { group_id: { [Op.in]: enrollments.map(e => e.group_id).filter(Boolean) } },
+            order: [['auction_number', 'ASC']]
+        });
 
         const groupObj = group_id ? await ChitsGroup.findByPk(group_id) : null;
         let currentMonthCount = 12;
@@ -3026,9 +3175,10 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
             const e = enrollments.find(e => e.id === inst.enrollment_id);
             if (!e) return;
 
+            const effectiveInstPayable = calculateEffectiveInstallmentPayable(inst, e, e.group || groupObj, auctions);
             const holders = getEnrollmentHolders(e);
             const relatedPayments = payments.filter(p => p.chits_installment_id === inst.id);
-            const dues = getHolderInstallmentDues(inst, e, holders, relatedPayments, simulatedNow);
+            const dues = getHolderInstallmentDues(inst, e, holders, relatedPayments, simulatedNow, effectiveInstPayable);
 
             dues.forEach(d => {
                 if (d.pending > 0) {
@@ -3180,7 +3330,7 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
         const enrollmentIds = enrollments.map(e => e.id);
         const installments = await ChitsInstallment.findAll({
             where: { enrollment_id: { [Op.in]: enrollmentIds } },
-            order: [['due_date', 'ASC']]
+            order: [['due_date', 'ASC'], ['installment_no', 'ASC']]
         });
 
         const payments = await CustomerPayment.findAll({
@@ -3202,13 +3352,20 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
         let oldest_due_days = 0;
         let oldest_pending_penalty = 0;
 
+        const groupIds = [...new Set(enrollments.map(e => e.group_id).filter(Boolean))];
+        const auctions = await Auction.findAll({
+            where: { group_id: { [Op.in]: groupIds } },
+            order: [['auction_number', 'ASC']]
+        });
+
         installments.forEach(inst => {
             const e = enrollments.find(en => en.id === inst.enrollment_id);
             if (!e) return;
 
+            const effectiveInstPayable = calculateEffectiveInstallmentPayable(inst, e, e.group, auctions);
             const holders = getEnrollmentHolders(e);
             const relatedPayments = payments.filter(p => p.chits_installment_id === inst.id);
-            const dues = getHolderInstallmentDues(inst, e, holders, relatedPayments, simulatedNow);
+            const dues = getHolderInstallmentDues(inst, e, holders, relatedPayments, simulatedNow, effectiveInstPayable);
 
             const myDue = dues.find(d => Number(d.holder.member_id) === Number(member_id));
             if (!myDue) return;
@@ -3238,7 +3395,7 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
 
         if (oldest_pending_penalty > 0 && oldest_due_days > 0) {
             penalty_amount = oldest_pending_penalty;
-            penalty_text = `Penalty ₹${parseFloat(penalty_amount.toFixed(2))} (${oldest_due_days} days)`;
+            penalty_text = formatPenaltyCalculationText(penalty_amount, oldest_due_days);
         }
 
         balance = total_due - total_paid;
@@ -3454,15 +3611,22 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
 
         let remaining_amount = parseFloat(amount);
 
+        const groupIds = [...new Set(enrollments.map(e => e.group_id).filter(Boolean))];
+        const auctions = await Auction.findAll({
+            where: { group_id: { [Op.in]: groupIds } },
+            order: [['auction_number', 'ASC']]
+        });
+
         for (const inst of installments) {
             if (remaining_amount <= 0) break;
 
             const e = enrollments.find(e => e.id === inst.enrollment_id);
             if (!e) continue;
 
+            const effectiveInstPayable = calculateEffectiveInstallmentPayable(inst, e, e.group, auctions);
             const holders = getEnrollmentHolders(e);
             const relatedPayments = allPayments.filter(p => p.chits_installment_id === inst.id);
-            const dues = getHolderInstallmentDues(inst, e, holders, relatedPayments, simulatedNow);
+            const dues = getHolderInstallmentDues(inst, e, holders, relatedPayments, simulatedNow, effectiveInstPayable);
 
             const myDue = dues.find(d => Number(d.holder.member_id) === Number(member_id));
             if (!myDue) continue;
@@ -5600,5 +5764,6 @@ module.exports = {
     getBusinessAgentPendingCommissionService,
     getBusinessAgentMemberJoinedService,
     getEnrollmentHolders,
-    getHolderInstallmentDues
+    getHolderInstallmentDues,
+    formatPenaltyCalculationText
 };

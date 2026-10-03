@@ -2337,16 +2337,20 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       const companyCommissionPct = parseFloat(groupForMath.company_commission) || 0;
 
       const totalEnrollments = await Enrollment.count({ where: { group_id: targetGroupId, delete_status: 0 }, transaction });
-      const memberCount = totalEnrollments > 0 ? totalEnrollments : installments;
+      const gstPercentage = auctionData.gst_number_percentage !== undefined && auctionData.gst_number_percentage !== null && auctionData.gst_number_percentage !== ''
+        ? parseFloat(auctionData.gst_number_percentage)
+        : (groupForMath.gst_percentage !== undefined && groupForMath.gst_percentage !== null ? parseFloat(groupForMath.gst_percentage) : 18);
 
       const financials = calculateOpenAuctionFinancials({
         chitAmount,
         installments,
         bidAmount: bid_amount,
         commissionPct: companyCommissionPct,
-        memberCount
+        memberCount: totalEnrollments || installments,
+        gstPercentage
       });
 
+      auctionData.gst_number_percentage = financials.gstPct;
       auctionData.subscription_amount = financials.subscription;
       auctionData.company_commission = financials.commission;
       auctionData.gst_amount = financials.gst;
@@ -2404,28 +2408,25 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
 
     const resolvedGroupId = auctionData.group_id || (auctionResult && auctionResult.group_id);
     const resolvedBidderId = auctionData.bidder_id || (auctionResult && auctionResult.bidder_id);
-    if (resolvedGroupId && resolvedBidderId) {
-      const group = await ChitsGroup.findOne({
-        where: { id: resolvedGroupId, company_id: safeCompanyId },
-        transaction
-      });
+    if (resolvedGroupId) {
+      const group = await ChitsGroup.findByPk(resolvedGroupId, { transaction });
       const schemeConfig = group?.scheme_configuration_id
         ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
         : null;
 
-      const winnerEnrollment = await Enrollment.findOne({
+      const winnerEnrollment = resolvedBidderId ? await Enrollment.findOne({
         where: { group_id: resolvedGroupId, subscriber_id: resolvedBidderId, delete_status: 0 },
         transaction
-      });
+      }) : null;
 
       const effectiveAuctionData = auctionResult.toJSON ? auctionResult.toJSON() : { ...auctionData, ...auctionResult };
 
-      if (winnerEnrollment) {
-        if (schemeConfig) {
+      if (schemeConfig) {
+        if (winnerEnrollment) {
           await applyWinnerSchemeAdjustments(effectiveAuctionData, schemeConfig, winnerEnrollment.id, transaction);
-        } else {
-          await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment.id, resolvedGroupId, transaction);
         }
+      } else {
+        await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment ? winnerEnrollment.id : null, resolvedGroupId, transaction);
       }
     }
 
@@ -2583,16 +2584,20 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       const companyCommissionPct = parseFloat(group.company_commission) || 0;
 
       const totalEnrollments = await Enrollment.count({ where: { group_id, delete_status: 0 }, transaction });
-      const memberCount = totalEnrollments > 0 ? totalEnrollments : installments;
+      const gstPercentage = auctionData.gst_number_percentage !== undefined && auctionData.gst_number_percentage !== null && auctionData.gst_number_percentage !== ''
+        ? parseFloat(auctionData.gst_number_percentage)
+        : (group.gst_percentage !== undefined && group.gst_percentage !== null ? parseFloat(group.gst_percentage) : 18);
 
       const financials = calculateOpenAuctionFinancials({
         chitAmount,
         installments,
         bidAmount: bid_amount,
         commissionPct: companyCommissionPct,
-        memberCount
+        memberCount: totalEnrollments || installments,
+        gstPercentage
       });
 
+      auctionData.gst_number_percentage = financials.gstPct;
       auctionData.subscription_amount = financials.subscription;
       auctionData.company_commission = financials.commission;
       auctionData.gst_amount = financials.gst;
@@ -7356,8 +7361,9 @@ const updateBusinessDateService = async (res, userPayload, body) => {
       remarks: body.remarks,
       changedBy: userPayload.id
     });
-    const { runGroupStatusJob } = require('../utils/cronJobs');
+    const { runGroupStatusJob, calculateDailyPenalties } = require('../utils/cronJobs');
     await runGroupStatusJob();
+    await calculateDailyPenalties();
     return successResponse(res, statusCodes.OK, 'Business date updated successfully', settings);
   } catch (error) {
     console.error('Error in updateBusinessDateService:', error);
@@ -7397,7 +7403,14 @@ const getSystemImpactPreviewService = async (res, userPayload, candidateDateStr)
           [Op.lt]: businessDate.toISOString().split('T')[0]
         },
         id: {
-          [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+          [Op.notIn]: sequelize.literal(`(
+            SELECT cp.chits_installment_id 
+            FROM customer_payments cp 
+            JOIN chits_installments ci ON ci.id = cp.chits_installment_id 
+            WHERE cp.payment_status = 1 AND cp.chits_installment_id IS NOT NULL 
+            GROUP BY cp.chits_installment_id, ci.payable_amount 
+            HAVING SUM(cp.received_amount) >= ci.payable_amount
+          )`)
         }
       }
     });
@@ -7421,7 +7434,10 @@ const runSystemJobsService = async (res, userPayload, body) => {
     }
 
     const { job_type } = body;
-    return successResponse(res, statusCodes.OK, `Job ${job_type || 'default'} triggered manually successfully`);
+    const { runGroupStatusJob, calculateDailyPenalties } = require('../utils/cronJobs');
+    await runGroupStatusJob();
+    const result = await calculateDailyPenalties();
+    return successResponse(res, statusCodes.OK, `Job ${job_type || 'default'} triggered manually successfully`, result);
   } catch (error) {
     console.error('Error in runSystemJobsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
