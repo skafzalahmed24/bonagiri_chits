@@ -1194,7 +1194,8 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
       try {
         const allMembers = await Member.findAll({ where: { company_id: newChitsGroup.company_id || chitsGroupData.company_id, is_deleted_status: 0, fcm_token: { [Op.ne]: null } } });
         if (allMembers.length > 0) {
-          fcmService.sendPushToMulticast(allMembers, newChitsGroup.company_id || chitsGroupData.company_id, 'New Chit Group Launched!', `We have launched a new Chit Group: ${newChitsGroup.chit_group_name}. Enroll now!`, { type: 'MARKETING_NEW_GROUP', group_id: String(newChitsGroup.id) });
+          const groupName = newChitsGroup.group_name || chitsGroupData.group_name || 'Chit Group';
+          fcmService.sendPushToMulticast(allMembers, newChitsGroup.company_id || chitsGroupData.company_id, 'New Chit Group Launched!', `We have launched a new Chit Group: ${groupName}. Enroll now!`, { type: 'MARKETING_NEW_GROUP', group_id: String(newChitsGroup.id) });
         }
       } catch (pushErr) {
         console.error('Error sending FCM push for new group marketing:', pushErr);
@@ -1308,9 +1309,14 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search,
 
 const deleteChitsGroupService = async (res, id, companyId) => {
   try {
-    const chitsGroup = await ChitsGroup.findOne({ where: { id, company_id: companyId } });
+    const whereClause = { id };
+    if (companyId && companyId !== '') {
+      whereClause.company_id = companyId;
+    }
+    const chitsGroup = await ChitsGroup.findOne({ where: whereClause });
     if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
     await chitsGroup.update({ is_deleted_status: 1 });
+    await Enrollment.update({ delete_status: 1 }, { where: { group_id: id } });
     return successResponse(res, statusCodes.OK, 'Chits group deleted successfully');
   } catch (error) {
     console.error('Error in deleteChitsGroupService:', error);
@@ -1342,7 +1348,8 @@ const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
         const members = (await holderMembersOf(enrollments.map((e) => e.id))).filter((m) => m.fcm_token);
 
         if (members.length > 0) {
-          fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Completed', `Congratulations! The Chit Group ${chitsGroup.chit_group_name} has successfully completed its term.`, { type: 'GROUP_COMPLETED', group_id: String(chitsGroup.id) });
+          const groupName = chitsGroup.group_name || 'Chit Group';
+          fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Completed', `Congratulations! The Chit Group ${groupName} has successfully completed its term.`, { type: 'GROUP_COMPLETED', group_id: String(chitsGroup.id) });
         }
       } catch (pushErr) {
         console.error('Error sending FCM push for group status:', pushErr);
@@ -1766,8 +1773,9 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
       await checkAndUpdateChitFullStatus(newEnrollment.group_id);
 
       if (subscriber && chitGroup) {
+        const groupName = chitGroup.group_name || 'Chit Group';
         for (const holder of [subscriber, ...joint.holders.map((h) => h.member)]) {
-          fcmService.sendPushToMember(holder, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${chitGroup.chit_group_name}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
+          fcmService.sendPushToMember(holder, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${groupName}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
         }
       }
 
@@ -2394,9 +2402,11 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       );
     }
 
-    if (isNew && auctionData.group_id && auctionData.bidder_id) {
+    const resolvedGroupId = auctionData.group_id || (auctionResult && auctionResult.group_id);
+    const resolvedBidderId = auctionData.bidder_id || (auctionResult && auctionResult.bidder_id);
+    if (resolvedGroupId && resolvedBidderId) {
       const group = await ChitsGroup.findOne({
-        where: { id: auctionData.group_id, company_id: safeCompanyId },
+        where: { id: resolvedGroupId, company_id: safeCompanyId },
         transaction
       });
       const schemeConfig = group?.scheme_configuration_id
@@ -2404,15 +2414,17 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         : null;
 
       const winnerEnrollment = await Enrollment.findOne({
-        where: { group_id: auctionData.group_id, subscriber_id: auctionData.bidder_id, delete_status: 0 },
+        where: { group_id: resolvedGroupId, subscriber_id: resolvedBidderId, delete_status: 0 },
         transaction
       });
 
+      const effectiveAuctionData = auctionResult.toJSON ? auctionResult.toJSON() : { ...auctionData, ...auctionResult };
+
       if (winnerEnrollment) {
         if (schemeConfig) {
-          await applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnrollment.id, transaction);
+          await applyWinnerSchemeAdjustments(effectiveAuctionData, schemeConfig, winnerEnrollment.id, transaction);
         } else {
-          await applyOpenAuctionAdjustments(auctionData, winnerEnrollment.id, auctionData.group_id, transaction);
+          await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment.id, resolvedGroupId, transaction);
         }
       }
     }
@@ -2618,10 +2630,11 @@ const recordWinnerService = async (res, reqBody, userToken) => {
 
     // FCM Notification Trigger
     try {
+      const groupName = group.group_name || 'Chit Group';
       // The prize belongs to the ticket, so every holder of the winning ticket hears it.
       const winners = await holderMembersOf([winnerEnrollment.id]);
       winners.filter((w) => w.fcm_token).forEach((w) => {
-        fcmService.sendPushToMember(w, 'Auction Won', `Congratulations! Your ticket won the auction for Chit ${group.chit_group_name}`, { type: 'AUCTION_WIN', group_id: String(group_id) });
+        fcmService.sendPushToMember(w, 'Auction Won', `Congratulations! Your ticket won the auction for Chit ${groupName}`, { type: 'AUCTION_WIN', group_id: String(group_id) });
       });
       const winnerIds = new Set(winners.map((w) => w.id));
 
@@ -2636,7 +2649,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
         const dividend = auctionData.net_payable > 0 ? (group.chit_value - auctionData.net_payable) / group.no_of_members : 0;
         if (dividend > 0) dividendText = ` A dividend of Rs. ${dividend.toFixed(2)} has been applied.`;
       }
-      fcmService.sendPushToMulticast(groupMembers, safeCompanyId || group.company_id, 'Auction Concluded', `The auction for Chit ${group.chit_group_name} has concluded.${dividendText}`, { type: 'AUCTION_CONCLUDED', group_id: String(group_id) });
+      fcmService.sendPushToMulticast(groupMembers, safeCompanyId || group.company_id, 'Auction Concluded', `The auction for Chit ${groupName} has concluded.${dividendText}`, { type: 'AUCTION_CONCLUDED', group_id: String(group_id) });
     } catch (pushErr) {
       console.error('Error sending auction pushes:', pushErr);
     }
@@ -4781,8 +4794,8 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
         const rowTotal = parseFloat(payment.received_amount) + parseFloat(payment.penalty_paid);
         allocated += rowTotal;
 
-        let newReceiptNumber = null;
-        if (companyId) {
+        let newReceiptNumber = payment.receipt_number;
+        if (!newReceiptNumber && companyId) {
           newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId, transaction);
         }
 
@@ -5643,7 +5656,7 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
     const memberIds = submissions.map(s => s.member_id).filter(id => id);
     const enrollments = await Enrollment.findAll({
       where: { subscriber_id: { [Op.in]: memberIds }, delete_status: 0 },
-      include: [{ model: ChitsGroup, as: 'group' }]
+      include: [{ model: ChitsGroup, as: 'group', where: { is_deleted_status: 0 }, required: true }]
     });
 
     const submissionIds = submissions.map(s => s.id);
@@ -5728,8 +5741,8 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         }
       }
 
-      const memberEnrollments = enrollments.filter(e => e.subscriber_id === sub.member_id);
-      const groupNames = memberEnrollments.map(e => e.group ? e.group.group_name : '').join(', ');
+      const memberEnrollments = enrollments.filter(e => e.subscriber_id === sub.member_id && e.group && Number(e.group.is_deleted_status) === 0);
+      const groupNames = memberEnrollments.map(e => e.group ? e.group.group_name : '').filter(Boolean).join(', ');
 
       const statusStr = getStatusStr(sub.status);
       let status_note = `Submitted on ${formatDate(sub.createdAt)}`;

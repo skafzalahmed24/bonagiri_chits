@@ -156,7 +156,7 @@ async function applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnr
 }
 
 async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, groupId, transaction = null) {
-  const { Enrollment, ChitsGroup } = require('../models');
+  const { Enrollment, ChitsGroup, ChitsInstallment } = require('../models');
   const options = transaction ? { transaction } : {};
 
   // The dividend reduces the next non-company month's instalment (see "Open-auction months" above).
@@ -173,7 +173,10 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
   // Act standard: divide dividend among ALL N members (including winner)
   const divisor = allEnrollments.length > 0 ? allEnrollments.length : 1;
   const dividendPerMember = (parseFloat(auctionData.dividend) || 0) / divisor;
-  const subscription = auctionData.subscription_amount;
+  const subscription = parseFloat(auctionData.subscription_amount) || 0;
+  const netPayableFromAuction = auctionData.net_payable && parseFloat(auctionData.net_payable) > 0
+    ? parseFloat(auctionData.net_payable)
+    : Math.max(0, subscription - dividendPerMember);
 
   // Apply dividend to ALL members (including winner)
   for (const enrollment of allEnrollments) {
@@ -184,18 +187,19 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
 
     // Use THIS auction's dividend only — not the cumulative balance
     // (dividend_credit_balance is for accounting; installment uses single-month dividend)
-    const newPayable = subscription - dividendPerMember;
     await ChitsInstallment.update(
-      { payable_amount: Math.max(0, newPayable) },
+      { payable_amount: Math.max(0, netPayableFromAuction) },
       { where: { enrollment_id: enrollment.id, installment_no: target }, ...options }
     );
   }
 
   // Winner's later installments stay at base subscription (unchanged)
-  await ChitsInstallment.update(
-    { payable_amount: subscription },
-    { where: { group_id: groupId, enrollment_id: winnerEnrollmentId, installment_no: { [Op.gt]: target } }, ...options }
-  );
+  if (winnerEnrollmentId) {
+    await ChitsInstallment.update(
+      { payable_amount: subscription },
+      { where: { enrollment_id: winnerEnrollmentId, installment_no: { [Op.gt]: target } }, ...options }
+    );
+  }
 }
 
 function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, commissionPct, memberCount }) {

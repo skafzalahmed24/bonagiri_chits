@@ -30,7 +30,8 @@ const runGroupStatusJob = async () => {
         });
         const members = (await holderMembersOf(enrollments.map((e) => e.id))).filter((m) => m.fcm_token);
         if (members.length > 0) {
-          fcmService.sendPushToMulticast(members, group.company_id, 'Chit Group Commenced!', `The Chit Group ${group.chit_group_name} has officially commenced.`, { type: 'GROUP_STARTED', group_id: String(group.id) });
+          const groupName = group.group_name || 'Chit Group';
+          fcmService.sendPushToMulticast(members, group.company_id, 'Chit Group Commenced!', `The Chit Group ${groupName} has officially commenced.`, { type: 'GROUP_STARTED', group_id: String(group.id) });
         }
       }
     }
@@ -129,12 +130,13 @@ const startDailyPenaltyCron = () => {
 
           // Send FCM Notification on first day of overdue (we approximate this by checking if it was previously not overdue)
           if ((installment.over_due_days_count || 0) === 0) {
+            const groupName = group.group_name || 'Chit Group';
             const holders = await holderMembersOf([installment.enrollment.id]);
             for (const subscriber of holders.filter((h) => h.fcm_token)) {
               fcmService.sendPushToMember(
                 subscriber,
                 'Payment Overdue!',
-                `Your payment for Chit ${group.chit_group_name} is overdue. A penalty has been applied.`,
+                `Your payment for Chit ${groupName} is overdue. A penalty has been applied.`,
                 { type: 'PAYMENT_OVERDUE', group_id: String(group.id) }
               );
             }
@@ -143,12 +145,13 @@ const startDailyPenaltyCron = () => {
           processedCount++;
         } else if (days === -1) {
           // Due tomorrow
+          const groupName = group.group_name || 'Chit Group';
           const holders = await holderMembersOf([installment.enrollment.id]);
           for (const subscriber of holders.filter((h) => h.fcm_token)) {
             fcmService.sendPushToMember(
               subscriber,
               'Payment Due Tomorrow',
-              `Friendly reminder: Your payment for Chit ${group.chit_group_name} is due tomorrow.`,
+              `Friendly reminder: Your payment for Chit ${groupName} is due tomorrow.`,
               { type: 'PAYMENT_DUE_REMINDER', group_id: String(group.id) }
             );
           }
