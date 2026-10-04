@@ -59,11 +59,11 @@ const formatPenaltyCalculationText = (penaltyAmount, days = 0) => {
     const d = parseInt(days, 10) || 0;
     if (d > 1) {
         const dailyRate = parseFloat((pen / d).toFixed(2));
-        return `Penalty ₹${dailyRate} * ${d} days = ₹${parseFloat(pen.toFixed(2))}`;
+        return `₹${dailyRate} * ${d} days = ₹${parseFloat(pen.toFixed(2))}`;
     } else if (d === 1) {
-        return `Penalty ₹${parseFloat(pen.toFixed(2))} * 1 day = ₹${parseFloat(pen.toFixed(2))}`;
+        return `₹${parseFloat(pen.toFixed(2))} * 1 day = ₹${parseFloat(pen.toFixed(2))}`;
     }
-    return `Penalty ₹${parseFloat(pen.toFixed(2))}`;
+    return `₹${parseFloat(pen.toFixed(2))}`;
 };
 
 /**
@@ -867,7 +867,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
 
             const fallbackInstallment = parseFloat(group?.installment_amount) || (parseFloat(group?.chit_amount) / (parseInt(group?.no_of_installments, 10) || 12)) || parseFloat(installment.payable_amount) || 0.00;
             const originalAmount = (auction || schemeConfig ? getSchemeOriginalAmount(schemeConfig, auction) : fallbackInstallment) || fallbackInstallment;
-            
+
             let profitAmount = 0.00;
             if (auction) {
                 if (auction.net_payable && parseFloat(auction.net_payable) > 0) {
@@ -1634,29 +1634,27 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         for (let m = 1; m <= totalMonthsCount; m++) {
             const auction = auctions.find((a) => a.auction_number === m);
 
-            // Month Date & Name
-            let monthDateStr = null;
-            if (auction && auction.auction_date) {
-                monthDateStr = auction.auction_date;
-            } else {
-                const matchingInst = allUserInstallments.find((i) => i.installment_no === m) || allGroupInstallments.find((i) => i.installment_no === m);
-                if (matchingInst && matchingInst.due_date) {
-                    monthDateStr = matchingInst.due_date;
-                } else if (startDateVal) {
-                    const parts = String(startDateVal).slice(0, 10).split('-').map(Number);
-                    const [y, mm, d] = parts;
-                    const dueDay = parseInt(group.due_date_number_count, 10) || d || 5;
-                    const idx = (mm - 1) + (m - 1);
-                    const yy = y + Math.floor(idx / 12);
-                    const mIdx = idx % 12;
-                    const dd = Math.min(dueDay, new Date(Date.UTC(yy, mIdx + 1, 0)).getUTCDate());
-                    monthDateStr = `${yy}-${String(mIdx + 1).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
-                }
+            // Month Date & Name: Derive sequentially from installment schedule
+            let scheduledDateStr = null;
+            const matchingInst = allUserInstallments.find((i) => i.installment_no === m) || allGroupInstallments.find((i) => i.installment_no === m);
+            if (matchingInst && matchingInst.due_date) {
+                scheduledDateStr = matchingInst.due_date;
+            } else if (startDateVal) {
+                const parts = String(startDateVal).slice(0, 10).split('-').map(Number);
+                const [y, mm, d] = parts;
+                const dueDay = parseInt(group.due_date_number_count, 10) || d || 5;
+                const idx = (mm - 1) + (m - 1);
+                const yy = y + Math.floor(idx / 12);
+                const mIdx = idx % 12;
+                const dd = Math.min(dueDay, new Date(Date.UTC(yy, mIdx + 1, 0)).getUTCDate());
+                scheduledDateStr = `${yy}-${String(mIdx + 1).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
             }
 
+            const monthDateStr = scheduledDateStr || (auction && auction.auction_date ? auction.auction_date : null);
+
             let monthName = `Month ${m}`;
-            if (monthDateStr) {
-                const md = new Date(monthDateStr);
+            if (scheduledDateStr || monthDateStr) {
+                const md = new Date(scheduledDateStr || monthDateStr);
                 if (!isNaN(md.getTime())) {
                     monthName = monthsList[md.getMonth()];
                 }
@@ -1923,7 +1921,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     ticketPenaltyText = formatPenaltyCalculationText(ticketRemainingPenalty, overDueDaysCount);
                 } else if (ticketPenaltyPaid > 0) {
                     ticketPenaltyAmount = ticketPenaltyPaid;
-                    ticketPenaltyText = `Penalty ₹${parseFloat(ticketPenaltyPaid.toFixed(2))} (Paid)`;
+                    ticketPenaltyText = `₹${parseFloat(ticketPenaltyPaid.toFixed(2))} (Paid)`;
                 } else if (rawPenaltyAmount > 0) {
                     ticketPenaltyAmount = rawPenaltyAmount;
                     ticketPenaltyText = formatPenaltyCalculationText(rawPenaltyAmount, overDueDaysCount);
@@ -3014,7 +3012,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
                     memberMap[sub.id].pending_months_set.add(inst.installment_no || inst.due_date);
                     memberMap[sub.id].balance += d.pending;
                     memberMap[sub.id].penalty_amount += d.penalty;
-                    memberMap[sub.id].penalty_text = `Penalty - ₹ ${parseFloat(memberMap[sub.id].penalty_amount.toFixed(2))}`;
+                    memberMap[sub.id].penalty_text = `₹ ${parseFloat(memberMap[sub.id].penalty_amount.toFixed(2))}`;
 
                     if (new Date(inst.due_date) < new Date(memberMap[sub.id].oldest_due_date)) {
                         memberMap[sub.id].oldest_due_date = inst.due_date;
@@ -3202,7 +3200,7 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
                     memberMap[sub.id].pending_months_set.add(inst.installment_no || inst.due_date);
                     memberMap[sub.id].balance += d.pending;
                     memberMap[sub.id].penalty_amount += d.penalty;
-                    memberMap[sub.id].penalty_text = `Penalty - ₹ ${parseFloat(memberMap[sub.id].penalty_amount.toFixed(2))}`;
+                    memberMap[sub.id].penalty_text = `₹ ${parseFloat(memberMap[sub.id].penalty_amount.toFixed(2))}`;
 
                     if (new Date(inst.due_date) < new Date(memberMap[sub.id].oldest_due_date)) {
                         memberMap[sub.id].oldest_due_date = inst.due_date;
@@ -3298,6 +3296,7 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
                 gender: member.gender,
                 group_id: groupId || null,
                 group_name: null,
+                ticket_member_number: null,
                 total_due: 0,
                 total_paid: 0,
                 balance: 0,
@@ -3306,6 +3305,26 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
                 older_due_months: null
             });
         }
+
+        const ALPHABETS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+        const ticketList = enrollments.map(e => {
+            const isMain = Number(e.subscriber_id) === Number(member_id);
+            const jointList = (e.joint_holders || []).filter(j => !j.removed_on);
+            const isJoint = jointList.length > 0;
+            let letter = null;
+            if (isJoint) {
+                if (isMain) {
+                    letter = 'A';
+                } else {
+                    const jIdx = jointList.findIndex(j => Number(j.member_id) === Number(member_id));
+                    letter = jIdx >= 0 ? (ALPHABETS[jIdx + 1] || String.fromCharCode(66 + jIdx)) : null;
+                }
+            }
+            const pos = e.group_position_number != null ? '#' + String(e.group_position_number).padStart(2, '0') : `#${e.id}`;
+            return letter ? `${pos}-${letter}` : pos;
+        });
+
+        const ticketNumbersFormatted = ticketList.join(', ');
 
         const businessDateObj = await SystemSettingsService.getBusinessDate();
         let currentDateStr;
@@ -3325,7 +3344,7 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
         let penalty_amount = 0;
         let oldest_due = null;
         let penalty_text = 'No penalty';
-        let group_names = enrollments.map(e => e.group ? e.group.group_name : '').filter(Boolean).join(', ');
+        let group_names = [...new Set(enrollments.map(e => e.group ? e.group.group_name : '').filter(Boolean))].join(', ');
 
         const enrollmentIds = enrollments.map(e => e.id);
         const installments = await ChitsInstallment.findAll({
@@ -3350,7 +3369,7 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
 
         let oldest_due_date_obj = null;
         let oldest_due_days = 0;
-        let oldest_pending_penalty = 0;
+        let total_penalty = 0;
 
         const groupIds = [...new Set(enrollments.map(e => e.group_id).filter(Boolean))];
         const auctions = await Auction.findAll({
@@ -3373,7 +3392,11 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
             total_due += myDue.payable;
             total_paid += myDue.received;
 
-            if (myDue.pending > 0) {
+            if (myDue.penalty > 0) {
+                total_penalty += myDue.penalty;
+            }
+
+            if (myDue.pending > 0 || myDue.penalty > 0) {
                 const instDate = new Date(inst.due_date);
                 if (!oldest_due_date_obj || instDate < oldest_due_date_obj) {
                     oldest_due_date_obj = instDate;
@@ -3383,19 +3406,20 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
                         const dueDate = new Date(inst.due_date);
                         dueDate.setHours(0, 0, 0, 0);
                         const diffTime = simulatedNow.getTime() - dueDate.getTime();
-                        oldest_due_days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-                        oldest_pending_penalty = myDue.penalty;
+                        oldest_due_days = Math.max(0, Math.floor(diffTime / (1000 * 60 * 60 * 24)));
                     } else {
                         oldest_due_days = 0;
-                        oldest_pending_penalty = 0;
                     }
                 }
             }
         });
 
-        if (oldest_pending_penalty > 0 && oldest_due_days > 0) {
-            penalty_amount = oldest_pending_penalty;
+        if (total_penalty > 0 && oldest_due_days > 0) {
+            penalty_amount = total_penalty;
             penalty_text = formatPenaltyCalculationText(penalty_amount, oldest_due_days);
+        } else if (total_penalty > 0) {
+            penalty_amount = total_penalty;
+            penalty_text = `₹${parseFloat(penalty_amount.toFixed(2))}`;
         }
 
         balance = total_due - total_paid;
@@ -3408,6 +3432,7 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
             gender: member.gender,
             group_id: groupId || (enrollments.length === 1 ? enrollments[0].group_id : null),
             group_name: group_names,
+            ticket_member_number: ticketNumbersFormatted,
             total_due: parseFloat(total_due.toFixed(2)),
             total_paid: parseFloat(total_paid.toFixed(2)),
             balance: parseFloat(balance.toFixed(2)),
