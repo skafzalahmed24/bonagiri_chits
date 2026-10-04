@@ -1,0 +1,286 @@
+const { Op } = require('sequelize');
+const statusCodes = require('../utils/statusCodes');
+const { successResponse, errorResponse } = require('../utils/responseHelper');
+const { StaffUser, Company, Member, Enrollment, NotificationHistory } = require('../models');
+const fcmService = require('./fcmService');
+
+/**
+ * Register FCM device token and platform info for Staff / Admin
+ */
+const registerAdminTokenService = async (res, userPayload, bodyData = {}) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+
+    const fcm_token = typeof bodyData === 'string'
+      ? bodyData
+      : (bodyData.fcm_token || bodyData.device_token || bodyData.fcmToken || bodyData.deviceToken || bodyData.push_token || bodyData.pushToken || bodyData.token || null);
+    const { platform_type, device_id, device_details } = typeof bodyData === 'object' ? bodyData : {};
+    const { normalizePlatformType } = require('../utils/platformHelper');
+
+    const updateData = {};
+    if (fcm_token) updateData.fcm_token = fcm_token;
+    if (platform_type !== undefined && platform_type !== null) {
+      updateData.platform_type = normalizePlatformType(platform_type);
+    }
+    if (device_id) updateData.device_id = device_id;
+    if (device_details) {
+      updateData.device_details = typeof device_details === 'object' ? JSON.stringify(device_details) : String(device_details);
+    }
+
+    if (userPayload.role === 'company') {
+      await Company.update(updateData, { where: { id: userPayload.id } });
+    } else {
+      await StaffUser.update(updateData, { where: { id: userPayload.id } });
+    }
+
+    console.log(`[DEVICE REGISTER] Admin/Staff ID ${userPayload.id} registered device token (${fcm_token ? 'FCM Token Present' : 'No token'}).`);
+    return successResponse(res, statusCodes.OK, 'Admin device token registered successfully');
+  } catch (error) {
+    console.error('Error in registerAdminTokenService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+/**
+ * Send manual push notification to ALL, GROUP, or SPECIFIC_MEMBER
+ */
+const sendManualNotificationService = async (res, userPayload, data) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+
+    const { target_type, target_id, title, body, data_payload } = data;
+    const companyId = userPayload.company_id || userPayload.id;
+
+    if (target_type === 'ALL') {
+      const allMembers = await Member.findAll({
+        where: {
+          company_id: companyId,
+          is_deleted_status: 0,
+          fcm_token: { [Op.ne]: null }
+        }
+      });
+      fcmService.sendPushToMulticast(allMembers, companyId, title, body, data_payload);
+    } else if (target_type === 'SPECIFIC_MEMBER') {
+      const member = await Member.findOne({
+        where: {
+          id: target_id,
+          company_id: companyId,
+          is_deleted_status: 0
+        }
+      });
+      if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      fcmService.sendPushToMember(member, title, body, data_payload);
+    } else if (target_type === 'GROUP') {
+      const enrollments = await Enrollment.findAll({
+        where: {
+          group_id: target_id,
+          company_id: companyId,
+          delete_status: 0
+        },
+        include: [{
+          model: Member,
+          as: 'subscriber',
+          where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } },
+          required: true
+        }]
+      });
+      const members = enrollments.map(e => e.subscriber);
+      fcmService.sendPushToMulticast(members, companyId, title, body, data_payload);
+    }
+
+    return successResponse(res, statusCodes.OK, 'Notification sending triggered successfully');
+  } catch (error) {
+    console.error('Error in sendManualNotificationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+/**
+ * Get notification history for Admin / Company
+ */
+const getAdminNotificationHistoryService = async (res, userPayload, min = 0, max = 20, search = '') => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+
+    const limit = parseInt(max, 10) || 20;
+    const offset = parseInt(min, 10) || 0;
+    const companyId = userPayload.company_id || userPayload.id;
+
+    const whereClause = {
+      company_id: companyId,
+      user_type: { [Op.in]: ['STAFF', 'ADMIN', 'COMPANY'] }
+    };
+
+    if (search) {
+      whereClause[Op.or] = [
+        { title: { [Op.iLike || Op.like]: `%${search}%` } },
+        { body: { [Op.iLike || Op.like]: `%${search}%` } }
+      ];
+    }
+
+    const { count, rows } = await NotificationHistory.findAndCountAll({
+      where: whereClause,
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+
+    const unread_count = await NotificationHistory.count({
+      where: {
+        company_id: companyId,
+        user_type: { [Op.in]: ['STAFF', 'ADMIN', 'COMPANY'] },
+        is_read: false
+      }
+    });
+
+    return successResponse(res, statusCodes.OK, 'Notification history retrieved successfully', { unread_count, count, rows });
+  } catch (error) {
+    console.error('Error in getAdminNotificationHistoryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+/**
+ * Get unread notification badge count for Admin
+ */
+const getAdminNotificationBadgeCountService = async (res, userPayload) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    const companyId = userPayload.company_id || userPayload.id;
+
+    const unread_count = await NotificationHistory.count({
+      where: {
+        company_id: companyId,
+        user_type: { [Op.in]: ['STAFF', 'ADMIN', 'COMPANY'] },
+        is_read: false
+      }
+    });
+
+    return successResponse(res, statusCodes.OK, 'Notification badge count retrieved successfully', { unread_count });
+  } catch (error) {
+    console.error('Error in getAdminNotificationBadgeCountService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+/**
+ * Mark a single notification as read for Admin
+ */
+const markAdminNotificationReadService = async (res, userPayload, notification_id) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    const companyId = userPayload.company_id || userPayload.id;
+
+    const notification = await NotificationHistory.findOne({
+      where: {
+        id: notification_id,
+        company_id: companyId,
+        user_type: { [Op.in]: ['STAFF', 'ADMIN', 'COMPANY'] }
+      }
+    });
+
+    if (!notification) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Notification not found');
+    }
+
+    await notification.update({ is_read: true });
+
+    const unread_count = await NotificationHistory.count({
+      where: {
+        company_id: companyId,
+        user_type: { [Op.in]: ['STAFF', 'ADMIN', 'COMPANY'] },
+        is_read: false
+      }
+    });
+
+    return successResponse(res, statusCodes.OK, 'Notification marked as read', { unread_count });
+  } catch (error) {
+    console.error('Error in markAdminNotificationReadService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+/**
+ * Mark all notifications as read for Admin
+ */
+const markAllAdminNotificationsReadService = async (res, userPayload) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    const companyId = userPayload.company_id || userPayload.id;
+
+    await NotificationHistory.update(
+      { is_read: true },
+      {
+        where: {
+          company_id: companyId,
+          user_type: { [Op.in]: ['STAFF', 'ADMIN', 'COMPANY'] },
+          is_read: false
+        }
+      }
+    );
+
+    return successResponse(res, statusCodes.OK, 'All notifications marked as read', { unread_count: 0 });
+  } catch (error) {
+    console.error('Error in markAllAdminNotificationsReadService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+/**
+ * Delete a notification or clear all for Admin
+ */
+const deleteAdminNotificationService = async (res, userPayload, notification_id, delete_all = false) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    const companyId = userPayload.company_id || userPayload.id;
+
+    if (delete_all) {
+      await NotificationHistory.destroy({
+        where: {
+          company_id: companyId,
+          user_type: { [Op.in]: ['STAFF', 'ADMIN', 'COMPANY'] }
+        }
+      });
+      return successResponse(res, statusCodes.OK, 'All notifications deleted successfully', { unread_count: 0 });
+    }
+
+    if (!notification_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Notification ID is required');
+    }
+
+    const deletedCount = await NotificationHistory.destroy({
+      where: {
+        id: notification_id,
+        company_id: companyId,
+        user_type: { [Op.in]: ['STAFF', 'ADMIN', 'COMPANY'] }
+      }
+    });
+
+    if (deletedCount === 0) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Notification not found');
+    }
+
+    const unread_count = await NotificationHistory.count({
+      where: {
+        company_id: companyId,
+        user_type: { [Op.in]: ['STAFF', 'ADMIN', 'COMPANY'] },
+        is_read: false
+      }
+    });
+
+    return successResponse(res, statusCodes.OK, 'Notification deleted successfully', { unread_count });
+  } catch (error) {
+    console.error('Error in deleteAdminNotificationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+module.exports = {
+  registerAdminTokenService,
+  sendManualNotificationService,
+  getAdminNotificationHistoryService,
+  getAdminNotificationBadgeCountService,
+  markAdminNotificationReadService,
+  markAllAdminNotificationsReadService,
+  deleteAdminNotificationService
+};

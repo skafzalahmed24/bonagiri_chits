@@ -1,0 +1,8355 @@
+const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const path = require('path');
+const statusCodes = require('../utils/statusCodes');
+const { successResponse, errorResponse } = require('../utils/responseHelper');
+const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, EnrollmentJointHolder, SelfTransfer, BorrowRepay, sequelize } = require('../models');
+const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
+const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials, nextOpenAuctionNumber, isFinalOpenMonth, dividendTargetMonth, lastInstalmentDate, getGroupCompanySeats, extractCompanySeats } = require('../utils/schemeHelpers');
+const { Op } = require('sequelize');
+const SystemSettingsService = require('./systemSettingsService');
+const twilioService = require('./twilioService');
+const fcmService = require('./fcmService');
+const { calculateMemberRating } = require('../utils/ratingHelper');
+const { deleteUploadedFile } = require('../utils/fileHelper');
+const { dailyPenaltyFor, penaltyPercentFor, toDateStr, daysBetween, addDays } = require('../utils/penalty');
+const { memberTicketsInGroup, ticketWin, holderMembersOf } = require('../utils/jointHolders');
+
+const formatDateDDMMYYYY = (dateVal) => {
+  if (!dateVal) return null;
+  const d = new Date(dateVal);
+  if (isNaN(d.getTime())) return null;
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}/${month}/${year}`;
+};
+
+const safeDateRange = (from_date, to_date) => {
+  if (!from_date || !to_date) return null;
+
+  const extractDateStr = (d) => {
+    if (!d) return null;
+    if (d instanceof Date) {
+      if (isNaN(d.getTime())) return null;
+      return d.toISOString().split('T')[0];
+    }
+    if (typeof d === 'string') {
+      const match = d.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (match) return match[1];
+    }
+    const dt = new Date(d);
+    if (isNaN(dt.getTime())) return null;
+    return dt.toISOString().split('T')[0];
+  };
+
+  const fromStr = extractDateStr(from_date);
+  const toStr = extractDateStr(to_date);
+
+  if (!fromStr || !toStr) return null;
+
+  const startDate = new Date(`${fromStr}T00:00:00.000Z`);
+  const endDate = new Date(`${toStr}T23:59:59.999Z`);
+
+  if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return null;
+
+  return {
+    fromStr,
+    toStr,
+    startDate,
+    endDate
+  };
+};
+
+const getPayoutStatus = (total_paid, total_pending) => {
+  if (total_paid > 0 && total_pending === 0) {
+    return 1; // 1 FOR PAID
+  } else if (total_paid > 0 && total_pending > 0) {
+    return 2; // 2 FOR PARTIAL PAYOUT
+  }
+  return 3; // 3 FOR PENDING
+};
+
+const resolveCompanyIdForAssociation = async (userPayload, reqBody = {}) => {
+  if (reqBody && reqBody.company_id) {
+    return reqBody.company_id;
+  }
+  return resolveCompanyIdForAuth(userPayload);
+};
+
+const resolveCompanyIdForAuth = async (userPayload) => {
+  if (!userPayload) return null;
+
+  if (userPayload.company_id) {
+    return userPayload.company_id;
+  }
+  if (userPayload.role === 'company') {
+    return userPayload.id;
+  }
+  if (userPayload.role === 'staff') {
+    return userPayload.company_id;
+  }
+  if (userPayload.role === 'member' || userPayload.role === 'subscriber' || userPayload.id) {
+    if (userPayload.id) {
+      const member = await Member.findByPk(userPayload.id, { attributes: ['company_id'] });
+      if (member && member.company_id) return member.company_id;
+    }
+    const userEnrollment = await Enrollment.findOne({
+      where: {
+        [Op.or]: [
+          { subscriber_id: userPayload.id },
+          { collection_agent_id: userPayload.id },
+          { business_agent_id: userPayload.id }
+        ],
+        delete_status: 0
+      },
+      attributes: ['company_id'],
+      order: [['createdAt', 'DESC']]
+    });
+    return userEnrollment ? userEnrollment.company_id : null;
+  }
+
+  if (userPayload.user_id && typeof userPayload.user_id === 'string' && userPayload.user_id.length > 20) {
+    return userPayload.user_id;
+  }
+  return null;
+};
+
+const loginAdminService = async (res, email, password) => {
+  const superadminEmail = process.env.SUPERADMIN_EMAIL;
+  const superadminPasswordHash = process.env.SUPERADMIN_PASSWORD_HASH;
+
+  if (superadminEmail && email === superadminEmail) {
+    if (superadminPasswordHash && (await bcrypt.compare(password, superadminPasswordHash))) {
+      const user = { email: superadminEmail, role: 'superadmin', company_id: null, gender: null, profile_image: null };
+      const tokens = generateTokens(user);
+      return successResponse(res, statusCodes.OK, 'Login success', { user, tokens });
+    }
+  }
+  return errorResponse(res, statusCodes.NOT_FOUND, 'Invalid email or password');
+};
+
+const loginCompanyService = async (res, user_code, password, type, deviceInfo = {}) => {
+  try {
+    let user;
+    let role;
+    if (type === 1) {
+      user = await Company.scope('withPassword').findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+      role = 'company';
+
+      if (user && !(await bcrypt.compare(password, user.company_password))) {
+        user = null;
+      }
+
+      if (!user) {
+        const staffUser = await StaffUser.scope('withPassword').findOne({ where: { user_code, is_deleted_status: 0 } });
+        if (staffUser && (await bcrypt.compare(password, staffUser.password))) {
+          if (!staffUser.is_active) {
+            return errorResponse(res, statusCodes.FORBIDDEN, "You don't have access to login");
+          }
+          user = staffUser;
+          role = 'staff';
+        }
+      }
+    } else if (type === 2) {
+      user = await Member.scope('withPassword').findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+      if (user && user.other_info_user_password && (await bcrypt.compare(password, user.other_info_user_password))) {
+        if (!user.is_verified) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin will review your account, please wait.');
+        }
+        if (user.is_active === false) {
+          return errorResponse(res, statusCodes.OK, 'Your account has been deactivated. Please contact your branch.');
+        }
+        role = 'member';
+      } else {
+        user = null;
+      }
+    }
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Invalid credentials');
+
+    // Update device information
+    const crypto = require('crypto');
+    const { normalizePlatformType } = require('../utils/platformHelper');
+    const { fcm_token, device_id, device_unique_id, platform_type, device_details } = deviceInfo;
+    const activeDeviceUniqueId = (device_unique_id && typeof device_unique_id === 'string' && device_unique_id.trim() !== '')
+      ? device_unique_id.trim()
+      : crypto.randomUUID();
+
+    const updatePayload = {
+      device_id: device_id || null,
+      device_unique_id: activeDeviceUniqueId,
+      platform_type: normalizePlatformType(platform_type),
+      device_details: device_details ? (typeof device_details === 'object' ? JSON.stringify(device_details) : String(device_details)) : null
+    };
+    if (fcm_token) {
+      updatePayload.fcm_token = fcm_token;
+      console.log(`[AUTH LOGIN] User '${user_code}' (${role} ID: ${user.id}) logged in with FCM device token.`);
+    } else {
+      console.log(`[AUTH LOGIN] User '${user_code}' (${role} ID: ${user.id}) logged in WITHOUT FCM device token.`);
+    }
+
+    await user.update(updatePayload);
+
+    let staffPermissions = null;
+    if (role === 'staff') {
+      const staffRole = await Role.findByPk(user.role_id);
+      staffPermissions = staffRole?.permissions || {};
+    }
+
+    let introduced_as_details = [];
+    if (type === 2 && user.introduced_as) {
+      let intIds = [];
+      if (Array.isArray(user.introduced_as)) {
+        intIds = user.introduced_as.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+      } else if (typeof user.introduced_as === 'string') {
+        try {
+          intIds = JSON.parse(user.introduced_as).map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+        } catch (e) {
+          intIds = [parseInt(user.introduced_as, 10)].filter(id => !isNaN(id));
+        }
+      } else {
+        intIds = [parseInt(user.introduced_as, 10)].filter(id => !isNaN(id));
+      }
+
+      if (intIds.length > 0) {
+        const introducers = await StaticDropdownsList.findAll({
+          where: { id: { [Op.in]: intIds } },
+          attributes: ['id', 'dropdown_name']
+        });
+        introduced_as_details = introducers.map(ind => ({
+          id: ind.id,
+          name: ind.dropdown_name
+        }));
+      }
+    }
+
+    let memberRating = null;
+    if (type === 2 && role === 'member') {
+      memberRating = await calculateMemberRating(user.id, user);
+    }
+
+    const payload = {
+      id: user.id,
+      user_id: type === 1 ? (role === 'company' ? user.company_id : user.user_code) : user.other_info_user_code,
+      role,
+      company_id: role !== 'company' ? user.company_id : undefined,
+      permissions: role === 'staff' ? staffPermissions : undefined,
+      introduced_as: introduced_as_details.map(i => i.id),
+      device_unique_id: activeDeviceUniqueId
+    };
+    const tokens = generateTokens(payload);
+
+    const userResponse = {
+      id: user.id,
+      user_id: payload.user_id,
+      company_id: type === 1 ? (role === 'company' ? user.id : user.company_id) : user.company_id,
+      name: user.company_name || (user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user.name),
+      type: user.type,
+      role: role,
+      gender: user.gender || null,
+      profile_image: user.upload_image || null,
+      is_favorites: user.is_favorites || [],
+      introduced_as: introduced_as_details
+    };
+
+    if (memberRating) {
+      userResponse.star_rating = memberRating.star_rating;
+      userResponse.rating_tier = memberRating.rating_tier;
+      userResponse.rating_category = memberRating.rating_category;
+      userResponse.rating_color = memberRating.rating_color;
+      userResponse.rating_label = memberRating.rating_label;
+      userResponse.trust_tier = memberRating.trust_tier;
+      userResponse.risk_level = memberRating.risk_level;
+      userResponse.badges = memberRating.badges;
+      userResponse.rating = memberRating;
+    }
+
+    return successResponse(res, statusCodes.OK, 'Login success', {
+      user: userResponse,
+      tokens
+    });
+  } catch (error) {
+    console.error('Error in loginCompanyService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Login failed');
+  }
+};
+
+const forgotPasswordService = async (res, user_code, type) => {
+  try {
+    let user, role;
+    if (type === 1) {
+      user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+      role = 'company';
+      if (!user) {
+        user = await StaffUser.findOne({ where: { user_code, is_deleted_status: 0 } });
+        role = 'staff';
+      }
+    } else {
+      user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+      role = 'member';
+    }
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
+
+    const isStatic = twilioService.isStaticOtp();
+    const otp = isStatic ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 15 * 60000);
+
+    if (role === 'staff') {
+      await user.update({ otp, otp_expires_at: expiresAt, otp_attempts: 0 });
+    } else {
+      await user.update({ mobile_otp: otp, mobile_otp_expires_at: expiresAt, mobile_otp_attempts: 0 });
+    }
+
+    const targetMobile = user.mobile_number;
+    console.log(`[FORGOT PASSWORD] Triggered OTP for User '${user_code}' (${role}) | Mobile: ${targetMobile || 'NO MOBILE'} | Mode: ${isStatic ? 'STATIC (123456)' : 'DYNAMIC TWILIO'}`);
+
+    // Send OTP via Twilio Verify/SMS if mobile number exists
+    let twilioStatus = null;
+    let twilioMsg = null;
+    if (targetMobile) {
+      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', user.country_code || null);
+      twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
+      twilioMsg = twilioRes.message;
+    } else {
+      console.warn(`[FORGOT PASSWORD] User '${user_code}' has no mobile number on file. SMS trigger skipped.`);
+    }
+
+    const maskedMobile = targetMobile ? targetMobile.replace(/.(?=.{2})/g, 'x') : null;
+    return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP sent successfully', {
+      user_code,
+      type,
+      is_static_otp: isStatic,
+      static_otp: isStatic ? '123456' : undefined,
+      mobile_number_masked: maskedMobile,
+      twilio_status: twilioStatus,
+      info: twilioMsg
+    });
+  } catch (error) {
+    console.error('[FORGOT PASSWORD] Error in forgotPasswordService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to send OTP');
+  }
+};
+
+const verifyOtpService = async (res, user_code, type, otp) => {
+  try {
+    let user, role;
+    if (type === 1) {
+      user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+      role = 'company';
+      if (!user) {
+        user = await StaffUser.findOne({ where: { user_code, is_deleted_status: 0 } });
+        role = 'staff';
+      }
+    } else {
+      user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+      role = 'member';
+    }
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
+
+    const maxAttempts = 3;
+    const now = new Date();
+
+    let dbOtp, dbExpiresAt, dbAttempts;
+    if (role === 'staff') {
+      dbOtp = user.otp;
+      dbExpiresAt = user.otp_expires_at;
+      dbAttempts = user.otp_attempts || 0;
+    } else {
+      dbOtp = user.mobile_otp;
+      dbExpiresAt = user.mobile_otp_expires_at;
+      dbAttempts = user.mobile_otp_attempts || 0;
+    }
+
+    // if (dbAttempts >= maxAttempts) {
+    //   return errorResponse(res, statusCodes.BAD_REQUEST, 'Maximum OTP attempts exceeded');
+    // }
+
+    if (dbExpiresAt && now > new Date(dbExpiresAt)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'OTP has expired');
+    }
+
+    // Check Static OTP, DB OTP match, or Twilio Verify check
+    const isStatic = twilioService.isStaticOtp();
+    let isOtpValid = isStatic ? (String(otp).trim() === '123456' || String(dbOtp) === String(otp)) : (String(dbOtp) === String(otp));
+
+    if (!isOtpValid && user.mobile_number && twilioService.isConfigured()) {
+      const verifyCheck = await twilioService.checkVerificationOtp(user.mobile_number, otp, user.country_code || null);
+      if (verifyCheck.valid) {
+        isOtpValid = true;
+      }
+    }
+
+    if (!isOtpValid) {
+      console.warn(`[VERIFY OTP FAILED] User '${user_code}' entered invalid OTP: "${otp}"`);
+      if (role === 'staff') {
+        await user.update({ otp_attempts: dbAttempts + 1 });
+      } else {
+        await user.update({ mobile_otp_attempts: dbAttempts + 1 });
+      }
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid OTP');
+    }
+
+    console.log(`[VERIFY OTP SUCCESS] User '${user_code}' (${role}) successfully verified OTP.`);
+    if (role === 'staff') {
+      await user.update({ otp: null, otp_expires_at: null, otp_attempts: 0 });
+    } else {
+      await user.update({ mobile_otp: null, mobile_otp_expires_at: null, mobile_otp_attempts: 0 });
+    }
+
+    const resetToken = generateResetToken({ user_code, type });
+
+    return successResponse(res, statusCodes.OK, 'OTP verified successfully', { reset_token: resetToken });
+  } catch (error) {
+    console.error('Error in verifyOtpService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'OTP verification failed');
+  }
+};
+
+
+const resetPasswordService = async (res, user_code, type, password, reset_token) => {
+  try {
+    let decoded;
+    try {
+      decoded = verifyResetToken(reset_token);
+    } catch (err) {
+      return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid or expired reset token');
+    }
+
+    user_code = decoded.user_code;
+    type = decoded.type;
+
+    let user, role;
+    if (type === 1) {
+      user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+      role = 'company';
+      if (!user) {
+        user = await StaffUser.findOne({ where: { user_code, is_deleted_status: 0 } });
+        role = 'staff';
+      }
+    } else {
+      user = await Member.findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
+      role = 'member';
+    }
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    if (role === 'company') await user.update({ company_password: hashedPassword, mobile_otp: null });
+    else if (role === 'staff') await user.update({ password: hashedPassword, otp: null });
+    else await user.update({ other_info_user_password: hashedPassword, mobile_otp: null });
+
+    return successResponse(res, statusCodes.OK, 'Password reset successfully');
+  } catch (error) {
+    console.error('Error in resetPasswordService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Password reset failed');
+  }
+};
+
+const refreshTokenService = async (res, refresh_token) => {
+  try {
+    const { RevokedToken, Company, StaffUser, Member } = require('../models');
+    const isRevoked = await RevokedToken.findOne({ where: { token: refresh_token } });
+    if (isRevoked) {
+      return errorResponse(res, statusCodes.UNAUTHORIZED, 'Token has been revoked or logged out');
+    }
+
+    const decoded = verifyRefreshToken(refresh_token);
+
+    if (decoded.role === 'company') {
+      const user = await Company.findByPk(decoded.id, {
+        attributes: ['id', 'device_unique_id', 'is_deleted_status', 'status']
+      });
+      if (!user || user.is_deleted_status !== 0 || user.status === 0) {
+        return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
+      }
+      if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
+        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
+      }
+    } else if (decoded.role === 'staff') {
+      const user = await StaffUser.findByPk(decoded.id, {
+        attributes: ['id', 'device_unique_id', 'is_deleted_status', 'is_active']
+      });
+      if (!user || user.is_deleted_status !== 0 || !user.is_active) {
+        return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
+      }
+      if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
+        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
+      }
+    } else if (decoded.role === 'member') {
+      const user = await Member.findByPk(decoded.id, {
+        attributes: ['id', 'device_unique_id', 'is_deleted_status', 'is_verified']
+      });
+      if (!user || user.is_deleted_status !== 0 || !user.is_verified) {
+        return errorResponse(res, statusCodes.UNAUTHORIZED, 'User account is inactive or not found');
+      }
+      if (!user.device_unique_id || user.device_unique_id !== decoded.device_unique_id) {
+        return errorResponse(res, statusCodes.CONFLICT, 'Another device has been logged in');
+      }
+    }
+
+    const payload = { ...decoded };
+    delete payload.iat;
+    delete payload.exp;
+    const tokens = generateTokens(payload);
+    return successResponse(res, statusCodes.OK, 'Token refreshed successfully', { tokens });
+  } catch (error) {
+    return errorResponse(res, statusCodes.UNAUTHORIZED, 'Invalid or expired refresh token');
+  }
+};
+
+const storeOrUpdateCompanyService = async (res, data = {}) => {
+  const { id, ...companyData } = data;
+
+  if (companyData.company_password) {
+    companyData.company_password = await bcrypt.hash(companyData.company_password, 10);
+  } else {
+    delete companyData.company_password;
+  }
+
+  if (id) {
+    const company = await Company.findByPk(id);
+    if (!company) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+    delete companyData.company_id; // prevent updating generated field
+    await company.update(companyData);
+
+    const { company_password, ...safeCompany } = company.toJSON();
+    return successResponse(res, statusCodes.OK, 'Company updated successfully', safeCompany);
+  } else {
+    delete companyData.company_id; // model hook will handle creation
+    const newCompany = await Company.create(companyData);
+
+    const { company_password, ...safeCompany } = newCompany.toJSON();
+    return successResponse(res, statusCodes.CREATED, 'Company registered successfully', safeCompany);
+  }
+};
+
+const getAllCompanyDetailsService = async (res, min, max) => {
+  const limit = parseInt(max, 10) || 10;
+  const offset = parseInt(min, 10) || 0;
+  const companies = await Company.findAndCountAll({ where: { is_deleted_status: 0 }, limit, offset, order: [['createdAt', 'DESC']] });
+  return successResponse(res, statusCodes.OK, 'Companies retrieved successfully', companies);
+};
+
+const deleteCompanyService = async (res, id) => {
+  const company = await Company.findByPk(id);
+  if (!company) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+  await company.update({ is_deleted_status: 1 });
+  return successResponse(res, statusCodes.OK, 'Company deleted successfully');
+};
+
+const generateUniqueUserCode = async () => {
+  let code;
+  let isUnique = false;
+  while (!isUnique) {
+    code = Math.floor(100000 + Math.random() * 900000);
+    const existing = await Member.findOne({ where: { other_info_user_code: code } });
+    if (!existing) isUnique = true;
+  }
+  return code;
+};
+
+const generateUniqueMemberId = async () => {
+  let memberId;
+  let isUnique = false;
+  while (!isUnique) {
+    memberId = 'MEM' + Math.floor(100000 + Math.random() * 900000);
+    const existing = await Member.findOne({ where: { member_id: memberId } });
+    if (!existing) isUnique = true;
+  }
+  return memberId;
+};
+
+const storeOrUpdateMemberService = async (res, data = {}) => {
+  try {
+    const { id, ...memberData } = data;
+    if (id) {
+      // Update existing
+      const member = await Member.findByPk(id);
+      if (!member) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      }
+
+      if (memberData.mobile_number) {
+        const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number, id: { [Op.ne]: id } } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+      }
+
+      if (memberData.country_code) {
+        memberData.country_code = memberData.country_code.toUpperCase().trim();
+      }
+
+      // Prevent updating generated fields during edit
+      delete memberData.member_id;
+      delete memberData.other_info_user_code;
+
+      // Hash password if provided during update; remove if empty so the
+      // existing hash is not overwritten with a blank string.
+      if (memberData.other_info_user_password) {
+        memberData.other_info_user_password = await bcrypt.hash(memberData.other_info_user_password, 10);
+      } else {
+        delete memberData.other_info_user_password;
+      }
+
+      await member.update(memberData);
+      const { other_info_user_password, password, ...safeMember } = member.toJSON();
+      return successResponse(res, statusCodes.OK, 'Member updated successfully', safeMember);
+    } else {
+      // Create new
+      if (!memberData.country_code) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Country code is required');
+      }
+      memberData.country_code = memberData.country_code.toUpperCase().trim();
+
+      if (memberData.mobile_number) {
+        const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+      }
+
+      if (!memberData.member_id) {
+        memberData.member_id = await generateUniqueMemberId();
+      } else {
+        const existing = await Member.findOne({ where: { member_id: memberData.member_id } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Member ID already exists');
+      }
+
+      if (!memberData.other_info_user_code) {
+        memberData.other_info_user_code = await generateUniqueUserCode();
+      } else {
+        const existing = await Member.findOne({ where: { other_info_user_code: memberData.other_info_user_code } });
+        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'User Code already exists');
+      }
+
+      if (memberData.other_info_user_password) {
+        memberData.other_info_user_password = await bcrypt.hash(memberData.other_info_user_password, 10);
+      }
+
+      memberData.is_verified = false;
+      const newMember = await Member.create(memberData);
+      const { other_info_user_password, password, ...safeMember } = newMember.toJSON();
+      return successResponse(res, statusCodes.CREATED, 'Member registered successfully', safeMember);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateMemberService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllMemberDetailsService = async (res, company_id, introduced_as, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' ? { company_id } : {}),
+      ...(introduced_as && introduced_as !== '' ? { introduced_as: { [Op.contains]: [introduced_as] } } : {}),
+      [Op.or]: [
+        { name: { [Op.like]: `%${search || ''}%` } },
+        { member_id: { [Op.like]: `%${search || ''}%` } },
+        { mobile_number: { [Op.like]: `%${search || ''}%` } }
+      ]
+    };
+
+    const members = await Member.findAndCountAll({
+      limit,
+      offset,
+      where,
+      attributes: { exclude: ['verification_otp', 'verification_otp_expires_at', 'verification_otp_attempts', 'other_info_user_password'] },
+      include: [
+        { model: StaticDropdownsList, as: 'title', attributes: ['dropdown_name'] },
+        { model: StaticDropdownSubcategoryList, as: 'parental_title', attributes: ['subcategory_name'] },
+        { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['dropdown_name'] },
+        { model: StaticDropdownsList, as: 'occupation', attributes: ['dropdown_name'] },
+        { model: StaticDropdownsList, as: 'emp_type', attributes: ['dropdown_name'] },
+        { model: StaticDropdownSubcategoryList, as: 'business_type_details', attributes: ['subcategory_name'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    // Resolve labels and filter by introduced_as if provided
+    let rows = await Promise.all(members.rows.map(async (member) => {
+      const memberData = member.toJSON();
+
+      // Resolve introduced_as
+      let intro = memberData.introduced_as;
+      if (typeof intro === 'string') {
+        try { intro = JSON.parse(intro); } catch (e) { intro = []; }
+      }
+      if (Array.isArray(intro)) {
+        const intIds = intro.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+        memberData.introduced_as = intIds;
+        if (intIds.length > 0) {
+          const labels = await StaticDropdownsList.findAll({
+            where: { id: { [Op.in]: intIds } },
+            attributes: ['id', 'dropdown_name']
+          });
+          memberData.introduced_as_dropdown = labels;
+        } else {
+          memberData.introduced_as_dropdown = [];
+        }
+      }
+
+      // Resolve other_info_kyc_details
+      if (Array.isArray(memberData.other_info_kyc_details)) {
+        const intIds = memberData.other_info_kyc_details.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+        if (intIds.length > 0) {
+          const labels = await StaticDropdownsList.findAll({
+            where: { id: { [Op.in]: intIds } },
+            attributes: ['id', 'dropdown_name']
+          });
+          memberData.kyc_type = labels;
+        } else {
+          memberData.kyc_type = [];
+        }
+      }
+
+      return memberData;
+    }));
+
+    // Filter by introduced_as UUID is now handled in SQL
+    return successResponse(res, statusCodes.OK, 'Members retrieved successfully', { count: members.count, rows });
+  } catch (error) {
+    console.error('Error in getAllMemberDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteMemberService = async (res, id, companyId) => {
+  try {
+    const member = await Member.findOne({ where: { id, company_id: companyId } });
+    if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+    await member.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Member deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteMemberService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const uploadDocumentService = async (res, type, files) => {
+  return successResponse(res, statusCodes.OK, 'Documents uploaded successfully');
+};
+
+const storeOrUpdateRouteService = async (res, comp_id, data = {}) => {
+  try {
+    const { id, ...routeData } = data;
+    if (comp_id) routeData.company_id = comp_id;
+    if (id) {
+      const route = await Route.findByPk(id);
+      if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
+      await route.update(routeData);
+      return successResponse(res, statusCodes.OK, 'Route updated successfully', route);
+    } else {
+      const newRoute = await Route.create(routeData);
+      return successResponse(res, statusCodes.CREATED, 'Route created successfully', newRoute);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateRouteService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllRouteDetailsService = async (res, company_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { route_name: { [Op.like]: `%${search}%` } })
+    };
+    const routes = await Route.findAndCountAll({
+      limit,
+      offset,
+      where,
+      include: [{ model: City, as: 'city', attributes: ['city_name'] }],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const formattedRows = routes.rows.map(route => {
+      const routeData = route.toJSON();
+      return { ...routeData, city_name: routeData.city?.city_name || null, city: undefined };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Routes retrieved successfully', { count: routes.count, rows: formattedRows });
+  } catch (error) {
+    console.error('Error in getAllRouteDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteRouteService = async (res, id, companyId) => {
+  try {
+    const route = await Route.findOne({ where: { id, company_id: companyId } });
+    if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
+    await route.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Route deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteRouteService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAreaService = async (res, comp_id, data = {}) => {
+  try {
+    const { id, ...areaData } = data;
+    if (comp_id) areaData.company_id = comp_id;
+    if (id) {
+      const area = await Area.findByPk(id);
+      if (!area) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
+      await area.update(areaData);
+      return successResponse(res, statusCodes.OK, 'Area updated successfully', area);
+    } else {
+      const newArea = await Area.create(areaData);
+      return successResponse(res, statusCodes.CREATED, 'Area created successfully', newArea);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateAreaService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAreaDetailsService = async (res, company_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { area_name: { [Op.like]: `%${search}%` } })
+    };
+    const areas = await Area.findAndCountAll({
+      limit, offset, where,
+      include: [{ model: Route, as: 'route', attributes: ['id', 'route_name'] }],
+      order: [['createdAt', 'DESC']]
+    });
+    const formattedRows = areas.rows.map(area => {
+      const areaData = area.toJSON();
+      return { ...areaData, route_id: areaData.route?.id || null, route_name: areaData.route?.route_name || null, route: undefined };
+    });
+    return successResponse(res, statusCodes.OK, 'Areas retrieved successfully', { count: areas.count, rows: formattedRows });
+  } catch (error) {
+    console.error('Error in getAllAreaDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteAreaService = async (res, id, companyId) => {
+  try {
+    const area = await Area.findOne({ where: { id, company_id: companyId } });
+    if (!area) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
+    await area.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Area deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteAreaService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const computeGroupStatus = async (group) => {
+  if (Number(group.chits_group_status) === 2) return 2;
+  const businessDate = await SystemSettingsService.getBusinessDate();
+  const startDateStr = getGroupStartDate(group);
+  if (!startDateStr) return 0;
+  const startDate = new Date(startDateStr);
+  if (startDate <= new Date(businessDate)) return 1;
+  return 0;
+};
+
+const frequencyFromModeName = (name) => {
+  const n = String(name || '').toLowerCase();
+  if (n === 'weekly') return 2;
+  if (n === 'daily') return 3;
+  return 1; // monthly, and the default
+};
+
+/**
+ * The group's instalment schedule for one payment frequency, as rows of
+ * { type, installment_no, due_date, payable_amount }. Copies the schedule of a
+ * member who already has one with the same frequency, so everyone in a group is on
+ * the same dates; otherwise generates it (decision 1: instalment 1 on the start date).
+ * Used by enrollment and by the late-join preview so the two can never disagree.
+ */
+const buildGroupSchedule = async (group, mappedType, { transaction, excludeEnrollmentId = null } = {}) => {
+  const peerRows = await sequelize.query(`
+    SELECT ci.enrollment_id
+    FROM chits_installments ci
+    JOIN enrollments e ON e.id = ci.enrollment_id
+    WHERE e.group_id = :groupId
+      AND e.delete_status = 0
+      AND e.id <> :excludeId
+      AND ci.type = :mappedType
+    LIMIT 1
+  `, {
+    replacements: { groupId: group.id, excludeId: excludeEnrollmentId || -1, mappedType },
+    type: sequelize.QueryTypes.SELECT,
+    transaction
+  });
+
+  if (peerRows.length > 0) {
+    const peerInstallments = await ChitsInstallment.findAll({
+      where: { enrollment_id: peerRows[0].enrollment_id },
+      order: [['installment_no', 'ASC']],
+      transaction
+    });
+    if (peerInstallments.length > 0) {
+      return peerInstallments.map((p) => ({
+        type: p.type,
+        installment_no: p.installment_no,
+        due_date: toDateStr(p.due_date),
+        payable_amount: p.payable_amount
+      }));
+    }
+  }
+
+  const noOfInstallments = group.no_of_installments || 1;
+  const initialDateStr = getGroupStartDate(group) || new Date().toISOString().split('T')[0];
+  const payableAmount = parseFloat(((parseFloat(group.chit_amount) || 0) / noOfInstallments).toFixed(2));
+
+  const schemeConfig = group.scheme_configuration_id
+    ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
+    : null;
+  const pricesArray = schemeConfig && schemeConfig.prices
+    ? (typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices)
+    : [];
+
+  const daysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  const asDateStr = (d) => new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+  const dateIterator = new Date(initialDateStr);
+  const dueDayOfMonth = group.due_date_number_count || dateIterator.getDate();
+
+  const rows = [];
+  for (let i = 1; i <= noOfInstallments; i++) {
+    let currentPayableAmount = payableAmount;
+    if (schemeConfig) {
+      if (schemeConfig.scheme_type === 65 || schemeConfig.scheme_type === 64) {
+        currentPayableAmount = parseFloat(pricesArray[i - 1]?.installment) || 0;
+      } else if (schemeConfig.scheme_type === 62) {
+        currentPayableAmount = parseFloat(pricesArray[i - 1]?.not_withdrawn) || 0;
+      } else if (schemeConfig.scheme_type === 63) {
+        currentPayableAmount = parseFloat(schemeConfig.installment) || 0;
+      }
+    }
+
+    let dueDateStr;
+    if (i === 1) {
+      dueDateStr = asDateStr(dateIterator);
+    } else if (mappedType === 2) {
+      const d = new Date(initialDateStr);
+      d.setDate(d.getDate() + 7 * (i - 1));
+      dueDateStr = asDateStr(d);
+    } else if (mappedType === 3) {
+      const d = new Date(initialDateStr);
+      d.setDate(d.getDate() + (i - 1));
+      dueDateStr = asDateStr(d);
+    } else {
+      // Pin to the 1st before moving months so short months can't overflow, then clamp.
+      const d = new Date(initialDateStr);
+      d.setDate(1);
+      d.setMonth(d.getMonth() + (i - 1));
+      d.setDate(Math.min(dueDayOfMonth, daysInMonth(d)));
+      dueDateStr = asDateStr(d);
+    }
+
+    rows.push({ type: mappedType, installment_no: i, due_date: dueDateStr, payable_amount: currentPayableAmount });
+  }
+  return rows;
+};
+
+/** The company's late-join grace period in days (company setting, default 15). */
+const lateJoinGraceDays = async (companyId, transaction) => {
+  if (!companyId) return 15;
+  const company = await Company.findByPk(companyId, { attributes: ['late_join_grace_days'], transaction });
+  const days = company ? parseInt(company.late_join_grace_days, 10) : NaN;
+  return Number.isNaN(days) ? 15 : days;
+};
+
+/** Instalments already due on the joining date: the late joiner's catch-up. */
+const catchUpRows = (rows, enrollmentDateStr) => rows.filter((r) => r.due_date <= enrollmentDateStr);
+
+const createInstallmentsForEnrollment = async (enrollment, group, options = {}) => {
+  const transaction = options.transaction;
+
+  // Skip if installments data already generated for this enrollment
+  const existingInstallmentRecord = await ChitsInstallment.findOne({
+    where: { enrollment_id: enrollment.id },
+    transaction
+  });
+  if (existingInstallmentRecord) return;
+
+  const mappedType = frequencyFromModeName(enrollment.payment_mode && enrollment.payment_mode.dropdown_name);
+  const schedule = await buildGroupSchedule(group, mappedType, { transaction, excludeEnrollmentId: enrollment.id });
+
+  const installmentsJsonArray = schedule.map((r) => ({
+    enrollment_id: enrollment.id,
+    group_id: group.id,
+    type: r.type,
+    installment_no: r.installment_no,
+    due_date: r.due_date,
+    over_due_days_count: 0,
+    penalty_amount: 0.00,
+    payable_amount: r.payable_amount,
+    penalty_from_date: null,
+    penalty_last_applied_date: null
+  }));
+
+  // Late joiner (WP5): instalments already due on the joining date carry the penalty
+  // the admin chose, and the daily penalty waits for the grace period.
+  const enrollmentDateStr = toDateStr(enrollment.enrollment_date);
+  const catchUp = enrollmentDateStr ? catchUpRows(installmentsJsonArray, enrollmentDateStr) : [];
+  if (catchUp.length > 0) {
+    const graceDays = await lateJoinGraceDays(enrollment.company_id || group.company_id, transaction);
+    const penaltyFromDateStr = addDays(enrollmentDateStr, graceDays);
+    const penaltyType = parseInt(enrollment.late_join_penalty_type, 10);
+    const amount = parseFloat(enrollment.late_join_penalty_amount) || 0;
+
+    let applied = 0;
+    catchUp.forEach((inst, idx) => {
+      inst.penalty_from_date = penaltyFromDateStr;
+      if (penaltyType === 1 && amount > 0) {
+        // Spread a fixed total; the last instalment takes the rounding remainder.
+        const share = parseFloat((amount / catchUp.length).toFixed(2));
+        inst.penalty_amount = idx === catchUp.length - 1
+          ? parseFloat((amount - share * (catchUp.length - 1)).toFixed(2))
+          : share;
+      } else if (penaltyType === 2 && amount > 0) {
+        inst.penalty_amount = amount;
+      }
+      applied += inst.penalty_amount;
+    });
+
+    // Record what was actually applied, for audit (type 2 stores the total, not the per-instalment amount).
+    if (!Number.isNaN(penaltyType)) {
+      await Enrollment.update(
+        { late_join_penalty_type: penaltyType, late_join_penalty_amount: parseFloat(applied.toFixed(2)) },
+        { where: { id: enrollment.id }, transaction }
+      );
+    }
+  }
+
+  await ChitsInstallment.bulkCreate(installmentsJsonArray, { transaction });
+};
+
+const createInstallmentsForGroup = async (group_id, options = {}) => {
+  const transaction = options.transaction;
+  const group = await ChitsGroup.findByPk(group_id, { transaction });
+  if (!group) return;
+
+  const enrollments = await Enrollment.findAll({
+    where: { group_id: group.id, delete_status: 0 },
+    include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+    transaction
+  });
+
+  for (const enrollment of enrollments) {
+    await createInstallmentsForEnrollment(enrollment, group, { transaction });
+  }
+};
+
+const storeOrUpdateChitsGroupService = async (res, data = {}) => {
+  try {
+    const { id, chits_group_status, ...chitsGroupData } = data; // ignore client status
+
+    if (chitsGroupData.commencement_date !== undefined) {
+      chitsGroupData.chit_start_date = chitsGroupData.commencement_date;
+    }
+
+    // The end date is derived (the last instalment's due date); the form has no field for it, so
+    // whatever the client sends (its default is today) is ignored.
+    delete chitsGroupData.chit_end_date;
+    const deriveEndDate = (existing = {}) => require('../utils/schemeHelpers').lastInstalmentDate(
+      toDateStr(chitsGroupData.commencement_date ?? existing.commencement_date ?? chitsGroupData.chit_start_date ?? existing.chit_start_date),
+      chitsGroupData.no_of_installments ?? existing.no_of_installments,
+      chitsGroupData.due_date_number_count !== undefined ? chitsGroupData.due_date_number_count : existing.due_date_number_count
+    );
+
+    if (id) {
+      const chitsGroup = await ChitsGroup.findByPk(id);
+      if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+      const derivedEnd = deriveEndDate(chitsGroup);
+      if (derivedEnd) chitsGroupData.chit_end_date = derivedEnd;
+
+      // Schedule change detection
+      const scheduleFieldsChanged =
+        (chitsGroupData.commencement_date && chitsGroupData.commencement_date !== chitsGroup.commencement_date) ||
+        (chitsGroupData.chit_start_date && chitsGroupData.chit_start_date !== chitsGroup.chit_start_date) ||
+        (chitsGroupData.due_date_number_count !== undefined && String(chitsGroupData.due_date_number_count) !== String(chitsGroup.due_date_number_count)) ||
+        (chitsGroupData.no_of_installments !== undefined && String(chitsGroupData.no_of_installments) !== String(chitsGroup.no_of_installments)) ||
+        (chitsGroupData.chit_amount !== undefined && String(chitsGroupData.chit_amount) !== String(chitsGroup.chit_amount)) ||
+        (chitsGroupData.scheme_configuration_id !== undefined && String(chitsGroupData.scheme_configuration_id) !== String(chitsGroup.scheme_configuration_id));
+
+      // Check if self_chits_as_company_months is being changed on an existing group with recorded auctions
+      if (chitsGroupData.self_chits_as_company_months !== undefined &&
+          Boolean(chitsGroupData.self_chits_as_company_months) !== Boolean(chitsGroup.self_chits_as_company_months)) {
+        const auctionsCount = await Auction.count({ where: { group_id: id } });
+        if (auctionsCount > 0) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot change self chits company month setting after auctions have started');
+        }
+      }
+
+      if (scheduleFieldsChanged) {
+        const hasPayments = await CustomerPayment.count({
+          where: { payment_status: { [Op.in]: [0, 1] } },
+          include: [{
+            model: ChitsInstallment,
+            as: 'installment',
+            where: { group_id: id },
+            required: true
+          }]
+        });
+        if (hasPayments > 0) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'The schedule can\'t change after payments are recorded.');
+        }
+
+        // Apply changes and recreate schedule inside transaction
+        const updatedGroupData = { ...chitsGroupData, chits_group_status: await computeGroupStatus({ ...chitsGroup.toJSON(), ...chitsGroupData }) };
+
+        await sequelize.transaction(async (t) => {
+          await ChitsInstallment.destroy({ where: { group_id: id }, transaction: t });
+          await chitsGroup.update(updatedGroupData, { transaction: t });
+          await createInstallmentsForGroup(chitsGroup.id, { transaction: t });
+        });
+      } else {
+        const updatedGroupData = { ...chitsGroupData, chits_group_status: await computeGroupStatus({ ...chitsGroup.toJSON(), ...chitsGroupData }) };
+        await chitsGroup.update(updatedGroupData);
+      }
+
+      const groupJson = chitsGroup.toJSON();
+      groupJson.company_seats = await getGroupCompanySeats(chitsGroup.id, chitsGroup);
+      return successResponse(res, statusCodes.OK, 'Chits group updated successfully', groupJson);
+    } else {
+      console.log('Creating new ChitsGroup with data:', chitsGroupData);
+      const derivedEnd = deriveEndDate();
+      if (derivedEnd) chitsGroupData.chit_end_date = derivedEnd;
+      const tempGroupData = { ...chitsGroupData, chits_group_status: 0 };
+      const statusToSet = await computeGroupStatus(tempGroupData);
+      tempGroupData.chits_group_status = statusToSet;
+
+      const newChitsGroup = await ChitsGroup.create(tempGroupData);
+      console.log('New ChitsGroup created:', newChitsGroup.toJSON());
+
+      // Auto-enroll company if company_chit_number is provided
+      if (chitsGroupData.company_chit_number && chitsGroupData.company_chit_number !== '') {
+        console.log('company_chit_number provided:', chitsGroupData.company_chit_number);
+        const targetCompanyId = newChitsGroup.company_id || chitsGroupData.company_id;
+        console.log('Target Company ID:', targetCompanyId);
+        if (targetCompanyId) {
+          let companyMember = await Member.findOne({
+            where: {
+              company_id: targetCompanyId,
+              group_status: 1,
+              is_deleted_status: 0
+            }
+          });
+
+          // If company member doesn't exist, create one
+          if (!companyMember) {
+            console.log('Company member not found, creating one...');
+            const company = await Company.findByPk(targetCompanyId);
+            companyMember = await Member.create({
+              name: company ? company.company_name : 'Company Member',
+              company_id: targetCompanyId,
+              group_status: 1,
+              member_id: `COMP-${targetCompanyId.toString().slice(0, 8).toUpperCase()}`,
+              is_deleted_status: 0,
+              other_info_user_code: await generateUniqueUserCode()
+            });
+            console.log('Created company member with ID:', companyMember.id);
+          }
+
+          if (companyMember) {
+            await sequelize.transaction(async (t) => {
+              const enrollment = await Enrollment.create({
+                company_id: targetCompanyId,
+                group_id: newChitsGroup.id,
+                group_position_number: chitsGroupData.company_chit_number,
+                subscriber_id: companyMember.id,
+                enrollment_date: chitsGroupData.commencement_date || new Date().toISOString().split('T')[0],
+                address_type: 1, // Default to home
+                business_type_id: 1, // Default to direct
+                delete_status: 0
+              }, { transaction: t });
+
+              const loadedEnrollment = await Enrollment.findByPk(enrollment.id, {
+                include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+                transaction: t
+              });
+
+              await createInstallmentsForEnrollment(loadedEnrollment, newChitsGroup, { transaction: t });
+              console.log('Enrollment created:', enrollment.id);
+            });
+
+            const selfChit = await SelfChit.create({
+              company_id: targetCompanyId,
+              group_id: newChitsGroup.id,
+              subscriber_id: companyMember.id,
+              slot_id: chitsGroupData.company_chit_number,
+              is_deleted_status: 0
+            });
+            console.log('SelfChit created:', selfChit.id);
+          }
+        }
+        else {
+          console.log('Skipping enrollment: targetCompanyId is missing');
+        }
+      }
+
+      // Trigger FCM Notification for Marketing (New Group)
+      try {
+        const allMembers = await Member.findAll({ where: { company_id: newChitsGroup.company_id || chitsGroupData.company_id, is_deleted_status: 0, fcm_token: { [Op.ne]: null } } });
+        if (allMembers.length > 0) {
+          const groupName = newChitsGroup.group_name || chitsGroupData.group_name || 'Chit Group';
+          fcmService.sendPushToMulticast(allMembers, newChitsGroup.company_id || chitsGroupData.company_id, 'New Chit Group Launched!', `We have launched a new Chit Group: ${groupName}. Enroll now!`, { type: 'MARKETING_NEW_GROUP', group_id: String(newChitsGroup.id) });
+        }
+      } catch (pushErr) {
+        console.error('Error sending FCM push for new group marketing:', pushErr);
+      }
+
+      const createdGroupJson = newChitsGroup.toJSON();
+      createdGroupJson.company_seats = await getGroupCompanySeats(newChitsGroup.id, newChitsGroup);
+      return successResponse(res, statusCodes.CREATED, 'Chits group created successfully', createdGroupJson);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateChitsGroupService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllChitsGroupDetailsService = async (res, company_id, min, max, search, enrollment_status, not_status, chits_group_status, from_date, to_date) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      is_deleted_status: 0,
+      ...(company_id && company_id !== '' ? { company_id } : {}),
+      ...(not_status === 1 ? { chits_group_status: { [Op.ne]: 0 } } : {}),
+      ...(enrollment_status === 1 ? { is_chit_full_status: 0, chits_group_status: { [Op.ne]: 2 } } : {}),
+      ...(chits_group_status !== undefined && chits_group_status !== null && chits_group_status !== '' ? { chits_group_status: Number(chits_group_status) } : {}),
+      ...(() => {
+        const dateRange = safeDateRange(from_date, to_date);
+        if (!dateRange) return {};
+        return {
+          [Op.or]: [
+            { commencement_date: { [Op.between]: [dateRange.fromStr, dateRange.toStr] } },
+            { chit_start_date: { [Op.between]: [dateRange.fromStr, dateRange.toStr] } },
+            { createdAt: { [Op.between]: [dateRange.startDate, dateRange.endDate] } }
+          ]
+        };
+      })(),
+      ...(search && {
+        [Op.or]: [
+          { group_name: { [Op.like]: `%${search}%` } },
+          { chit_agreement_number: { [Op.like]: `%${search}%` } },
+          sequelize.where(sequelize.cast(sequelize.col('company_chit_number'), 'varchar'), { [Op.like]: `%${search}%` }),
+          { fdr_number: { [Op.like]: `%${search}%` } }
+        ]
+      })
+    };
+
+    const chitsGroups = await ChitsGroup.findAndCountAll({
+      limit, offset,
+      where: whereClause,
+      order: [['createdAt', 'DESC']]
+    });
+
+    const rowsWithCounts = await Promise.all(chitsGroups.rows.map(async (group) => {
+      const groupData = group.toJSON();
+      const enrollmentsCount = await Enrollment.count({ where: { group_id: groupData.id, delete_status: 0 } });
+      groupData.slot_filled_count = await takenSeatCount(groupData.id);
+      groupData.active_members_count = enrollmentsCount;
+      groupData.company_seats = await getGroupCompanySeats(groupData.id, group);
+      return groupData;
+    }));
+
+    // Aggregate summary stats for the current filter/company
+    const allGroups = await ChitsGroup.findAll({
+      where: {
+        is_deleted_status: 0,
+        ...(company_id && company_id !== '' ? { company_id } : {})
+      },
+      attributes: ['id', 'chits_group_status', 'chit_amount', 'no_of_installments']
+    });
+
+    let totalGroups = allGroups.length;
+    let activeGroups = 0;
+    let upcomingGroups = 0;
+    let completedGroups = 0;
+    let totalChitValue = 0;
+    let totalCapacity = 0;
+
+    allGroups.forEach(g => {
+      const status = Number(g.chits_group_status);
+      if (status === 1) activeGroups++;
+      else if (status === 0) upcomingGroups++;
+      else if (status === 2) completedGroups++;
+      totalChitValue += parseFloat(g.chit_amount) || 0;
+      totalCapacity += parseInt(g.no_of_installments) || 0;
+    });
+
+    const totalFilledSlots = await Enrollment.count({
+      where: {
+        delete_status: 0,
+        ...(company_id && company_id !== '' ? { company_id } : {})
+      }
+    });
+
+    return successResponse(res, statusCodes.OK, 'Chits groups retrieved successfully', {
+      count: chitsGroups.count,
+      rows: rowsWithCounts,
+      stats: {
+        total_groups: totalGroups,
+        active_groups: activeGroups,
+        upcoming_groups: upcomingGroups,
+        completed_groups: completedGroups,
+        total_chit_value: totalChitValue,
+        total_capacity: totalCapacity,
+        filled_slots: totalFilledSlots,
+        fill_percentage: totalCapacity > 0 ? parseFloat(((totalFilledSlots / totalCapacity) * 100).toFixed(1)) : 0
+      }
+    });
+  } catch (error) {
+    console.error('Error in getAllChitsGroupDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteChitsGroupService = async (res, id, companyId) => {
+  try {
+    const whereClause = { id };
+    if (companyId && companyId !== '') {
+      whereClause.company_id = companyId;
+    }
+    const chitsGroup = await ChitsGroup.findOne({ where: whereClause });
+    if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+    await chitsGroup.update({ is_deleted_status: 1 });
+    await Enrollment.update({ delete_status: 1 }, { where: { group_id: id } });
+    return successResponse(res, statusCodes.OK, 'Chits group deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteChitsGroupService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateChitsGroupStatusService = async (res, id, chits_group_status) => {
+  try {
+    const chitsGroup = await ChitsGroup.findByPk(id);
+    if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+
+    if (chits_group_status !== undefined && chits_group_status !== null) {
+      if (Number(chits_group_status) !== 2) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'A group\'s status follows its start date.');
+      }
+      if (Number(chitsGroup.chits_group_status) !== 1) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Only a Running group can be marked completed.');
+      }
+
+      await chitsGroup.update({ chits_group_status: 2 });
+
+      // Trigger FCM Notifications
+      try {
+        const enrollments = await Enrollment.findAll({
+          where: { group_id: chitsGroup.id, delete_status: 0, company_id: chitsGroup.company_id },
+          attributes: ['id']
+        });
+        const members = (await holderMembersOf(enrollments.map((e) => e.id))).filter((m) => m.fcm_token);
+
+        if (members.length > 0) {
+          const groupName = chitsGroup.group_name || 'Chit Group';
+          fcmService.sendPushToMulticast(members, chitsGroup.company_id, 'Chit Group Completed', `Congratulations! The Chit Group ${groupName} has successfully completed its term.`, { type: 'GROUP_COMPLETED', group_id: String(chitsGroup.id) });
+        }
+      } catch (pushErr) {
+        console.error('Error sending FCM push for group status:', pushErr);
+      }
+    }
+
+    return successResponse(res, statusCodes.OK, 'Chits group status updated successfully', chitsGroup);
+  } catch (error) {
+    console.error('Error in updateChitsGroupStatusService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const checkChitsGroupCapacityService = async (res, id) => {
+  try {
+    const chitsGroup = await ChitsGroup.findByPk(id, { attributes: ['id', 'no_of_installments', 'group_name', 'chits_group_status'] });
+    if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+
+    const enrollmentsCount = await Enrollment.count({ where: { group_id: id, delete_status: 0 } });
+    const totalTaken = await takenSeatCount(id);
+    const requiredPositions = parseInt(chitsGroup.no_of_installments) || 0;
+    const isFull = totalTaken >= requiredPositions;
+
+    return successResponse(res, statusCodes.OK, 'Group capacity retrieved successfully', {
+      group_id: chitsGroup.id,
+      group_name: chitsGroup.group_name,
+      status: chitsGroup.chits_group_status,
+      total_taken: totalTaken,
+      required_positions: requiredPositions,
+      is_full: isFull,
+      remaining_positions: Math.max(0, requiredPositions - totalTaken)
+    });
+  } catch (error) {
+    console.error('Error in checkChitsGroupCapacityService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const importLocationsService = async (res) => {
+  try {
+    const countryCsvPath = path.join(__dirname, '../utils/public/countrycodes.csv');
+    const stateCsvPath = path.join(__dirname, '../utils/public/stateNames.csv');
+    if (!fs.existsSync(countryCsvPath) || !fs.existsSync(stateCsvPath)) return errorResponse(res, statusCodes.NOT_FOUND, 'CSV files not found');
+    const parseCsv = (filePath, mappingFn) => fs.readFileSync(filePath, 'utf8').split('\n').slice(1).filter(line => line.trim()).map(mappingFn).filter(item => !isNaN(item.id));
+    const countryData = parseCsv(countryCsvPath, line => { const cols = line.split(','); return { id: parseInt(cols[0]), country_name: cols[1]?.trim(), country_code: cols[2]?.trim(), dialing_code: cols[3]?.trim(), currency: cols[4]?.trim(), currency_name: cols[5]?.trim(), currency_symbol: cols[6]?.trim(), emoji: cols[7]?.trim(), createdAt: new Date(), updatedAt: new Date() }; });
+    const stateData = parseCsv(stateCsvPath, line => { const cols = line.split(','); return { id: parseInt(cols[0]), state_name: cols[1]?.trim(), country_id: parseInt(cols[2]), createdAt: new Date(), updatedAt: new Date() }; });
+    await Country.bulkCreate(countryData, { updateOnDuplicate: ['country_name', 'country_code', 'dialing_code', 'currency', 'currency_name', 'currency_symbol', 'emoji'] });
+    await State.bulkCreate(stateData, { updateOnDuplicate: ['state_name', 'country_id'] });
+    return successResponse(res, statusCodes.OK, 'Countries and States imported successfully');
+  } catch (error) {
+    console.error('Error in importLocationsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, error.message || 'Internal server error');
+  }
+};
+
+const getCountriesListService = async (res, search) => {
+  try {
+    const countries = await Country.findAll({ where: search ? { country_name: { [Op.like]: `%${search}%` } } : {}, order: [['country_name', 'ASC']] });
+    return successResponse(res, statusCodes.OK, 'Countries retrieved successfully', countries);
+  } catch (error) {
+    console.error('Error in getCountriesListService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStatesListService = async (res, country_id, search) => {
+  try {
+    const states = await State.findAll({ where: { country_id, ...(search && { state_name: { [Op.like]: `%${search}%` } }) }, order: [['state_name', 'ASC']] });
+    return successResponse(res, statusCodes.OK, 'States retrieved successfully', states);
+  } catch (error) {
+    console.error('Error in getStatesListService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateDistrictService = async (res, comp_id, data = {}) => {
+  try {
+    const { id, ...districtData } = data;
+    if (comp_id) districtData.company_id = comp_id;
+    if (id) {
+      const district = await District.findByPk(id);
+      if (!district) return errorResponse(res, statusCodes.NOT_FOUND, 'District not found');
+      await district.update(districtData);
+      return successResponse(res, statusCodes.OK, 'District updated successfully', district);
+    } else {
+      const newDistrict = await District.create(districtData);
+      return successResponse(res, statusCodes.CREATED, 'District created successfully', newDistrict);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateDistrictService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllDistrictDetailsService = async (res, company_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { district_name: { [Op.like]: `%${search}%` } })
+    };
+    const districts = await District.findAndCountAll({ limit, offset, where, include: [{ model: Country, attributes: ['country_name'] }, { model: State, attributes: ['state_name'] }], order: [['createdAt', 'DESC']] });
+    return successResponse(res, statusCodes.OK, 'Districts retrieved successfully', districts);
+  } catch (error) {
+    console.error('Error in getAllDistrictDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateCityService = async (res, comp_id, data = {}) => {
+  try {
+    const { id, ...cityData } = data;
+    if (comp_id) cityData.company_id = comp_id;
+    if (id) {
+      const city = await City.findByPk(id);
+      if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
+      await city.update(cityData);
+      return successResponse(res, statusCodes.OK, 'City updated successfully', city);
+    } else {
+      const newCity = await City.create(cityData);
+      return successResponse(res, statusCodes.CREATED, 'City created successfully', newCity);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateCityService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllCityDetailsService = async (res, company_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { city_name: { [Op.like]: `%${search}%` } })
+    };
+    const cities = await City.findAndCountAll({ limit, offset, where, include: [{ model: Country, attributes: ['country_name'] }, { model: State, attributes: ['state_name'] }, { model: District, attributes: ['district_name'] }], order: [['createdAt', 'DESC']] });
+    return successResponse(res, statusCodes.OK, 'Cities retrieved successfully', cities);
+  } catch (error) {
+    console.error('Error in getAllCityDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getDistrictsListService = async (res, company_id, state_id, search) => {
+  try {
+    const where = {
+      state_id,
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && { district_name: { [Op.like]: `%${search}%` } })
+    };
+    const districts = await District.findAll({ where, order: [['district_name', 'ASC']] });
+    return successResponse(res, statusCodes.OK, 'Districts retrieved successfully', districts);
+  } catch (error) {
+    console.error('Error in getDistrictsListService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteCityService = async (res, id, companyId) => {
+  try {
+    const city = await City.findOne({ where: { id, company_id: companyId } });
+    if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
+    await city.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'City deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteCityService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const fetchStaticDropdownService = async (res, type_id, search) => {
+  try {
+    const dropdowns = await StaticDropdownsList.findAll({ where: { type_id, status: 1, dropdown_name: { [Op.like]: `%${search || ''}%` } }, attributes: ['id', 'dropdown_name', 'type_id', 'is_default'], order: [['dropdown_name', 'ASC']] });
+    return successResponse(res, statusCodes.OK, 'Dropdown values retrieved successfully', dropdowns);
+  } catch (error) {
+    console.error('Error in fetchStaticDropdownService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+/**
+ * Seats taken in a group. A self chit only reserves a seat; the company's own chit is both an
+ * enrollment and a self chit on the same seat, so a self chit counts only when no enrollment
+ * already sits on its slot.
+ */
+const takenSeatCount = async (group_id, transaction) => {
+  const opts = transaction ? { transaction } : {};
+  const enrollments = await Enrollment.findAll({ where: { group_id, delete_status: 0 }, attributes: ['group_position_number'], ...opts });
+  const selfChits = await SelfChit.findAll({ where: { group_id, is_deleted_status: 0 }, attributes: ['slot_id'], ...opts });
+  const occupied = new Set(enrollments.map((e) => String(e.group_position_number)));
+  return enrollments.length + selfChits.filter((sc) => !occupied.has(String(sc.slot_id))).length;
+};
+
+const checkAndUpdateChitFullStatus = async (group_id) => {
+  try {
+    const chitsGroup = await ChitsGroup.findByPk(group_id);
+    if (!chitsGroup) return;
+
+    const totalPositions = chitsGroup.no_of_installments || 20;
+
+    const enrollments = await Enrollment.findAll({ where: { group_id, delete_status: 0 }, attributes: ['group_position_number'] });
+    const takenFromEnrollments = enrollments.map(e => parseInt(e.group_position_number)).filter(n => !isNaN(n));
+
+    const selfChits = await SelfChit.findAll({ where: { group_id, is_deleted_status: 0 }, attributes: ['slot_id'] });
+    const takenFromSelfChits = selfChits.map(s => parseInt(s.slot_id)).filter(n => !isNaN(n));
+
+    const takenPositions = [...new Set([...takenFromEnrollments, ...takenFromSelfChits])];
+
+    let is_chit_full_status = 0;
+    if (takenPositions.length >= totalPositions) {
+      is_chit_full_status = 1;
+    }
+    await chitsGroup.update({ is_chit_full_status });
+  } catch (error) {
+    console.error('Error in checkAndUpdateChitFullStatus:', error);
+  }
+};
+
+/**
+ * Joint enrollment (up to 3 holders a ticket). Checks the other holders are verified,
+ * active members of the main holder's company, not the main holder, not listed twice,
+ * and that every share adds up to 100%. Returns { holders, mainShare } or { error }.
+ */
+const MAX_TICKET_HOLDERS = 3;
+const validateJointHolders = async (input, mainShareInput, subscriber) => {
+  const list = Array.isArray(input) ? input : [];
+  if (list.length === 0) return { holders: [], mainShare: 100 };
+  if (list.length + 1 > MAX_TICKET_HOLDERS) {
+    return { error: `A ticket can have at most ${MAX_TICKET_HOLDERS} holders.` };
+  }
+
+  const ids = list.map((h) => Number(h.member_id));
+  if (new Set(ids).size !== ids.length) return { error: 'The same member is listed twice as a joint holder.' };
+  if (ids.includes(Number(subscriber.id))) return { error: 'The main holder cannot also be a joint holder.' };
+
+  const members = await Member.findAll({ where: { id: { [Op.in]: ids } } });
+  for (const h of list) {
+    const m = members.find((x) => Number(x.id) === Number(h.member_id));
+    if (!m || Number(m.is_deleted_status) !== 0) return { error: `Joint holder #${h.member_id} was not found.` };
+    if (String(m.company_id) !== String(subscriber.company_id)) return { error: `Joint holder ${m.name} belongs to another company.` };
+    if (!m.is_verified) return { error: `Joint holder ${m.name} must be verified before enrollment.` };
+  }
+
+  const jointTotal = list.reduce((sum, h) => sum + Number(h.share_percent), 0);
+  const mainShare = mainShareInput !== undefined && mainShareInput !== null
+    ? Number(mainShareInput)
+    : parseFloat((100 - jointTotal).toFixed(2));
+  if (!(mainShare > 0)) return { error: "The main holder's share must be more than 0%." };
+  if (Math.abs(mainShare + jointTotal - 100) > 0.01) {
+    return { error: `Shares must add up to 100% (they add up to ${parseFloat((mainShare + jointTotal).toFixed(2))}%).` };
+  }
+
+  return {
+    mainShare,
+    holders: list.map((h) => ({ member: members.find((x) => Number(x.id) === Number(h.member_id)), share_percent: Number(h.share_percent) }))
+  };
+};
+
+/**
+ * Change who holds a ticket: add, remove or re-share joint holders, or turn a single
+ * ticket into a joint one (and back). Allowed only until the ticket wins an auction —
+ * after that the prize and the liability are fixed on the holders at the time.
+ * Removed holders keep their row with removed_on / removed_reason, so history stays.
+ */
+const updateJointHoldersService = async (res, data = {}) => {
+  const { company_id, enrollment_id, joint_holders: input, main_holder_share: mainShareInput, effective_date, reason } = data;
+  const enrollment = await Enrollment.findOne({ where: { id: enrollment_id, company_id, delete_status: 0 } });
+  if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+
+  const win = await ticketWin(enrollment);
+  if (win) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, `This ticket won auction #${win.auction_number}, so its holders can no longer change.`);
+  }
+
+  const subscriber = await Member.findByPk(enrollment.subscriber_id);
+  const joint = await validateJointHolders(input, mainShareInput, subscriber);
+  if (joint.error) return errorResponse(res, statusCodes.BAD_REQUEST, joint.error);
+
+  const bd = await SystemSettingsService.getBusinessDate();
+  const today = `${bd.getFullYear()}-${String(bd.getMonth() + 1).padStart(2, '0')}-${String(bd.getDate()).padStart(2, '0')}`;
+  const onDate = effective_date ? toDateStr(effective_date) : today;
+  const enrolledOn = toDateStr(enrollment.enrollment_date);
+  if (enrolledOn && onDate < enrolledOn) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, 'The change date cannot be before the enrollment date.');
+  }
+  if (onDate > today) return errorResponse(res, statusCodes.BAD_REQUEST, 'The change date cannot be in the future.');
+
+  const current = await EnrollmentJointHolder.findAll({ where: { enrollment_id: enrollment.id, removed_on: null } });
+  const nextIds = new Set(joint.holders.map((h) => Number(h.member.id)));
+  const leaving = current.filter((c) => !nextIds.has(Number(c.member_id)));
+  if (leaving.length && !(reason && String(reason).trim())) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, 'Give a reason when removing a joint holder.');
+  }
+
+  const transaction = await sequelize.transaction();
+  try {
+    for (const c of leaving) {
+      await c.update({ removed_on: onDate, removed_reason: String(reason).trim() }, { transaction });
+    }
+    for (const h of joint.holders) {
+      const existing = current.find((c) => Number(c.member_id) === Number(h.member.id));
+      if (existing) {
+        if (Number(existing.share_percent) !== h.share_percent) await existing.update({ share_percent: h.share_percent }, { transaction });
+      } else {
+        await EnrollmentJointHolder.create({
+          company_id: enrollment.company_id,
+          enrollment_id: enrollment.id,
+          member_id: h.member.id,
+          share_percent: h.share_percent,
+          added_on: onDate
+        }, { transaction });
+      }
+    }
+    await enrollment.update({ main_holder_share: joint.mainShare }, { transaction });
+    await transaction.commit();
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
+
+  // Tell everyone affected: current holders and anyone who just left.
+  const leftMembers = leaving.length ? await Member.findAll({ where: { id: { [Op.in]: leaving.map((c) => c.member_id) } } }) : [];
+  const notify = [...(await holderMembersOf([enrollment.id])), ...leftMembers].filter((m) => m && m.fcm_token);
+  const group = await ChitsGroup.findByPk(enrollment.group_id, { attributes: ['group_name'] });
+  const seen = new Set();
+  notify.forEach((m) => {
+    if (seen.has(m.id)) return;
+    seen.add(m.id);
+    fcmService.sendPushToMember(m, 'Ticket holders updated', `The holders of your ticket #${enrollment.group_position_number} in ${group ? group.group_name : 'your chit'} have changed.`, { type: 'TICKET_HOLDERS_UPDATED', enrollment_id: String(enrollment.id) });
+  });
+
+  const holders = await EnrollmentJointHolder.findAll({
+    where: { enrollment_id: enrollment.id },
+    attributes: ['id', 'member_id', 'share_percent', 'added_on', 'removed_on', 'removed_reason'],
+    include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }],
+    order: [['added_on', 'ASC'], ['id', 'ASC']]
+  });
+  return successResponse(res, statusCodes.OK, 'Ticket holders updated', { enrollment_id: enrollment.id, main_holder_share: joint.mainShare, joint_holders: holders });
+};
+
+const storeOrUpdateEnrollmentService = async (res, data = {}) => {
+  try {
+    const { id, joint_holders: jointHoldersInput, main_holder_share: mainShareInput, ...enrollmentData } = data;
+    if (id) {
+      const enrollment = await Enrollment.findOne({ where: { id, company_id: enrollmentData.company_id } });
+      if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+
+      if (enrollmentData.group_id && String(enrollmentData.group_id) !== String(enrollment.group_id)) {
+        const hasInstalments = await ChitsInstallment.count({ where: { enrollment_id: id } });
+        if (hasInstalments > 0) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot change group once instalments are generated.');
+        }
+      }
+
+      await enrollment.update(enrollmentData);
+      await checkAndUpdateChitFullStatus(enrollment.group_id);
+      return successResponse(res, statusCodes.OK, 'Enrollment updated successfully', enrollment);
+    } else {
+      const subscriber = await Member.findByPk(enrollmentData.subscriber_id);
+      if (!subscriber || !subscriber.is_verified) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Subscriber must be verified before enrollment');
+      }
+
+      // Joint enrollment: validate the other holders and the shares up front.
+      const joint = await validateJointHolders(jointHoldersInput, mainShareInput, subscriber);
+      if (joint.error) return errorResponse(res, statusCodes.BAD_REQUEST, joint.error);
+      enrollmentData.main_holder_share = joint.mainShare;
+
+      const result = await sequelize.transaction(async (t) => {
+        const group = await ChitsGroup.findByPk(enrollmentData.group_id, {
+          lock: t.LOCK.UPDATE,
+          transaction: t,
+        });
+        if (!group) return { error: 'NOT_FOUND', msg: 'Chits group not found' };
+        if (Number(group.chits_group_status) === 2) {
+          return { error: 'BAD_REQUEST', msg: 'This chit group is completed; members can\'t join it.' };
+        }
+
+        const taken = await takenSeatCount(group.id, t);
+        const positions = parseInt(group.no_of_installments) || 0;
+        if (taken >= positions) {
+          return { error: 'BAD_REQUEST', msg: `This chit group is full (${taken}/${positions} positions taken).` };
+        }
+
+        const newEnrollment = await Enrollment.create(enrollmentData, { transaction: t });
+
+        if (joint.holders.length > 0) {
+          const addedOn = toDateStr(enrollmentData.enrollment_date) || toDateStr(new Date());
+          await EnrollmentJointHolder.bulkCreate(joint.holders.map((h) => ({
+            company_id: newEnrollment.company_id || subscriber.company_id,
+            enrollment_id: newEnrollment.id,
+            member_id: h.member.id,
+            share_percent: h.share_percent,
+            added_on: addedOn
+          })), { transaction: t });
+        }
+
+        const loadedEnrollment = await Enrollment.findByPk(newEnrollment.id, {
+          include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+          transaction: t
+        });
+
+        await createInstallmentsForEnrollment(loadedEnrollment, group, { transaction: t });
+
+        return { newEnrollment, group };
+      });
+
+      if (result.error === 'NOT_FOUND') return errorResponse(res, statusCodes.NOT_FOUND, result.msg);
+      if (result.error === 'BAD_REQUEST') return errorResponse(res, statusCodes.BAD_REQUEST, result.msg);
+
+      const { newEnrollment, group: chitGroup } = result;
+
+      await checkAndUpdateChitFullStatus(newEnrollment.group_id);
+
+      if (subscriber && chitGroup) {
+        const groupName = chitGroup.group_name || 'Chit Group';
+        for (const holder of [subscriber, ...joint.holders.map((h) => h.member)]) {
+          fcmService.sendPushToMember(holder, 'Enrolled Successfully', `You have been successfully enrolled in Chit Group: ${groupName}`, { type: 'ENROLLMENT', group_id: String(newEnrollment.group_id) });
+        }
+      }
+
+      return successResponse(res, statusCodes.CREATED, 'Enrollment stored successfully', newEnrollment);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateEnrollmentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllEnrollmentDetailsService = async (res, company_id, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      ...(company_id && company_id !== '' ? { company_id } : {}),
+      delete_status: 0,
+      ...(group_id ? { group_id } : {}),
+      ...(business_agent_id ? { business_agent_id } : {}),
+      ...(collection_agent_id ? { collection_agent_id } : {})
+    };
+
+    // Date / month filtering
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      whereClause[Op.or] = [
+        { enrollment_date: { [Op.between]: [dateRange.fromStr, dateRange.toStr] } },
+        { createdAt: { [Op.between]: [dateRange.startDate, dateRange.endDate] } }
+      ];
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = new Date(Date.UTC(currentYear, monthNum - 1, 1, 0, 0, 0, 0));
+        const endOfMonth = new Date(Date.UTC(currentYear, monthNum, 0, 23, 59, 59, 999));
+        whereClause.createdAt = { [Op.between]: [startOfMonth, endOfMonth] };
+      }
+    }
+
+    const subscriberWhere = search ? {
+      [Op.or]: [
+        { name: { [Op.like]: `%${search}%` } },
+        { mobile_number: { [Op.like]: `%${search}%` } },
+        { member_id: { [Op.like]: `%${search}%` } }
+      ]
+    } : undefined;
+
+    const enrollments = await Enrollment.findAndCountAll({
+      limit, offset,
+      where: whereClause,
+      include: [
+        { model: Company, as: 'company', attributes: ['company_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'chits_group_status'] },
+        {
+          model: Member,
+          as: 'subscriber',
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image', 'email', 'date_of_birth'],
+          where: subscriberWhere,
+          required: search ? true : false
+        },
+        { model: EnrollmentJointHolder, as: 'joint_holders', separate: true, where: { removed_on: null }, attributes: ['id', 'member_id', 'share_percent', 'added_on'], include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'mobile_number'] }] },
+        { model: Member, as: 'business_agent', attributes: ['id', 'name', 'member_id', 'mobile_number'] },
+        { model: Member, as: 'collection_agent', attributes: ['id', 'name', 'member_id', 'mobile_number'] },
+        { model: StaticDropdownsList, as: 'payment_mode', attributes: ['id', 'dropdown_name'] },
+        { model: StaticDropdownsList, as: 'intimation_card', attributes: ['id', 'dropdown_name'] },
+        { model: Area, as: 'area', attributes: ['area_name'] },
+        { model: City, as: 'nominee_city', attributes: ['city_name'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    // Compute stats for current filter
+    const allFiltered = await Enrollment.findAll({
+      where: whereClause,
+      attributes: ['id', 'subscriber_id', 'group_id'],
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['chit_amount'], required: true }
+      ]
+    });
+
+    let totalChitValue = 0;
+    const uniqueSubscribers = new Set();
+    allFiltered.forEach(e => {
+      totalChitValue += (parseFloat(e.group?.chit_amount) || 0);
+      if (e.subscriber_id) uniqueSubscribers.add(e.subscriber_id);
+    });
+
+    return successResponse(res, statusCodes.OK, 'Enrollments retrieved successfully', {
+      count: enrollments.count,
+      rows: enrollments.rows,
+      stats: {
+        total_enrollments: enrollments.count,
+        total_chit_value: totalChitValue,
+        unique_subscribers: uniqueSubscribers.size
+      }
+    });
+  } catch (error) {
+    console.error('Error in getAllEnrollmentDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteEnrollmentService = async (res, id, companyId) => {
+  try {
+    const enrollment = await Enrollment.findOne({ where: { id, company_id: companyId } });
+    if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+    await enrollment.update({ delete_status: 1 });
+    await checkAndUpdateChitFullStatus(enrollment.group_id);
+    return successResponse(res, statusCodes.OK, 'Enrollment deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteEnrollmentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getPositionNumbersService = async (res, group_id) => {
+  try {
+    const group = await ChitsGroup.findByPk(group_id, { attributes: ['no_of_installments'] });
+    if (!group) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Group not found');
+    }
+
+    // Dynamically use the number of installments as the total available positions
+    const totalPositions = group.no_of_installments ? parseInt(group.no_of_installments) : 20;
+
+    const enrollments = await Enrollment.findAll({ where: { group_id, delete_status: 0 }, attributes: ['group_position_number'] });
+    const takenFromEnrollments = enrollments.map(e => parseInt(e.group_position_number)).filter(n => !isNaN(n));
+
+    const selfChits = await SelfChit.findAll({ where: { group_id, is_deleted_status: 0 }, attributes: ['slot_id'] });
+    const takenFromSelfChits = selfChits.map(s => parseInt(s.slot_id)).filter(n => !isNaN(n));
+
+    const takenPositions = [...new Set([...takenFromEnrollments, ...takenFromSelfChits])];
+
+    const availablePositions = [];
+    for (let i = 1; i <= totalPositions; i++) {
+      if (!takenPositions.includes(i)) availablePositions.push(i);
+    }
+
+    return successResponse(res, statusCodes.OK, 'Available position numbers retrieved successfully', availablePositions);
+  } catch (error) {
+    console.error('Error in getPositionNumbersService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateUpcomingChitService = async (res, data = {}) => {
+  try {
+    const { id, ...upcomingChitData } = data;
+    if (id) {
+      const upcomingChit = await UpcomingChit.findByPk(id);
+      if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Upcoming chit not found');
+      await upcomingChit.update(upcomingChitData);
+      return successResponse(res, statusCodes.OK, 'Upcoming chit updated successfully', upcomingChit);
+    } else {
+      const newUpcomingChit = await UpcomingChit.create(upcomingChitData);
+
+      // Trigger Push Notification & Save History for all company members
+      try {
+        const companyId = newUpcomingChit.company_id || upcomingChitData.company_id;
+        if (companyId) {
+          const allMembers = await Member.findAll({
+            where: { company_id: companyId, is_deleted_status: 0 }
+          });
+          if (allMembers && allMembers.length > 0) {
+            fcmService.sendPushToMulticast(
+              allMembers,
+              companyId,
+              'New Upcoming Chit Announced!',
+              `A new upcoming chit "${newUpcomingChit.group_name || 'Upcoming Chit'}" has been announced. Express your interest now!`,
+              {
+                type: 'UPCOMING_CHIT_ANNOUNCED',
+                upcoming_chit_id: String(newUpcomingChit.id),
+                group_name: String(newUpcomingChit.group_name || '')
+              }
+            );
+          }
+        }
+      } catch (fcmErr) {
+        console.error('Failed to trigger FCM for new upcoming chit:', fcmErr);
+      }
+
+      return successResponse(res, statusCodes.CREATED, 'Upcoming chit created successfully', newUpcomingChit);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateUpcomingChitService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllUpcomingChitsService = async (res, company_id, status, chit_date, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(status !== undefined && status !== null && status !== '' && { status })
+    };
+
+    if (chit_date && chit_date !== '' && chit_date !== null) {
+      where.chit_date = chit_date;
+    }
+
+    if (search && search.trim() !== '') {
+      where[Op.or] = [
+        { group_name: { [Op.like]: `%${search}%` } },
+        { remarks: { [Op.like]: `%${search}%` } }
+      ];
+    }
+
+    const upcomingChits = await UpcomingChit.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['chit_date', 'ASC']]
+    });
+    return successResponse(res, statusCodes.OK, 'Upcoming chits retrieved successfully', upcomingChits);
+  } catch (error) {
+    console.error('Error in getAllUpcomingChitsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteUpcomingChitService = async (res, id, companyId) => {
+  try {
+    const upcomingChit = await UpcomingChit.findOne({ where: { id, company_id: companyId } });
+    if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Upcoming chit not found');
+    await upcomingChit.destroy();
+    return successResponse(res, statusCodes.OK, 'Upcoming chit deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteUpcomingChitService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateFavoritesService = async (res, user_id, type, is_favorites_input) => {
+  try {
+    let user;
+    const typeNum = Number(type);
+
+    if (typeNum === 1) {
+      user = await Company.findOne({ where: { id: user_id, is_deleted_status: 0 } });
+    } else if (typeNum === 2) {
+      if (!isNaN(user_id) && !user_id.toString().includes('-')) {
+        user = await Member.findOne({ where: { id: parseInt(user_id, 10), is_deleted_status: 0 } });
+      } else {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid ID format for Member type. Member IDs are Integers.');
+      }
+    }
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
+
+    // Get current favorites and ensure it's an array
+    let currentFavorites = user.is_favorites || [];
+    if (typeof currentFavorites === 'string') {
+      try {
+        currentFavorites = JSON.parse(currentFavorites);
+      } catch (e) {
+        currentFavorites = [];
+      }
+    }
+    if (!Array.isArray(currentFavorites)) currentFavorites = [];
+
+    // Convert input to array if it's a string
+    let incomingItems = Array.isArray(is_favorites_input) ? is_favorites_input : [is_favorites_input];
+
+    // Toggle Logic: Remove if exists, Add if not exists
+    let updatedFavorites = [...currentFavorites];
+    incomingItems.forEach(item => {
+      if (item && typeof item === 'string') {
+        const index = updatedFavorites.indexOf(item);
+        if (index > -1) {
+          // Item exists, so remove it
+          updatedFavorites.splice(index, 1);
+        } else {
+          // Item doesn't exist, so add it
+          updatedFavorites.push(item);
+        }
+      }
+    });
+
+    await user.update({ is_favorites: updatedFavorites });
+    return successResponse(res, statusCodes.OK, 'Favorites updated successfully', { is_favorites: updatedFavorites });
+  } catch (error) {
+    console.error('Error in updateFavoritesService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to update favorites');
+  }
+};
+
+const getGroupMembersService = async (res, company_id, group_id, min, max, filter_unwon = false) => {
+  try {
+    const limit = parseInt(max, 10) || 200;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = { group_id, delete_status: 0 };
+    if (company_id && company_id !== '') {
+      whereClause.company_id = company_id;
+    }
+
+    const { count, rows: enrollments } = await Enrollment.findAndCountAll({
+      where: whereClause,
+      include: [
+        {
+          model: Member,
+          as: 'subscriber',
+          attributes: ['id', 'name']
+        }
+      ],
+      limit,
+      offset,
+      order: [['group_position_number', 'ASC']]
+    });
+
+    const auctions = await Auction.findAll({
+      where: { group_id },
+      attributes: ['bidder_id', 'auction_number']
+    });
+
+    const companySeats = await getGroupCompanySeats(group_id);
+
+    let members = enrollments.map(e => {
+      const memberId = e.subscriber ? e.subscriber.id : null;
+      const winData = auctions.find(a => a.bidder_id === memberId);
+      const isCompanySeat = companySeats.includes(Number(e.group_position_number));
+      return {
+        id: memberId,
+        enrollment_id: e.id,
+        name: e.subscriber ? e.subscriber.name : null,
+        position: e.group_position_number,
+        has_won: !!winData,
+        won_month: winData ? parseInt(winData.auction_number, 10) : null,
+        is_company: isCompanySeat
+      };
+    });
+
+    if (filter_unwon) {
+      members = members.filter(m => !m.has_won && !m.is_company);
+    }
+
+    return successResponse(res, statusCodes.OK, 'Group members retrieved successfully', { count: filter_unwon ? members.length : count, rows: members });
+  } catch (error) {
+    console.error('Error in getGroupMembersService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to fetch group members');
+  }
+};
+
+const getInstallmentsByGroupService = async (res, group_id, enrollment_id, member_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 100;
+    const offset = parseInt(min, 10) || 0;
+
+    let enrollmentWhere = { group_id, delete_status: 0 };
+    if (enrollment_id) { enrollmentWhere.id = enrollment_id; }
+    if (member_id) { enrollmentWhere.subscriber_id = member_id; }
+    if (member_id) { enrollmentWhere.subscriber_id = member_id; }
+
+    const enrollments = await Enrollment.findAll({
+      where: enrollmentWhere,
+      attributes: ['id']
+    });
+
+    const enrollmentIds = enrollments.map(e => e.id);
+
+    if (enrollmentIds.length === 0) {
+      return successResponse(res, statusCodes.OK, 'Installments retrieved successfully', { count: 0, rows: [] });
+    }
+
+    const { count, rows: installments } = await ChitsInstallment.findAndCountAll({
+      where: { enrollment_id: { [Op.in]: enrollmentIds } },
+      include: [
+        {
+          model: Enrollment,
+          as: 'enrollment',
+          include: [
+            {
+              model: Member,
+              as: 'subscriber',
+              attributes: ['id', 'name']
+            }
+          ]
+        },
+        {
+          model: CustomerPayment,
+          as: 'payments',
+          where: { payment_status: 1 },
+          required: false // LEFT JOIN
+        }
+      ],
+      limit,
+      offset,
+      order: [
+        ['installment_no', 'ASC'],
+        [{ model: Enrollment, as: 'enrollment' }, 'group_position_number', 'ASC']
+      ]
+    });
+
+    const rows = installments.map(inst => {
+      const paidSoFar = inst.payments ? inst.payments.reduce((sum, p) => sum + parseFloat(p.received_amount || 0), 0) : 0;
+      const dueAmount = Math.max(0, parseFloat(inst.payable_amount || 0) - paidSoFar);
+      return {
+        id: inst.id,
+        enrollment_id: inst.enrollment_id,
+        subscriber: inst.enrollment && inst.enrollment.subscriber ? inst.enrollment.subscriber : null,
+        group_position_number: inst.enrollment ? inst.enrollment.group_position_number : null,
+        installment_no: inst.installment_no,
+        due_date: inst.due_date,
+        payable_amount: inst.payable_amount,
+        penalty_amount: inst.penalty_amount,
+        is_paid: dueAmount <= 0,
+        paid_amount: paidSoFar.toFixed(2),
+        due_amount: dueAmount.toFixed(2),
+        payment_date: inst.payments && inst.payments.length > 0 ? inst.payments[inst.payments.length - 1].payment_date : null
+      };
+    });
+
+    const groupInfo = await ChitsGroup.findByPk(group_id, {
+      attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status', 'chit_start_date', 'chit_end_date', 'no_of_installments']
+    });
+    let group_details = null;
+    if (groupInfo) {
+      const enrollmentsCount = await Enrollment.count({ where: { group_id, delete_status: 0 } });
+      group_details = {
+        ...groupInfo.toJSON(),
+        slot_filled_count: enrollmentsCount
+      };
+    }
+    return successResponse(res, statusCodes.OK, 'Installments retrieved successfully', { count, rows, group_details });
+  } catch (error) {
+    console.error('Error in getInstallmentsByGroupService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to fetch installments');
+  }
+};
+
+const storeOrUpdateSuitFileInformationService = async (res, data = {}) => {
+  try {
+    const { id, ...suitData } = data;
+    if (id) {
+      const suitInfo = await SuitFileInformation.findByPk(id);
+      if (!suitInfo) return errorResponse(res, statusCodes.NOT_FOUND, 'Suit File Information not found');
+      await suitInfo.update(suitData);
+      return successResponse(res, statusCodes.OK, 'Suit File Information updated successfully', suitInfo);
+    } else {
+      const newSuitInfo = await SuitFileInformation.create(suitData);
+      return successResponse(res, statusCodes.CREATED, 'Suit File Information created successfully', newSuitInfo);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateSuitFileInformationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllSuitFileInformationService = async (res, company_id, group_id, subscriber_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(group_id && group_id !== '' && { group_id }),
+      ...(subscriber_id && subscriber_id !== '' && { subscriber_id })
+    };
+
+    if (search && search.trim() !== '') {
+      where[Op.or] = [
+        { '$group.group_name$': { [Op.like]: `%${search}%` } },
+        { '$subscriber.name$': { [Op.like]: `%${search}%` } },
+        { '$subscriber.member_id$': { [Op.like]: `%${search}%` } },
+        { advocate_name: { [Op.like]: `%${search}%` } },
+        { court_name: { [Op.like]: `%${search}%` } },
+        { suit_no: { [Op.like]: `%${search}%` } }
+      ];
+    }
+
+    const suitInfos = await SuitFileInformation.findAndCountAll({
+      limit,
+      offset,
+      where,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const formattedData = {
+      total_count: suitInfos.count,
+      rows: suitInfos.rows
+    };
+
+    return successResponse(res, statusCodes.OK, 'Suit File Information retrieved successfully', formattedData);
+  } catch (error) {
+    console.error('Error in getAllSuitFileInformationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteSuitFileInformationService = async (res, id, companyId) => {
+  try {
+    const suitInfo = await SuitFileInformation.findOne({ where: { id, company_id: companyId } });
+    if (!suitInfo) return errorResponse(res, statusCodes.NOT_FOUND, 'Suit File Information not found');
+    await suitInfo.destroy();
+    return successResponse(res, statusCodes.OK, 'Suit File Information deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteSuitFileInformationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
+  if (!userToken || userToken.role !== 'company') {
+    return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can store or update auctions');
+  }
+  const safeCompanyId = userToken.id;
+  const transaction = await sequelize.transaction();
+  try {
+    const { id, ...inputData } = data;
+
+    // Strip client-supplied financial fields
+    delete inputData.bid_loss;
+    delete inputData.bid_payable;
+    delete inputData.company_commission;
+    delete inputData.gst_amount;
+    delete inputData.dividend_payable;
+    delete inputData.subscription_amount;
+    delete inputData.dividend;
+    delete inputData.net_payable;
+
+    let auctionData = { ...inputData };
+    let auctionResult = null;
+    let isNew = false;
+
+    const targetGroupId = auctionData.group_id || (id ? (await Auction.findByPk(id)).group_id : null);
+    const groupForMath = targetGroupId ? await ChitsGroup.findOne({
+      where: { id: targetGroupId, company_id: safeCompanyId },
+      transaction
+    }) : null;
+
+    const companySeats = await getGroupCompanySeats(targetGroupId, groupForMath, transaction);
+
+    // Open auction, new record: the auction number skips all company months, the last instalment is
+    // recorded at the full chit amount (no discount, no dividend), and the dividend is booked against
+    // the next non-company month.
+    let openAuctionNumber = null;
+    if (!id && groupForMath && !groupForMath.scheme_configuration_id) {
+      const lastForNumber = await Auction.findOne({ where: { group_id: targetGroupId }, order: [['auction_number', 'DESC']], transaction });
+      openAuctionNumber = nextOpenAuctionNumber(lastForNumber ? lastForNumber.auction_number : 0, groupForMath, companySeats);
+      if (openAuctionNumber > (parseInt(groupForMath.no_of_installments, 10) || 0)) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Auction schedule is already finished for this group');
+      }
+      if (isFinalOpenMonth(openAuctionNumber, groupForMath)) auctionData.bid_amount = groupForMath.chit_amount;
+      auctionData.dividend_installment_no = dividendTargetMonth(openAuctionNumber, groupForMath, companySeats);
+    }
+
+    if (groupForMath && !groupForMath.scheme_configuration_id && auctionData.bid_amount) {
+      const bid_amount = parseFloat(auctionData.bid_amount);
+      const chitAmount = parseFloat(groupForMath.chit_amount) || 0;
+      const installments = parseInt(groupForMath.no_of_installments, 10) || 1;
+      const companyCommissionPct = parseFloat(groupForMath.company_commission) || 0;
+
+      const totalEnrollments = await Enrollment.count({ where: { group_id: targetGroupId, delete_status: 0 }, transaction });
+      const gstPercentage = auctionData.gst_number_percentage !== undefined && auctionData.gst_number_percentage !== null && auctionData.gst_number_percentage !== ''
+        ? parseFloat(auctionData.gst_number_percentage)
+        : (groupForMath.gst_percentage !== undefined && groupForMath.gst_percentage !== null ? parseFloat(groupForMath.gst_percentage) : 18);
+
+      const financials = calculateOpenAuctionFinancials({
+        chitAmount,
+        installments,
+        bidAmount: bid_amount,
+        commissionPct: companyCommissionPct,
+        memberCount: totalEnrollments || installments,
+        gstPercentage
+      });
+
+      auctionData.gst_number_percentage = financials.gstPct;
+      auctionData.subscription_amount = financials.subscription;
+      auctionData.company_commission = financials.commission;
+      auctionData.gst_amount = financials.gst;
+      auctionData.bid_loss = financials.bidDiscount;
+      auctionData.dividend_payable = financials.totalDividend;
+      auctionData.dividend = financials.totalDividend;
+      auctionData.bid_payable = financials.winnerReceives;
+      auctionData.net_payable = financials.netPayable;
+    }
+
+    if (id) {
+      const auction = await Auction.findByPk(id, { transaction });
+      if (!auction) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+      }
+      await auction.update(auctionData, { transaction });
+      auctionResult = auction;
+    } else {
+      if (auctionData.group_id) {
+
+        // B7: Auto-assign auction_number
+        const lastAuction = await Auction.findOne({
+          where: { group_id: auctionData.group_id },
+          order: [['auction_number', 'DESC']],
+          transaction
+        });
+        const lastRecorded = lastAuction ? parseInt(lastAuction.auction_number, 10) : 0;
+        auctionData.auction_number = openAuctionNumber != null ? openAuctionNumber : lastRecorded + 1;
+
+        // Duplicate-winner guard and company-seat winner rejection for new auctions
+        if (auctionData.bidder_id) {
+          const bidderTickets = await memberTicketsInGroup(auctionData.group_id, auctionData.bidder_id, { transaction });
+          const hasEligibleTicket = bidderTickets.some(t => !companySeats.includes(Number(t.group_position_number)));
+          if (!hasEligibleTicket && bidderTickets.length > 0) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
+          }
+
+          const existingWin = await Auction.findOne({
+            where: { group_id: auctionData.group_id, bidder_id: auctionData.bidder_id },
+            transaction
+          });
+          if (existingWin) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
+          }
+        }
+
+        if (auctionData.ticket_number) {
+          const ticketNum = parseInt(auctionData.ticket_number, 10);
+          if (companySeats.includes(ticketNum)) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
+          }
+        }
+
+        if (auctionData.enrollment_id) {
+          const winEnrollment = await Enrollment.findByPk(auctionData.enrollment_id, { transaction });
+          if (winEnrollment && companySeats.includes(Number(winEnrollment.group_position_number))) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
+          }
+        }
+      }
+
+      auctionResult = await Auction.create(auctionData, { transaction });
+      isNew = true;
+    }
+
+    // Automatically update the ChitsGroup's auction_date to the next_auction_date so the UI updates
+    if (auctionData.next_auction_date && auctionData.group_id) {
+      await ChitsGroup.update(
+        { auction_date: auctionData.next_auction_date },
+        { where: { id: auctionData.group_id }, transaction }
+      );
+    }
+
+    const resolvedGroupId = auctionData.group_id || (auctionResult && auctionResult.group_id);
+    const resolvedBidderId = auctionData.bidder_id || (auctionResult && auctionResult.bidder_id);
+    if (resolvedGroupId) {
+      const group = await ChitsGroup.findByPk(resolvedGroupId, { transaction });
+      const schemeConfig = group?.scheme_configuration_id
+        ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
+        : null;
+
+      const winnerEnrollment = resolvedBidderId ? await Enrollment.findOne({
+        where: { group_id: resolvedGroupId, subscriber_id: resolvedBidderId, delete_status: 0 },
+        transaction
+      }) : null;
+
+      const effectiveAuctionData = auctionResult.toJSON ? auctionResult.toJSON() : { ...auctionData, ...auctionResult };
+
+      if (schemeConfig) {
+        if (winnerEnrollment) {
+          await applyWinnerSchemeAdjustments(effectiveAuctionData, schemeConfig, winnerEnrollment.id, transaction);
+        }
+      } else {
+        await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment ? winnerEnrollment.id : null, resolvedGroupId, transaction);
+      }
+    }
+
+    await transaction.commit();
+    return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, `Auction ${isNew ? 'created' : 'updated'} successfully`, auctionResult);
+  } catch (error) {
+    await transaction.rollback();
+
+    // B6: Catch DB unique constraint errors
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      const errItem = error.errors && error.errors[0];
+      if (errItem && errItem.path === 'auctions_group_bidder_unique') {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'This member has already won an auction in this group');
+      }
+      if (errItem && errItem.path === 'auctions_group_auction_number_unique') {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'This auction number has already been recorded for this group');
+      }
+    }
+
+    console.error('Error in storeOrUpdateAuctionService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const recordWinnerService = async (res, reqBody, userToken) => {
+  if (!userToken || userToken.role !== 'company') {
+    return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can record auction winners');
+  }
+  const safeCompanyId = userToken.id;
+  const transaction = await sequelize.transaction();
+  try {
+    const { company_id, group_id, bidder_id, auction_date, pb_bo_proxy, gst_number_percentage, due_date, next_auction_date } = reqBody;
+
+    const effectiveAuctionDate = auction_date || new Date().toISOString().split('T')[0];
+    if (due_date && new Date(due_date) < new Date(effectiveAuctionDate)) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'due_date cannot be before auction_date');
+    }
+
+    // 1. Group checks
+    const group = await ChitsGroup.findOne({
+      where: {
+        id: group_id,
+        is_deleted_status: 0,
+        chits_group_status: 1,
+        company_id: safeCompanyId // Secure scoping
+      },
+      transaction
+    });
+
+    if (!group) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Group is not started, does not exist, or you have no access');
+    }
+
+    // 2. Bidder checks
+    // A member may bid through any ticket they hold (as main or joint holder). The
+    // ticket that wins is their first ticket in the group that hasn't won yet.
+    const bidderTickets = await memberTicketsInGroup(group_id, bidder_id, { transaction });
+    if (!bidderTickets.length) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Bidder is not enrolled in this group');
+    }
+    let winnerEnrollment = null;
+    let existingWin = null;
+    for (const ticket of bidderTickets) {
+      const win = await ticketWin(ticket, { transaction });
+      if (!win) { winnerEnrollment = ticket; break; }
+      existingWin = existingWin || win;
+    }
+    if (!winnerEnrollment) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, `This member's ticket has already won auction #${existingWin.auction_number} in this group`);
+    }
+
+    const companySeats = await getGroupCompanySeats(group.id, group, transaction);
+
+    if (companySeats.includes(Number(winnerEnrollment.group_position_number))) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
+    }
+
+    // 3. Duplicate-winner guard
+    // Duplicate-winner guard: handled per ticket above (a prized ticket can't win again).
+
+    // 4. Auction number
+    const lastAuction = await Auction.findOne({
+      where: { group_id },
+      order: [['auction_number', 'DESC']],
+      transaction
+    });
+
+    const lastRecorded = lastAuction ? parseInt(lastAuction.auction_number, 10) : 0;
+
+    let schemeConfig = null;
+    let companyMonths = 0;
+
+    if (group.scheme_configuration_id) {
+      schemeConfig = await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction });
+      if (schemeConfig) {
+        if (schemeConfig.scheme_type === 63) {
+          companyMonths = parseInt(schemeConfig.company_chit, 10) || 1;
+        } else if (schemeConfig.scheme_type === 64) {
+          companyMonths = 1;
+        }
+      }
+    }
+
+    // Open auction: skip all company months. Fixed schemes: skip their company months.
+    const nextAuctionNumber = schemeConfig ? Math.max(lastRecorded, companyMonths) + 1 : nextOpenAuctionNumber(lastRecorded, group, companySeats);
+
+    // Guard against exceeding schedule
+    if (nextAuctionNumber > (group.no_of_installments || 0)) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Auction schedule is already finished for this group');
+    }
+
+    // 5. Amount
+    let auctionData = {
+      company_id: safeCompanyId || group.company_id,
+      group_id,
+      bidder_id,
+      auction_number: nextAuctionNumber,
+      auction_date: auction_date || new Date().toISOString().split('T')[0],
+      pb_bo_proxy: pb_bo_proxy || 'Prized Bidder',
+      due_date,
+      next_auction_date
+    };
+
+    if (schemeConfig) {
+      const derivedWinningAmount = getSchemeWinningAmount(schemeConfig, nextAuctionNumber);
+      if (derivedWinningAmount === null) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot record winner for a company month');
+      }
+      auctionData.bid_amount = derivedWinningAmount;
+    } else {
+      const chitAmount = parseFloat(group.chit_amount) || 0;
+      // The last instalment has no auction discount: its winner is recorded at the full chit amount.
+      const isFinalMonth = isFinalOpenMonth(nextAuctionNumber, group);
+      const bid_amount = isFinalMonth ? chitAmount : parseFloat(reqBody.bid_amount);
+      if (isNaN(bid_amount) || bid_amount <= 0) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'bid_amount is required for Open Auction groups');
+      }
+      if (!isFinalMonth) {
+        const maxDiscountPct = parseFloat(group.max_ceiling_in) || 0;
+        const minBid = chitAmount * (1 - maxDiscountPct / 100);
+        if (bid_amount < minBid) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, `Bid amount cannot be lower than the maximum discount floor (₹${minBid})`);
+        }
+      }
+      auctionData.bid_amount = bid_amount;
+      auctionData.dividend_installment_no = dividendTargetMonth(nextAuctionNumber, group, companySeats);
+      const installments = parseInt(group.no_of_installments, 10) || 1;
+      const companyCommissionPct = parseFloat(group.company_commission) || 0;
+
+      const totalEnrollments = await Enrollment.count({ where: { group_id, delete_status: 0 }, transaction });
+      const gstPercentage = auctionData.gst_number_percentage !== undefined && auctionData.gst_number_percentage !== null && auctionData.gst_number_percentage !== ''
+        ? parseFloat(auctionData.gst_number_percentage)
+        : (group.gst_percentage !== undefined && group.gst_percentage !== null ? parseFloat(group.gst_percentage) : 18);
+
+      const financials = calculateOpenAuctionFinancials({
+        chitAmount,
+        installments,
+        bidAmount: bid_amount,
+        commissionPct: companyCommissionPct,
+        memberCount: totalEnrollments || installments,
+        gstPercentage
+      });
+
+      auctionData.gst_number_percentage = financials.gstPct;
+      auctionData.subscription_amount = financials.subscription;
+      auctionData.company_commission = financials.commission;
+      auctionData.gst_amount = financials.gst;
+      auctionData.bid_loss = financials.bidDiscount;
+      auctionData.dividend_payable = financials.totalDividend;
+      auctionData.dividend = financials.totalDividend;
+      auctionData.bid_payable = financials.winnerReceives;
+      auctionData.net_payable = financials.netPayable;
+    }
+
+    // 6. Create auction row and apply adjustments
+    auctionData.ticket_number = winnerEnrollment.group_position_number;
+    const newAuction = await Auction.create(auctionData, { transaction });
+
+    if (schemeConfig) {
+      await applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnrollment.id, transaction);
+    } else {
+      await applyOpenAuctionAdjustments(auctionData, winnerEnrollment.id, auctionData.group_id, transaction);
+    }
+
+    // 7. Update ChitsGroup auction_date and status if complete
+    const updates = {};
+    if (next_auction_date) {
+      updates.auction_date = next_auction_date;
+    }
+    if (parseInt(auctionData.auction_number, 10) >= parseInt(group.no_of_installments, 10)) {
+      updates.chits_group_status = 2;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await group.update(updates, { transaction });
+    }
+
+    await transaction.commit();
+
+    // FCM Notification Trigger
+    try {
+      const groupName = group.group_name || 'Chit Group';
+      // The prize belongs to the ticket, so every holder of the winning ticket hears it.
+      const winners = await holderMembersOf([winnerEnrollment.id]);
+      winners.filter((w) => w.fcm_token).forEach((w) => {
+        fcmService.sendPushToMember(w, 'Auction Won', `Congratulations! Your ticket won the auction for Chit ${groupName}`, { type: 'AUCTION_WIN', group_id: String(group_id) });
+      });
+      const winnerIds = new Set(winners.map((w) => w.id));
+
+      const allEnrollments = await Enrollment.findAll({
+        where: { group_id, delete_status: 0, company_id: safeCompanyId || group.company_id },
+        attributes: ['id']
+      });
+      const groupMembers = (await holderMembersOf(allEnrollments.map((e) => e.id))).filter((m) => m.fcm_token && !winnerIds.has(m.id));
+
+      let dividendText = '';
+      if (schemeConfig && schemeConfig.scheme_type !== 63 && schemeConfig.scheme_type !== 64) {
+        const dividend = auctionData.net_payable > 0 ? (group.chit_value - auctionData.net_payable) / group.no_of_members : 0;
+        if (dividend > 0) dividendText = ` A dividend of Rs. ${dividend.toFixed(2)} has been applied.`;
+      }
+      fcmService.sendPushToMulticast(groupMembers, safeCompanyId || group.company_id, 'Auction Concluded', `The auction for Chit ${groupName} has concluded.${dividendText}`, { type: 'AUCTION_CONCLUDED', group_id: String(group_id) });
+    } catch (pushErr) {
+      console.error('Error sending auction pushes:', pushErr);
+    }
+
+    return successResponse(res, statusCodes.CREATED, 'Auction recorded successfully', { ...newAuction.toJSON(), auction_number: nextAuctionNumber });
+  } catch (error) {
+    await transaction.rollback();
+
+    // B6: Catch DB unique constraint errors
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      const errItem = error.errors && error.errors[0];
+      if (errItem && errItem.path === 'auctions_group_bidder_unique') {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'This member has already won an auction in this group');
+      }
+      if (errItem && errItem.path === 'auctions_group_auction_number_unique') {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'This auction number has already been recorded for this group');
+      }
+    }
+
+    console.error('Error in recordWinnerService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(group_id && group_id !== '' && { group_id }),
+      ...(bidder_id && bidder_id !== '' && { bidder_id })
+    };
+
+    if (search && search.trim() !== '') {
+      where[Op.or] = [
+        { '$group.group_name$': { [Op.like]: `%${search}%` } },
+        { '$bidder.name$': { [Op.like]: `%${search}%` } },
+        { '$bidder.member_id$': { [Op.like]: `%${search}%` } }
+      ];
+    }
+
+    const auctions = await Auction.findAndCountAll({
+      limit,
+      offset,
+      where,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'bidder', attributes: ['name', 'member_id'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const formattedData = {
+      total_count: auctions.count,
+      rows: auctions.rows
+    };
+
+    return successResponse(res, statusCodes.OK, 'Auctions retrieved successfully', formattedData);
+  } catch (error) {
+    console.error('Error in getAllAuctionsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteAuctionService = async (res, id, companyId) => {
+  try {
+    const auction = await Auction.findOne({ where: { id, company_id: companyId } });
+    if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+    await auction.destroy();
+    return successResponse(res, statusCodes.OK, 'Auction deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteAuctionService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllSubcategoriesService = async (res, category_id) => {
+  try {
+    if (category_id === undefined || category_id === null) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'category_id is required');
+    }
+    const subcategories = await StaticDropdownSubcategoryList.findAll({
+      where: {
+        category_id,
+        status: 1
+      },
+      order: [['is_default', 'DESC'], ['subcategory_name', 'ASC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Subcategories retrieved successfully', subcategories);
+  } catch (error) {
+    console.error('Error in getAllSubcategoriesService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+
+const getAgentByAgentTypeService = async (res, company_id, agent_type_id, min, max, search) => {
+  try {
+    if (agent_type_id !== 16 && agent_type_id !== 18) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid agent type ID. Must be 16 or 18.');
+    }
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && {
+        [Op.or]: [
+          { name: { [Op.like]: `%${search}%` } },
+          { member_id: { [Op.like]: `%${search}%` } }
+        ]
+      })
+    };
+
+    const allMembers = await Member.findAll({ where });
+
+    const agents = allMembers.filter(m => {
+      if (!m.introduced_as) return false;
+      let intro = m.introduced_as;
+      if (typeof intro === 'string') {
+        try {
+          intro = JSON.parse(intro);
+        } catch (e) {
+          return intro.includes(String(agent_type_id)) || intro.includes(Number(agent_type_id));
+        }
+      }
+      if (Array.isArray(intro)) {
+        return intro.map(Number).includes(Number(agent_type_id)) || intro.map(String).includes(String(agent_type_id));
+      }
+      return false;
+    });
+
+    const total_count = agents.length;
+    const paginatedAgents = agents.slice(offset, offset + limit);
+
+    const now = new Date();
+    const endOfCurrentMonthStr = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).toISOString().split('T')[0];
+
+    const result = [];
+
+    for (const agent of paginatedAgents) {
+      const whereClause = { delete_status: 0 };
+      if (agent_type_id === 16) {
+        whereClause.business_agent_id = agent.id;
+      } else if (agent_type_id === 18) {
+        whereClause.collection_agent_id = agent.id;
+      }
+
+      const enrollments = await Enrollment.findAll({
+        where: whereClause
+      });
+
+      let total_target_amount = 0;
+      let total_due_amount = 0;
+
+      for (const e of enrollments) {
+        const installments = await ChitsInstallment.findAll({
+          where: {
+            enrollment_id: e.id,
+            due_date: { [Op.lte]: endOfCurrentMonthStr }
+          },
+          include: [
+            { model: sequelize.models.CustomerPayment, as: 'payments', attributes: ['received_amount'] }
+          ]
+        });
+
+        for (const inst of installments) {
+          const instData = inst.toJSON();
+          const payable = parseFloat(instData.payable_amount) || 0;
+          const received = instData.payments ? instData.payments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0) : 0;
+
+          total_target_amount += payable;
+          total_due_amount += (payable - received);
+        }
+      }
+
+      const storedEntry = await AgentTargetEntry.findOne({
+        where: { agent_id: agent.id, agent_type_id }
+      });
+
+      result.push({
+        agent_id: agent.id,
+        agent_name: agent.name,
+        agent_member_id: agent.member_id,
+        company_id: agent.company_id,
+        total_target_amount,
+        total_due_amount,
+        stored_target_amount: storedEntry ? parseFloat(storedEntry.target_amount) || 0 : null,
+        stored_due_amount: storedEntry ? parseFloat(storedEntry.due_amount) || 0 : null
+      });
+    }
+
+    return successResponse(res, statusCodes.OK, 'Agent target details retrieved successfully', {
+      total_count,
+      rows: result
+    });
+
+  } catch (error) {
+    console.error('Error in getAgentByAgentTypeService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAgentEnrollmentsService = async (res, company_id, agent_type_id, agent_id, group_id, position, min, max, search) => {
+  try {
+    const type_id = parseInt(agent_type_id, 10);
+    const ag_id = parseInt(agent_id, 10);
+
+    if (type_id !== 16 && type_id !== 18) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid agent type ID. Must be 16 or 18.');
+    }
+    if (isNaN(ag_id)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Agent ID is required and must be a number.');
+    }
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      delete_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(type_id === 16 ? { business_agent_id: ag_id } : { collection_agent_id: ag_id }),
+      ...(group_id && { group_id })
+    };
+
+    const enrollments = await Enrollment.findAll({
+      where: whereClause,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] }
+      ]
+    });
+
+    let filteredEnrollments = enrollments;
+    if (search) {
+      filteredEnrollments = enrollments.filter(e => {
+        const groupMatch = e.group && e.group.group_name && e.group.group_name.toLowerCase().includes(search.toLowerCase());
+        const subMatch = e.subscriber && (
+          (e.subscriber.name && e.subscriber.name.toLowerCase().includes(search.toLowerCase())) ||
+          (e.subscriber.member_id && e.subscriber.member_id.toLowerCase().includes(search.toLowerCase()))
+        );
+        return groupMatch || subMatch;
+      });
+    }
+
+    const now = new Date();
+    const endOfCurrentMonthStr = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).toISOString().split('T')[0];
+
+    const allInstallments = [];
+
+    for (const e of filteredEnrollments) {
+      const isPrized = await Auction.findOne({
+        where: {
+          group_id: e.group_id,
+          bidder_id: e.subscriber_id
+        }
+      });
+      const pos = isPrized ? 'PS' : 'NPS';
+
+      if (position && position !== pos) continue;
+
+      const installments = await ChitsInstallment.findAll({
+        where: {
+          enrollment_id: e.id,
+          due_date: { [Op.lte]: endOfCurrentMonthStr }
+        },
+        include: [
+          { model: sequelize.models.CustomerPayment, as: 'payments', attributes: ['received_amount'] }
+        ]
+      });
+
+      for (const inst of installments) {
+        const instData = inst.toJSON();
+        const payable = parseFloat(instData.payable_amount) || 0;
+        const received = instData.payments ? instData.payments.reduce((sum, p) => sum + (parseFloat(p.received_amount) || 0), 0) : 0;
+
+        allInstallments.push({
+          id: instData.id,
+          enrollment_id: e.id,
+          group_id: e.group_id,
+          group_name: e.group ? e.group.group_name : null,
+          chit_amount: e.group ? (parseFloat(e.group.chit_amount) || 0) : null,
+          subscriber_id: e.subscriber_id,
+          subscriber_name: e.subscriber ? e.subscriber.name : null,
+          subscriber_member_id: e.subscriber ? e.subscriber.member_id : null,
+          position: pos,
+          type: instData.type,
+          installment_no: instData.installment_no,
+          due_date: instData.due_date,
+          over_due_days_count: instData.over_due_days_count,
+          penalty_amount: instData.penalty_amount,
+          payable_amount: payable,
+          createdAt: instData.createdAt,
+          updatedAt: instData.updatedAt,
+          payments: instData.payments || [],
+          received_amount: received,
+          due_amount: Math.max(0, payable - received)
+        });
+      }
+    }
+
+    const total_count = allInstallments.length;
+    const paginated = allInstallments.slice(offset, offset + limit);
+
+    return successResponse(res, statusCodes.OK, 'Agent enrollments retrieved successfully', {
+      total_count,
+      rows: paginated
+    });
+
+  } catch (error) {
+    console.error('Error in getAgentEnrollmentsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAgentTargetEntryService = async (res, data = {}) => {
+  try {
+    const { id, company_id, agent_type_id, agent_id, target_amount, from_date, to_date, due_amount } = data;
+
+    if (!agent_type_id || !agent_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'agent_type_id and agent_id are required.');
+    }
+
+    if (id) {
+      const existing = await AgentTargetEntry.findByPk(id);
+      if (!existing) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'AgentTargetEntry not found');
+      }
+
+      await existing.update({
+        company_id,
+        agent_type_id,
+        agent_id,
+        target_amount,
+        from_date,
+        to_date,
+        due_amount
+      });
+
+      return successResponse(res, statusCodes.OK, 'Agent target entry updated successfully', existing);
+    } else {
+      const newEntry = await AgentTargetEntry.create({
+        company_id,
+        agent_type_id,
+        agent_id,
+        target_amount,
+        from_date,
+        to_date,
+        due_amount
+      });
+
+      return successResponse(res, statusCodes.CREATED, 'Agent target entry created successfully', newEntry);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateAgentTargetEntryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAgentTargetEntryService = async (res, company_id, agent_type_id, min = 0, max = 10, search = '') => {
+  try {
+    const limit = parseInt(max, 10);
+    const offset = parseInt(min, 10);
+
+    const whereClause = {
+      ...(company_id ? { company_id } : {}),
+      ...(agent_type_id ? { agent_type_id } : {})
+    };
+
+    let includeAgentWhere = {};
+    if (search) {
+      includeAgentWhere = {
+        [Op.or]: [
+          { name: { [Op.like]: `%${search}%` } },
+          { mobile_number: { [Op.like]: `%${search}%` } }
+        ]
+      };
+    }
+
+    const { count, rows } = await AgentTargetEntry.findAndCountAll({
+      where: whereClause,
+      include: [
+        {
+          model: Member,
+          as: 'agent',
+          where: Object.keys(includeAgentWhere).length > 0 ? includeAgentWhere : undefined,
+          required: Object.keys(includeAgentWhere).length > 0
+        },
+        {
+          model: StaticDropdownsList,
+          as: 'agent_type',
+          required: false
+        }
+      ],
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Agent target entries fetched successfully', {
+      total: count,
+      rows: rows
+    });
+  } catch (error) {
+    console.error('Error in getAllAgentTargetEntryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getFilteredMembersByGroupAndAgentService = async (res, company_id, agent_type_id, agent_id, group_id, min, max) => {
+  try {
+    const type_id = parseInt(agent_type_id, 10);
+    const ag_id = parseInt(agent_id, 10);
+
+    if (type_id !== 16 && type_id !== 18) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid agent type ID. Must be 16 or 18.');
+    }
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      delete_status: 0,
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(group_id && group_id !== '' && { group_id }),
+      ...(!isNaN(ag_id) && (type_id === 16 ? { business_agent_id: ag_id } : { collection_agent_id: ag_id }))
+    };
+
+    const enrollments = await Enrollment.findAll({
+      where: whereClause,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] },
+        { model: Member, as: 'business_agent', attributes: ['name'] },
+        { model: Member, as: 'collection_agent', attributes: ['name'] }
+      ]
+    });
+
+    const result = [];
+    for (const e of enrollments) {
+      const isPrized = await Auction.findOne({
+        where: {
+          group_id: e.group_id,
+          bidder_id: e.subscriber_id
+        }
+      });
+
+      result.push({
+        subscriber_id: e.subscriber_id,
+        subscriber_name: e.subscriber ? e.subscriber.name : null,
+        group_name: e.group ? e.group.group_name : null,
+        group_position: e.group_position_number,
+        position: isPrized ? 'PS' : 'NPS',
+        agent_name: type_id === 16 ? (e.business_agent ? e.business_agent.name : null) : (e.collection_agent ? e.collection_agent.name : null),
+        business_agent_name: e.business_agent ? e.business_agent.name : null,
+        collection_agent_name: e.collection_agent ? e.collection_agent.name : null
+      });
+    }
+
+    const total_count = result.length;
+    const paginated = result.slice(offset, offset + limit);
+
+    return successResponse(res, statusCodes.OK, 'Filtered members retrieved successfully', {
+      total_count,
+      rows: paginated
+    });
+  } catch (error) {
+    console.error('Error in getFilteredMembersByGroupAndAgentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const transferAgentUpdateService = async (res, member_id, agent_type_id, new_agent_id) => {
+  try {
+    const type_id = parseInt(agent_type_id, 10);
+    const new_ag_id = parseInt(new_agent_id, 10);
+
+    if (type_id !== 16 && type_id !== 18) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid agent type ID. Must be 16 or 18.');
+    }
+    if (isNaN(new_ag_id)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'New Agent ID is required and must be a number.');
+    }
+
+    const memberIds = Array.isArray(member_id) ? member_id : [parseInt(member_id, 10)].filter(Boolean);
+    if (!memberIds.length) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Member ID is required.');
+    }
+
+    if (type_id === 16) {
+      await Enrollment.update(
+        { business_agent_id: new_ag_id },
+        { where: { subscriber_id: { [Op.in]: memberIds }, delete_status: 0 } }
+      );
+    } else if (type_id === 18) {
+      await Enrollment.update(
+        { collection_agent_id: new_ag_id },
+        { where: { subscriber_id: { [Op.in]: memberIds }, delete_status: 0 } }
+      );
+    }
+
+    return successResponse(res, statusCodes.OK, 'Agent transferred successfully');
+  } catch (error) {
+    console.error('Error in transferAgentUpdateService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+const getAllGroupUnderStaticListsService = async (res, comp_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      is_deleted_status: 0,
+      ...(search && { name: { [Op.iLike]: `%${search}%` } })
+    };
+
+    if (comp_id) {
+      whereClause[Op.or] = [
+        { type: 1 },
+        { company_id: comp_id }
+      ];
+    }
+
+    const { count, rows } = await GroupUnderStaticList.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['account_order', 'ASC'], ['id', 'ASC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Group under static list retrieved successfully', {
+      total_count: count,
+      rows
+    });
+  } catch (error) {
+    console.error('Error in getAllGroupUnderStaticListsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateGroupUnderStaticListService = async (res, comp_id, data = {}) => {
+  try {
+    const { id, ...restData } = data;
+    restData.type = 2;
+    if (comp_id) {
+      restData.company_id = comp_id;
+    }
+    if (id) {
+      const existing = await GroupUnderStaticList.findByPk(id);
+      if (!existing) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Group under static list not found');
+      }
+      await existing.update(restData);
+      return successResponse(res, statusCodes.OK, 'Group under static list updated successfully', existing);
+    } else {
+      await sequelize.query(`SELECT setval(pg_get_serial_sequence('group_under_static_lists', 'id'), coalesce(max(id), 0) + 1, false) FROM "group_under_static_lists";`);
+      const created = await GroupUnderStaticList.create(restData);
+      return successResponse(res, statusCodes.CREATED, 'Group under static list created successfully', created);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateGroupUnderStaticListService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessListUnderMembersService = async (res, business_agent_id, min, max, member_id = null, companyId = null, search = null) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    if (business_agent_id && companyId) {
+      const agentMember = await Member.findOne({
+        where: { id: business_agent_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!agentMember) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent not found');
+      }
+    }
+
+    if (member_id) {
+      // Screenshot 3: Member-wise Detail (Chit Groups for this Member)
+      const member = await Member.findOne({
+        where: {
+          id: member_id,
+          is_deleted_status: 0,
+          ...(companyId ? { company_id: companyId } : {})
+        },
+        attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt']
+      });
+      if (!member) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      }
+
+      const enrollmentWhere = {
+        subscriber_id: member_id,
+        delete_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      };
+      if (business_agent_id) {
+        enrollmentWhere.business_agent_id = business_agent_id;
+      }
+
+      const enrollments = await Enrollment.findAll({
+        where: enrollmentWhere,
+        include: [
+          { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] }
+        ]
+      });
+
+      const configWhere = {
+        member_id,
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      };
+      if (business_agent_id) {
+        configWhere.business_agent_id = business_agent_id;
+      }
+
+      const configs = await ConfigureBusinessAgentCommission.findAll({
+        where: configWhere,
+        include: [
+          { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] }
+        ]
+      });
+
+      const configIds = configs.map(c => c.id);
+      let allHistories = [];
+      if (configIds.length > 0) {
+        allHistories = await HistoryBusinessAgent.findAll({
+          where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+          raw: true
+        });
+      }
+
+      const groupsMap = new Map();
+
+      // Process configs
+      configs.forEach(cfg => {
+        const g = cfg.group || {};
+        const histories = allHistories.filter(h => h.configure_business_agent_id === cfg.id);
+        const total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+        const commission_amount = parseFloat(cfg.commission_amount) || 0;
+        const total_pending = Math.max(0, commission_amount - total_paid);
+
+        const payout_status = getPayoutStatus(total_paid, total_pending);
+
+        groupsMap.set(cfg.group_id, {
+          configure_business_agent_id: cfg.id,
+          group_id: cfg.group_id,
+          group_name: g.group_name || 'Chit Group',
+          chit_amount: parseFloat(g.chit_amount) || 0,
+          commission_amount: parseFloat(commission_amount.toFixed(2)),
+          total_paid: parseFloat(total_paid.toFixed(2)),
+          total_pending: parseFloat(total_pending.toFixed(2)),
+          payout_status: payout_status
+        });
+      });
+
+      // Process enrollments that might not have a commission config yet
+      enrollments.forEach(enr => {
+        if (!groupsMap.has(enr.group_id)) {
+          const g = enr.group || {};
+          groupsMap.set(enr.group_id, {
+            configure_business_agent_id: null,
+            group_id: enr.group_id,
+            group_name: g.group_name || 'Chit Group',
+            chit_amount: parseFloat(g.chit_amount) || 0,
+            commission_amount: 0,
+            total_paid: 0,
+            total_pending: 0,
+            payout_status: 3
+          });
+        }
+      });
+
+      const chit_groups = Array.from(groupsMap.values());
+      if (business_agent_id && chit_groups.length === 0) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      }
+
+      const totalMemberCommission = chit_groups.reduce((sum, g) => sum + (parseFloat(g.commission_amount) || 0), 0);
+      const totalMemberReceived = chit_groups.reduce((sum, g) => sum + (parseFloat(g.total_paid) || 0), 0);
+      const totalMemberPending = Math.max(0, totalMemberCommission - totalMemberReceived);
+      const memberPayoutStatus = getPayoutStatus(totalMemberReceived, totalMemberPending);
+
+      const memberSummary = {
+        member_id: member.id,
+        user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+        name: member.name || '',
+        initial: member.name && member.name.trim().length > 0 ? member.name.trim()[0].toUpperCase() : 'M',
+        profile_image: member.upload_image || null,
+        commission: parseFloat(totalMemberCommission.toFixed(2)),
+        received: parseFloat(totalMemberReceived.toFixed(2)),
+        pending: parseFloat(totalMemberPending.toFixed(2)),
+        payout_status: memberPayoutStatus,
+        joined_on: member.createdAt ? formatDateDDMMYYYY(member.createdAt) : (member.registration_date ? formatDateDDMMYYYY(member.registration_date) : null),
+        groups_count: chit_groups.length
+      };
+
+      const paginated_groups = (min !== undefined || max !== undefined) ? chit_groups.slice(offset, offset + limit) : chit_groups;
+
+      return successResponse(res, statusCodes.OK, 'Chit groups for member retrieved successfully', {
+        member: memberSummary,
+        chit_groups: paginated_groups,
+        count: chit_groups.length
+      });
+    }
+
+    // Default flow: list of all suggested members under business agent
+    const configWhere = {
+      is_deleted_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
+    if (business_agent_id) {
+      configWhere.business_agent_id = business_agent_id;
+    }
+
+    const configs = await ConfigureBusinessAgentCommission.findAll({
+      where: configWhere,
+      include: [
+        {
+          model: Member,
+          as: 'member',
+          attributes: ['id', 'name', 'member_id', 'gender', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt']
+        },
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status']
+        }
+      ]
+    });
+
+    const configIds = configs.map(c => c.id);
+    let allHistories = [];
+    if (configIds.length > 0) {
+      allHistories = await HistoryBusinessAgent.findAll({
+        where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+        raw: true
+      });
+    }
+
+    const enrollmentWhere = {
+      delete_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
+    if (business_agent_id) {
+      enrollmentWhere.business_agent_id = business_agent_id;
+    }
+
+    const enrollments = await Enrollment.findAll({
+      where: enrollmentWhere,
+      include: [
+        {
+          model: Member,
+          as: 'subscriber',
+          attributes: ['id', 'name', 'member_id', 'gender', 'other_info_user_code', 'mobile_number', 'upload_image', 'registration_date', 'createdAt']
+        },
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status']
+        }
+      ]
+    });
+
+    const memberMap = new Map();
+
+    configs.forEach(cfg => {
+      const m = cfg.member || {};
+      const mId = cfg.member_id || m.id;
+      if (!mId) return;
+
+      const histories = allHistories.filter(h => h.configure_business_agent_id === cfg.id);
+      const configPaid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+      const configComm = parseFloat(cfg.commission_amount) || 0;
+
+      if (!memberMap.has(mId)) {
+        memberMap.set(mId, {
+          member_id: mId,
+          id: mId,
+          name: m.name || 'Unknown',
+          user_code: m.other_info_user_code ? String(m.other_info_user_code) : (m.member_id || ''),
+          member_code: m.other_info_user_code ? `MEM-${m.other_info_user_code}` : (m.member_id || ''),
+          initial: m.name && m.name.trim().length > 0 ? m.name.trim()[0].toUpperCase() : 'M',
+          profile_image: m.upload_image || null,
+          mobile_number: m.mobile_number || null,
+          gender: m.gender || null,
+          joined_on: m.createdAt ? formatDateDDMMYYYY(m.createdAt) : (m.registration_date ? formatDateDDMMYYYY(m.registration_date) : null),
+          commission: 0,
+          total_received: 0,
+          group_ids: new Set()
+        });
+      }
+
+      const item = memberMap.get(mId);
+      item.commission += configComm;
+      item.total_received += configPaid;
+      if (cfg.group_id) {
+        item.group_ids.add(cfg.group_id);
+      }
+    });
+
+    enrollments.forEach(enr => {
+      const sub = enr.subscriber || {};
+      const mId = enr.subscriber_id || sub.id;
+      if (!mId) return;
+
+      if (!memberMap.has(mId)) {
+        memberMap.set(mId, {
+          member_id: mId,
+          id: mId,
+          name: sub.name || 'Unknown',
+          user_code: sub.other_info_user_code ? String(sub.other_info_user_code) : (sub.member_id || ''),
+          member_code: sub.other_info_user_code ? `MEM-${sub.other_info_user_code}` : (sub.member_id || ''),
+          initial: sub.name && sub.name.trim().length > 0 ? sub.name.trim()[0].toUpperCase() : 'M',
+          profile_image: sub.upload_image || null,
+          mobile_number: sub.mobile_number || null,
+          gender: sub.gender || null,
+          joined_on: enr.enrollment_date ? formatDateDDMMYYYY(enr.enrollment_date) : (sub.createdAt ? formatDateDDMMYYYY(sub.createdAt) : (sub.registration_date ? formatDateDDMMYYYY(sub.registration_date) : null)),
+          commission: 0,
+          total_received: 0,
+          group_ids: new Set()
+        });
+      }
+
+      const item = memberMap.get(mId);
+      if (enr.group_id) {
+        item.group_ids.add(enr.group_id);
+      }
+    });
+
+    let allMembers = Array.from(memberMap.values()).map(item => {
+      const commission = parseFloat(item.commission.toFixed(2));
+      const received = parseFloat(item.total_received.toFixed(2));
+      const pending = parseFloat(Math.max(0, commission - received).toFixed(2));
+      const payout_status = getPayoutStatus(received, pending);
+
+      return {
+        member_id: item.member_id,
+        id: item.member_id,
+        name: item.name,
+        user_code: item.user_code,
+        member_code: item.member_code,
+        initial: item.initial,
+        profile_image: item.profile_image,
+        mobile_number: item.mobile_number,
+        gender: item.gender,
+        commission,
+        received,
+        total_received: received,
+        pending,
+        total_pending: pending,
+        payout_status,
+        joined_on: item.joined_on,
+        groups_count: item.group_ids.size || 1
+      };
+    });
+
+    if (search && String(search).trim() !== '') {
+      const term = String(search).trim().toLowerCase();
+      allMembers = allMembers.filter(m => {
+        const nameMatch = (m.name || '').toLowerCase().includes(term);
+        const codeMatch = String(m.user_code || '').toLowerCase().includes(term) || String(m.member_code || '').toLowerCase().includes(term);
+        const phoneMatch = String(m.mobile_number || '').toLowerCase().includes(term);
+        return nameMatch || codeMatch || phoneMatch;
+      });
+    }
+
+    const total_count = allMembers.length;
+    const paginatedRows = (min !== undefined || max !== undefined) ? allMembers.slice(offset, offset + limit) : allMembers;
+
+    return successResponse(res, statusCodes.OK, 'Members under business agent retrieved successfully', {
+      count: total_count,
+      rows: paginatedRows
+    });
+  } catch (error) {
+    console.error('Error in getBusinessListUnderMembersService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteGroupUnderStaticListService = async (res, id, companyId) => {
+  try {
+    const existing = await GroupUnderStaticList.findOne({ where: { id, company_id: companyId } });
+    if (!existing) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Group under static list not found');
+    }
+    await existing.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Group under static list deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteGroupUnderStaticListService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getGroupUnderStaticListByIdService = async (res, id, companyId) => {
+  try {
+    const record = await GroupUnderStaticList.findOne({ where: { id, company_id: companyId, is_deleted_status: 0 } });
+    if (!record) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Group under static list not found');
+    }
+    return successResponse(res, statusCodes.OK, 'Group under static list retrieved successfully', record);
+  } catch (error) {
+    console.error('Error in getGroupUnderStaticListByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateAccountCreationDetailService = async (res, comp_id, login_user_id, data = {}) => {
+  try {
+    const { id, ...restData } = data;
+    if (comp_id) restData.company_id = comp_id;
+    if (id) {
+      if (login_user_id) restData.updated_by = String(login_user_id);
+      const existing = await AccountCreationDetail.findOne({ where: { id, company_id: comp_id } });
+      if (!existing) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
+      }
+      await existing.update(restData);
+      return successResponse(res, statusCodes.OK, 'Account creation detail updated successfully', existing);
+    } else {
+      if (login_user_id) restData.created_by = String(login_user_id);
+      const created = await AccountCreationDetail.create(restData);
+      return successResponse(res, statusCodes.CREATED, 'Account creation detail created successfully', created);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateAccountCreationDetailService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAccountCreationDetailsService = async (res, comp_id, min, max, search, account_group_id) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      is_deleted_status: 0,
+      ...(comp_id && { company_id: comp_id }),
+      ...(account_group_id && { account_group_id }),
+      ...(search && { account_name: { [Op.iLike]: `%${search}%` } })
+    };
+
+    const { count, rows } = await AccountCreationDetail.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      include: [{
+        model: GroupUnderStaticList,
+        as: 'account_group',
+        attributes: ['id', 'name']
+      }],
+      order: [['id', 'DESC']]
+    });
+
+    const allRecords = await AccountCreationDetail.findAll({
+      where: whereClause
+    });
+
+    let total_credit = 0;
+    let total_debit = 0;
+    let opening_balance_total = 0;
+
+    allRecords.forEach(record => {
+      const balance = parseFloat(record.opening_balance) || 0;
+      opening_balance_total += balance;
+      if (record.cr_dr_status === 1) {
+        total_credit += balance;
+      } else if (record.cr_dr_status === 2) {
+        total_debit += balance;
+      }
+    });
+
+    const difference_total = total_credit - total_debit;
+
+    return successResponse(res, statusCodes.OK, 'Account creation details retrieved successfully', {
+      total_count: count,
+      total_credit,
+      total_debit,
+      opening_balance_total,
+      difference_total,
+      rows
+    });
+  } catch (error) {
+    console.error('Error in getAllAccountCreationDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAccountTreeService = async (res, comp_id, group_under_id, search) => {
+  try {
+    const whereClause = {
+      is_deleted_status: 0,
+      ...(search && { name: { [Op.iLike]: `%${search}%` } }),
+      ...(group_under_id ? { group_under_id } : { type: 1 }),
+      ...(comp_id && {
+        [Op.or]: [
+          { type: 1 },
+          { company_id: comp_id }
+        ]
+      })
+    };
+
+    const rows = await GroupUnderStaticList.findAll({
+      where: whereClause,
+      order: [['account_order', 'ASC'], ['id', 'ASC']]
+    });
+
+    let accounts = [];
+    if (group_under_id) {
+      const accountsWhereClause = {
+        is_deleted_status: 0,
+        account_group_id: group_under_id,
+        ...(comp_id && { company_id: comp_id })
+      };
+      if (search) {
+        accountsWhereClause.account_name = { [Op.iLike]: `%${search}%` };
+      }
+      accounts = await AccountCreationDetail.findAll({
+        where: accountsWhereClause,
+        order: [['id', 'DESC']]
+      });
+    }
+
+    return successResponse(res, statusCodes.OK, 'Account tree retrieved successfully', {
+      total_count: rows.length,
+      rows,
+      accounts_count: accounts.length,
+      accounts
+    });
+  } catch (error) {
+    console.error('Error in getAllAccountTreeService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAccountCreationDetailByIdService = async (res, id, companyId) => {
+  try {
+    const record = await AccountCreationDetail.findOne({
+      where: { id, company_id: companyId, is_deleted_status: 0 },
+      include: [{
+        model: GroupUnderStaticList,
+        as: 'account_group',
+        attributes: ['id', 'name']
+      }]
+    });
+    if (!record) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
+    }
+    return successResponse(res, statusCodes.OK, 'Account creation detail retrieved successfully', record);
+  } catch (error) {
+    console.error('Error in getAccountCreationDetailByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteAccountCreationDetailService = async (res, id, companyId) => {
+  try {
+    const existing = await AccountCreationDetail.findOne({ where: { id, company_id: companyId } });
+    if (!existing) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Account creation detail not found');
+    }
+    await existing.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Account creation detail deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteAccountCreationDetailService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const bulkEditAccountCreationDetailsService = async (res, comp_id, login_user_id, accounts = []) => {
+  try {
+    if (!Array.isArray(accounts)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'accounts must be an array');
+    }
+    const results = [];
+    for (const data of accounts) {
+      const { id, ...restData } = data;
+      if (!id) continue;
+      if (comp_id) restData.company_id = comp_id;
+      if (login_user_id) restData.updated_by = String(login_user_id);
+      const existing = await AccountCreationDetail.findOne({ where: { id, company_id: comp_id } });
+      if (existing) {
+        await existing.update(restData);
+        results.push(existing);
+      }
+    }
+    return successResponse(res, statusCodes.OK, 'Account creation details edited successfully', results);
+  } catch (error) {
+    console.error('Error in bulkEditAccountCreationDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateSelfChitService = async (res, data = {}) => {
+  try {
+    const { id, ...selfChitData } = data;
+    if (id) {
+      const selfChit = await SelfChit.findByPk(id);
+      if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
+      if (selfChitData.slot_id !== undefined && Number(selfChitData.slot_id) !== Number(selfChit.slot_id)) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Changing the seat of a self chit is not allowed; delete and re-add instead');
+      }
+      await selfChit.update(selfChitData);
+      await checkAndUpdateChitFullStatus(selfChit.group_id);
+      return successResponse(res, statusCodes.OK, 'Self chit updated successfully', selfChit);
+    }
+
+    const groupId = selfChitData.group_id;
+    const slotId = parseInt(selfChitData.slot_id, 10);
+    if (!groupId || isNaN(slotId) || slotId <= 0) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'group_id and a positive slot_id are required');
+    }
+
+    const group = await ChitsGroup.findByPk(groupId);
+    if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+
+    const totalInstallments = parseInt(group.no_of_installments, 10) || 0;
+    if (totalInstallments > 0 && slotId >= totalInstallments) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Self chit cannot be placed on the final installment month');
+    }
+
+    // Guard 1: Check if seat is already enrolled by an active member
+    const existingEnrollment = await Enrollment.findOne({
+      where: {
+        group_id: groupId,
+        group_position_number: slotId,
+        delete_status: 0
+      }
+    });
+
+    const targetCompanyId = group.company_id || selfChitData.company_id;
+    let existingCompanyMember = await Member.findOne({
+      where: {
+        company_id: targetCompanyId,
+        group_status: 1,
+        is_deleted_status: 0
+      }
+    });
+
+    if (existingEnrollment) {
+      if (!existingCompanyMember || existingEnrollment.subscriber_id !== existingCompanyMember.id) {
+        return errorResponse(res, statusCodes.CONFLICT, `Seat #${slotId} is already occupied by an enrolled member`);
+      }
+    }
+
+    // Guard 2: Group already had its first auction
+    const auctionsCount = await Auction.count({ where: { group_id: groupId } });
+    if (auctionsCount > 0) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot add a self chit after the group has started auctions');
+    }
+
+    // Guard 3: Month already behind group
+    const lastAuction = await Auction.findOne({ where: { group_id: groupId }, order: [['auction_number', 'DESC']] });
+    if (lastAuction && Number(lastAuction.auction_number) >= slotId) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot add a self chit on a month that has already passed');
+    }
+
+    // Guard 4: Active self chit already exists for this seat
+    const existingSelfChit = await SelfChit.findOne({
+      where: { group_id: groupId, slot_id: slotId, is_deleted_status: 0 }
+    });
+    if (existingSelfChit) {
+      return errorResponse(res, statusCodes.CONFLICT, `A self chit already exists for seat #${slotId}`);
+    }
+
+    let newSelfChit = null;
+    await sequelize.transaction(async (t) => {
+      let companyMember = existingCompanyMember;
+      if (!companyMember) {
+        companyMember = await Member.findOne({
+          where: {
+            company_id: targetCompanyId,
+            group_status: 1,
+            is_deleted_status: 0
+          },
+          transaction: t
+        });
+      }
+
+      if (!companyMember) {
+        const company = await Company.findByPk(targetCompanyId, { transaction: t });
+        companyMember = await Member.create({
+          name: company ? company.company_name : 'Company Member',
+          company_id: targetCompanyId,
+          group_status: 1,
+          member_id: `COMP-${targetCompanyId.toString().slice(0, 8).toUpperCase()}`,
+          is_deleted_status: 0,
+          other_info_user_code: await generateUniqueUserCode()
+        }, { transaction: t });
+      }
+
+      let enrollment = await Enrollment.findOne({
+        where: {
+          group_id: groupId,
+          group_position_number: slotId,
+          delete_status: 0
+        },
+        transaction: t
+      });
+
+      if (!enrollment) {
+        enrollment = await Enrollment.create({
+          company_id: targetCompanyId,
+          group_id: groupId,
+          group_position_number: slotId,
+          subscriber_id: companyMember.id,
+          enrollment_date: group.commencement_date || new Date().toISOString().split('T')[0],
+          address_type: 1,
+          business_type_id: 1,
+          delete_status: 0
+        }, { transaction: t });
+
+        const loadedEnrollment = await Enrollment.findByPk(enrollment.id, {
+          include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+          transaction: t
+        });
+
+        await createInstallmentsForEnrollment(loadedEnrollment, group, { transaction: t });
+      }
+
+      newSelfChit = await SelfChit.create({
+        ...selfChitData,
+        company_id: targetCompanyId,
+        group_id: groupId,
+        subscriber_id: companyMember.id,
+        slot_id: slotId,
+        is_deleted_status: 0
+      }, { transaction: t });
+    });
+
+    await checkAndUpdateChitFullStatus(groupId);
+    return successResponse(res, statusCodes.CREATED, 'Self chit created successfully', newSelfChit);
+  } catch (error) {
+    console.error('Error in storeOrUpdateSelfChitService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllSelfChitDetailsService = async (res, company_id, min, max) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' && { company_id })
+    };
+    const selfChits = await SelfChit.findAndCountAll({
+      limit, offset, where,
+      include: [
+        { model: Company, as: 'company', attributes: ['company_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'Self chits retrieved successfully', selfChits);
+  } catch (error) {
+    console.error('Error in getAllSelfChitDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSelfChitByIdService = async (res, id, companyId) => {
+  try {
+    const selfChit = await SelfChit.findOne({
+      where: { id, company_id: companyId, is_deleted_status: 0 },
+      include: [
+        { model: Company, as: 'company', attributes: ['company_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Member, as: 'subscriber', attributes: ['name', 'member_id'] }
+      ]
+    });
+    if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
+    return successResponse(res, statusCodes.OK, 'Self chit retrieved successfully', selfChit);
+  } catch (error) {
+    console.error('Error in getSelfChitByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteSelfChitService = async (res, id, companyId) => {
+  try {
+    const where = { id };
+    if (companyId && companyId !== '') where.company_id = companyId;
+    const selfChit = await SelfChit.findOne({ where });
+    if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
+
+    const slotId = parseInt(selfChit.slot_id, 10);
+
+    // Guard: Check if month has already passed or auctions occurred at or past this seat
+    const pastAuction = await Auction.findOne({
+      where: {
+        group_id: selfChit.group_id,
+        auction_number: { [Op.gte]: slotId }
+      }
+    });
+    if (pastAuction) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot delete a self chit on a month that has already passed or been auctioned');
+    }
+
+    const companyEnrollment = await Enrollment.findOne({
+      where: {
+        group_id: selfChit.group_id,
+        group_position_number: slotId,
+        delete_status: 0
+      }
+    });
+
+    if (companyEnrollment) {
+      const paymentsCount = await CustomerPayment.count({
+        where: {
+          enrollment_id: companyEnrollment.id,
+          payment_status: { [Op.in]: [0, 1] }
+        }
+      });
+      if (paymentsCount > 0) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot delete a self chit that has recorded payments');
+      }
+    }
+
+    await sequelize.transaction(async (t) => {
+      await selfChit.update({ is_deleted_status: 1 }, { transaction: t });
+      if (companyEnrollment) {
+        await companyEnrollment.update({ delete_status: 1 }, { transaction: t });
+      }
+    });
+
+    await checkAndUpdateChitFullStatus(selfChit.group_id);
+    return successResponse(res, statusCodes.OK, 'Self chit deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteSelfChitService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateConfigureBusinessAgentCommissionService = async (res, data = {}, companyId = null) => {
+  try {
+    const { id, ...configData } = data;
+    if (companyId) configData.company_id = companyId;
+
+    if (id) {
+      const config = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          id,
+          is_deleted_status: 0,
+          ...(companyId ? { company_id: companyId } : {})
+        }
+      });
+      if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+
+      const existing = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          group_id: configData.group_id || config.group_id,
+          business_agent_id: configData.business_agent_id || config.business_agent_id,
+          member_id: configData.member_id || config.member_id,
+          is_deleted_status: 0,
+          id: { [Op.ne]: id },
+          ...(companyId ? { company_id: companyId } : {})
+        }
+      });
+      if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration already exists for this group, business agent, and member');
+
+      await config.update(configData);
+      return successResponse(res, statusCodes.OK, 'Configuration updated successfully', config);
+    } else {
+      const existing = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          group_id: configData.group_id,
+          business_agent_id: configData.business_agent_id,
+          member_id: configData.member_id,
+          is_deleted_status: 0,
+          ...(companyId ? { company_id: companyId } : {})
+        }
+      });
+      if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration already exists for this group, business agent, and member');
+
+      const newConfig = await ConfigureBusinessAgentCommission.create(configData);
+      return successResponse(res, statusCodes.CREATED, 'Configuration created successfully', newConfig);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateConfigureBusinessAgentCommissionService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllConfigureBusinessAgentCommissionsService = async (res, filters = {}, min, max, companyId = null) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
+    if (filters.group_id) where.group_id = filters.group_id;
+    if (filters.business_agent_id) where.business_agent_id = filters.business_agent_id;
+
+    const records = await ConfigureBusinessAgentCommission.findAndCountAll({
+      where,
+      limit,
+      offset,
+      include: [
+        { model: Company, as: 'company', attributes: ['company_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
+        { model: Member, as: 'business_agent', attributes: ['name', 'member_id'] },
+        { model: Member, as: 'member', attributes: ['name', 'member_id'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const configIds = records.rows.map(r => r.id);
+    let totalMap = {};
+    if (configIds.length > 0) {
+      const totals = await HistoryBusinessAgent.findAll({
+        where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+        attributes: ['configure_business_agent_id', [sequelize.fn('sum', sequelize.col('paid_amount')), 'total_paid']],
+        group: ['configure_business_agent_id'],
+        raw: true
+      });
+      totals.forEach(t => { totalMap[t.configure_business_agent_id] = parseFloat(t.total_paid) || 0; });
+    }
+
+    const configurations = records.rows.map(r => {
+      const total_paid = totalMap[r.id] || 0;
+      const commission_amount = parseFloat(r.commission_amount) || 0;
+      return {
+        ...r.toJSON(),
+        total_paid,
+        total_pending: commission_amount - total_paid
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Configurations retrieved successfully', { count: records.count, configurations });
+  } catch (error) {
+    console.error('Error in getAllConfigureBusinessAgentCommissionsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getConfigureBusinessAgentCommissionByIdService = async (res, id, companyId) => {
+  try {
+    const config = await ConfigureBusinessAgentCommission.findOne({
+      where: { id, company_id: companyId, is_deleted_status: 0 },
+      include: [
+        { model: Company, as: 'company', attributes: ['company_name'] },
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status'] },
+        { model: Member, as: 'business_agent', attributes: ['name', 'member_id'] },
+        { model: Member, as: 'member', attributes: ['name', 'member_id'] }
+      ]
+    });
+    if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+
+    const total_paid_str = await HistoryBusinessAgent.sum('paid_amount', {
+      where: { configure_business_agent_id: id, is_deleted_status: 0 }
+    });
+    const total_paid = parseFloat(total_paid_str) || 0;
+    const commission_amount = parseFloat(config.commission_amount) || 0;
+
+    const data = {
+      ...config.toJSON(),
+      total_paid,
+      total_pending: commission_amount - total_paid
+    };
+
+    return successResponse(res, statusCodes.OK, 'Configuration retrieved successfully', data);
+  } catch (error) {
+    console.error('Error in getConfigureBusinessAgentCommissionByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteConfigureBusinessAgentCommissionService = async (res, id, companyId) => {
+  try {
+    const config = await ConfigureBusinessAgentCommission.findOne({ where: { id, company_id: companyId } });
+    if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+    await config.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Configuration deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteConfigureBusinessAgentCommissionService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}, companyId = null) => {
+  try {
+    const { id, ...historyData } = data;
+
+    const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findByPk(id))?.configure_business_agent_id : null);
+    if (!configId) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration ID is required');
+
+    const config = await ConfigureBusinessAgentCommission.findOne({
+      where: {
+        id: configId,
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      }
+    });
+    if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+
+    const totalCommission = parseFloat(config.commission_amount) || 0;
+
+    let previousTotal = await HistoryBusinessAgent.sum('paid_amount', {
+      where: { configure_business_agent_id: configId, is_deleted_status: 0 }
+    }) || 0;
+    previousTotal = parseFloat(previousTotal);
+
+    if (id) {
+      const history = await HistoryBusinessAgent.findOne({
+        where: {
+          id,
+          configure_business_agent_id: configId,
+          is_deleted_status: 0
+        }
+      });
+      if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
+
+      // Do NOT allow update to change configure_business_agent_id
+      delete historyData.configure_business_agent_id;
+
+      const oldAmount = parseFloat(history.paid_amount) || 0;
+      const newAmount = historyData.paid_amount !== undefined ? (parseFloat(historyData.paid_amount) || 0) : oldAmount;
+      const newTotal = previousTotal - oldAmount + newAmount;
+
+      if (newTotal > totalCommission) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
+      }
+
+      await history.update(historyData);
+
+      const newStatus = newTotal >= totalCommission ? 3 : (newTotal > 0 ? 2 : 1);
+      await config.update({ status: newStatus });
+
+      return successResponse(res, statusCodes.OK, 'History record updated successfully', history);
+    } else {
+      const newAmount = parseFloat(historyData.paid_amount) || 0;
+      const newTotal = previousTotal + newAmount;
+
+      if (newTotal > totalCommission) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
+      }
+
+      const newHistory = await HistoryBusinessAgent.create({
+        ...historyData,
+        configure_business_agent_id: configId
+      });
+
+      const newStatus = newTotal >= totalCommission ? 3 : (newTotal > 0 ? 2 : 1);
+      await config.update({ status: newStatus });
+
+      return successResponse(res, statusCodes.CREATED, 'History record created successfully', newHistory);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateHistoryBusinessAgentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_id, min, max, companyId = null) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    if (configure_business_agent_id && companyId) {
+      const config = await ConfigureBusinessAgentCommission.findOne({
+        where: { id: configure_business_agent_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!config) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+      }
+    }
+
+    const where = { is_deleted_status: 0 };
+    if (configure_business_agent_id) where.configure_business_agent_id = configure_business_agent_id;
+
+    const records = await HistoryBusinessAgent.findAndCountAll({
+      where,
+      limit,
+      offset,
+      include: companyId ? [
+        {
+          model: ConfigureBusinessAgentCommission,
+          as: 'configure_business_agent',
+          where: { company_id: companyId, is_deleted_status: 0 },
+          attributes: []
+        }
+      ] : [],
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'History records retrieved successfully', records);
+  } catch (error) {
+    console.error('Error in getAllHistoryBusinessAgentsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getHistoryBusinessAgentByIdService = async (res, id, companyId) => {
+  try {
+    const history = await HistoryBusinessAgent.findOne({
+      where: { id, is_deleted_status: 0 },
+      include: [
+        {
+          model: ConfigureBusinessAgentCommission,
+          as: 'configure_business_agent',
+          where: {
+            is_deleted_status: 0,
+            ...(companyId ? { company_id: companyId } : {})
+          },
+          required: !!companyId
+        }
+      ]
+    });
+    if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
+    return successResponse(res, statusCodes.OK, 'History record retrieved successfully', history);
+  } catch (error) {
+    console.error('Error in getHistoryBusinessAgentByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteHistoryBusinessAgentService = async (res, id, companyId) => {
+  try {
+    const history = await HistoryBusinessAgent.findOne({
+      where: { id, is_deleted_status: 0 },
+      include: [
+        {
+          model: ConfigureBusinessAgentCommission,
+          as: 'configure_business_agent',
+          where: {
+            ...(companyId ? { company_id: companyId } : {})
+          },
+          required: !!companyId
+        }
+      ]
+    });
+    if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
+    await history.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'History record deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteHistoryBusinessAgentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentCommissionSummaryService = async (res, business_agent_id, min, max, companyId = null) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    if (business_agent_id && companyId) {
+      const agentMember = await Member.findOne({
+        where: { id: business_agent_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!agentMember) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent not found');
+      }
+    }
+
+    const totalCommissionStr = await ConfigureBusinessAgentCommission.sum('commission_amount', {
+      where: {
+        ...(business_agent_id ? { business_agent_id } : {}),
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      }
+    });
+    const total_commission_amount = parseFloat(totalCommissionStr) || 0;
+
+    const configRecords = await ConfigureBusinessAgentCommission.findAll({
+      where: {
+        ...(business_agent_id ? { business_agent_id } : {}),
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      },
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
+        {
+          model: Member,
+          as: 'member',
+          attributes: ['id', 'name', 'member_id', 'gender', 'other_info_user_code', 'createdAt', 'upload_image'],
+          include: [
+            { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
+          ]
+        }
+      ]
+    });
+
+    const configIds = configRecords.map(r => r.id);
+    let allHistories = [];
+    if (configIds.length > 0) {
+      allHistories = await HistoryBusinessAgent.findAll({
+        where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+        order: [['createdAt', 'DESC']],
+        raw: true
+      });
+    }
+
+    const paid_commission = allHistories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+    const pending_commission_amount = parseFloat(Math.max(0, total_commission_amount - paid_commission).toFixed(2));
+
+    const enrollmentWhere = {
+      delete_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
+    if (business_agent_id) {
+      enrollmentWhere.business_agent_id = business_agent_id;
+    }
+
+    const enrollments = await Enrollment.findAll({
+      where: enrollmentWhere,
+      attributes: ['subscriber_id']
+    });
+    const uniqueMembers = new Set(enrollments.map(e => e.subscriber_id));
+    const member_joined = uniqueMembers.size;
+
+    // 1. Grouping Chit-wise Commission (for Screenshot 1 - Section 1)
+    const chitWiseMap = new Map();
+    configRecords.forEach(config => {
+      const gId = config.group_id;
+      const group = config.group || {};
+      const histories = allHistories.filter(h => h.configure_business_agent_id === config.id);
+      const configPaid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+      const configCommission = parseFloat(config.commission_amount) || 0;
+
+      let latestHistoryDate = null;
+      histories.forEach(h => {
+        if (h.createdAt && (!latestHistoryDate || new Date(h.createdAt) > new Date(latestHistoryDate))) {
+          latestHistoryDate = h.createdAt;
+        }
+      });
+
+      if (!chitWiseMap.has(gId)) {
+        chitWiseMap.set(gId, {
+          group_id: gId,
+          group_name: group.group_name || 'Chit Group',
+          chit_amount: parseFloat(group.chit_amount) || 0,
+          commission: 0,
+          total_received: 0,
+          latest_date_raw: null,
+          member_ids: new Set()
+        });
+      }
+
+      const item = chitWiseMap.get(gId);
+      item.commission += configCommission;
+      item.total_received += configPaid;
+      item.member_ids.add(config.member_id);
+      if (latestHistoryDate && (!item.latest_date_raw || new Date(latestHistoryDate) > new Date(item.latest_date_raw))) {
+        item.latest_date_raw = latestHistoryDate;
+      }
+    });
+
+    const all_chit_wise = Array.from(chitWiseMap.values()).map(item => {
+      const commission = parseFloat(item.commission.toFixed(2));
+      const total_received = parseFloat(item.total_received.toFixed(2));
+      const total_pending = parseFloat(Math.max(0, commission - total_received).toFixed(2));
+      const payout_status = getPayoutStatus(total_received, total_pending);
+
+      return {
+        group_id: item.group_id,
+        group_name: item.group_name,
+        chit_amount: item.chit_amount,
+        commission,
+        total_received,
+        total_pending,
+        payout_status,
+        last_received_on: item.latest_date_raw ? formatDateDDMMYYYY(item.latest_date_raw) : null,
+        members_count: item.member_ids.size
+      };
+    });
+
+    const chit_wise_commission = all_chit_wise.slice(offset, offset + limit);
+
+    // 2. Grouping Members You Have Suggested (for Screenshot 1 - Section 2)
+    const memberWiseMap = new Map();
+    configRecords.forEach(config => {
+      const mId = config.member_id;
+      const member = config.member || {};
+      const histories = allHistories.filter(h => h.configure_business_agent_id === config.id);
+      const configPaid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+      const configCommission = parseFloat(config.commission_amount) || 0;
+
+      if (!memberWiseMap.has(mId)) {
+        memberWiseMap.set(mId, {
+          member_id: mId,
+          name: member.name || 'Unknown',
+          user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+          initial: member.name && member.name.trim().length > 0 ? member.name.trim()[0].toUpperCase() : 'M',
+          profile_image: member.upload_image || null,
+          gender: member.gender || null,
+          gender_name: member.gender_dropdown?.dropdown_name || null,
+          joined_on: member.createdAt ? formatDateDDMMYYYY(member.createdAt) : null,
+          commission: 0,
+          total_received: 0,
+          groups_count: 0
+        });
+      }
+
+      const item = memberWiseMap.get(mId);
+      item.commission += configCommission;
+      item.total_received += configPaid;
+      item.groups_count += 1;
+    });
+
+    // Also include referred members from Enrollment who might not have a commission config record yet
+    const agentEnrollments = await Enrollment.findAll({
+      where: enrollmentWhere,
+      include: [{
+        model: Member,
+        as: 'subscriber',
+        attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'upload_image', 'gender', 'createdAt'],
+        include: [{ model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }]
+      }]
+    });
+
+    agentEnrollments.forEach(enr => {
+      const sub = enr.subscriber;
+      if (sub && !memberWiseMap.has(sub.id)) {
+        memberWiseMap.set(sub.id, {
+          member_id: sub.id,
+          name: sub.name || 'Unknown',
+          user_code: sub.other_info_user_code ? String(sub.other_info_user_code) : (sub.member_id || ''),
+          initial: sub.name && sub.name.trim().length > 0 ? sub.name.trim()[0].toUpperCase() : 'M',
+          profile_image: sub.upload_image || null,
+          gender: sub.gender || null,
+          gender_name: sub.gender_dropdown?.dropdown_name || null,
+          joined_on: sub.createdAt ? formatDateDDMMYYYY(sub.createdAt) : null,
+          commission: 0,
+          total_received: 0,
+          groups_count: 1
+        });
+      }
+    });
+
+    const members_you_have_suggested = Array.from(memberWiseMap.values()).slice(0, 3).map(item => {
+      const commission = parseFloat(item.commission.toFixed(2));
+      const received = parseFloat(item.total_received.toFixed(2));
+      const pending = parseFloat(Math.max(0, commission - received).toFixed(2));
+
+      const payout_status = getPayoutStatus(received, pending);
+
+      return {
+        member_id: item.member_id,
+        user_code: item.user_code,
+        name: item.name,
+        initial: item.initial,
+        profile_image: item.profile_image,
+        gender: item.gender,
+        gender_name: item.gender_name,
+        commission,
+        received,
+        pending,
+        payout_status,
+        joined_on: item.joined_on,
+        groups_count: item.groups_count
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Summary retrieved successfully', {
+      summary: {
+        total_commission: parseFloat(total_commission_amount.toFixed(2)),
+        paid_commission: parseFloat(paid_commission.toFixed(2)),
+        pending_commission: pending_commission_amount,
+        member_joined
+      },
+      chit_wise_commission,
+      members_you_have_suggested,
+      count: all_chit_wise.length
+    });
+
+  } catch (error) {
+    console.error('Error in getBusinessAgentCommissionSummaryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getHistoryByGroupIdService = async (res, group_id, min, max, business_agent_id = null, companyId = null) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    // Fetch group details
+    const group = await ChitsGroup.findOne({
+      where: {
+        id: group_id,
+        is_deleted_status: 0,
+        ...(companyId ? { company_id: companyId } : {})
+      },
+      attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status', 'createdAt']
+    });
+    if (!group) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+    }
+
+    if (business_agent_id && companyId) {
+      const agentMember = await Member.findOne({
+        where: { id: business_agent_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!agentMember) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent not found');
+      }
+    }
+
+    // 1. Fetch enrollments for this group (optionally filtered by business_agent_id)
+    const enrollmentWhere = {
+      group_id,
+      delete_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
+    if (business_agent_id) {
+      enrollmentWhere.business_agent_id = business_agent_id;
+    }
+
+    const enrollments = await Enrollment.findAndCountAll({
+      where: enrollmentWhere,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status', 'createdAt'] },
+        {
+          model: Member,
+          as: 'subscriber',
+          attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'other_info_user_code', 'createdAt'],
+          include: [
+            { model: StaticDropdownsList, as: 'gender_dropdown', attributes: ['id', 'dropdown_name'] }
+          ]
+        }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+
+    // 2. Fetch configured commissions for this group
+    const configWhere = {
+      group_id,
+      is_deleted_status: 0,
+      ...(companyId ? { company_id: companyId } : {})
+    };
+    if (business_agent_id) {
+      configWhere.business_agent_id = business_agent_id;
+    }
+
+    const configs = await ConfigureBusinessAgentCommission.findAll({
+      where: configWhere,
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name', 'chit_amount', 'chits_group_status', 'createdAt'] },
+        { model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'upload_image', 'mobile_number'] }
+      ]
+    });
+
+    const configIds = configs.map(r => r.id);
+
+    let historyRecords = [];
+    if (configIds.length > 0) {
+      historyRecords = await HistoryBusinessAgent.findAll({
+        where: { configure_business_agent_id: { [Op.in]: configIds }, is_deleted_status: 0 },
+        order: [['createdAt', 'DESC']],
+        raw: true
+      });
+    }
+
+    const membersMap = new Map();
+
+    // Map enrollments first
+    enrollments.rows.forEach(enrollment => {
+      const eData = enrollment.toJSON();
+      const member = eData.subscriber || {};
+      const config = configs.find(c => c.member_id === member.id && c.group_id === eData.group_id);
+
+      let total_paid = 0;
+      let upload_document = null;
+      let commission_amount = 0;
+      let configId = null;
+
+      if (config) {
+        configId = config.id;
+        commission_amount = parseFloat(config.commission_amount) || 0;
+
+        const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
+        total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+
+        const latestHistoryWithDoc = histories.find(h => h.upload_document);
+        upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
+      }
+
+      const total_pending = Math.max(0, commission_amount - total_paid);
+      const payout_status = getPayoutStatus(total_paid, total_pending);
+
+      membersMap.set(member.id, {
+        configure_business_agent_id: configId,
+        member_id: member.id,
+        name: member.name || 'Unknown',
+        user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+        profile_image: member.upload_image || null,
+        mobile_number: member.mobile_number || null,
+        commission_amount: parseFloat(commission_amount.toFixed(2)),
+        total_paid: parseFloat(total_paid.toFixed(2)),
+        total_pending: parseFloat(total_pending.toFixed(2)),
+        payout_status: payout_status,
+        upload_document: upload_document
+      });
+    });
+
+    // Also include configs that might exist without an enrollment row
+    configs.forEach(config => {
+      const member = config.member || {};
+      if (member.id && !membersMap.has(member.id)) {
+        const histories = historyRecords.filter(h => h.configure_business_agent_id === config.id);
+        const total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+        const commission_amount = parseFloat(config.commission_amount) || 0;
+        const total_pending = Math.max(0, commission_amount - total_paid);
+
+        const latestHistoryWithDoc = histories.find(h => h.upload_document);
+        const upload_document = latestHistoryWithDoc ? latestHistoryWithDoc.upload_document : null;
+
+        const payout_status = getPayoutStatus(total_paid, total_pending);
+
+        membersMap.set(member.id, {
+          configure_business_agent_id: config.id,
+          member_id: member.id,
+          name: member.name || 'Unknown',
+          user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+          profile_image: member.upload_image || null,
+          mobile_number: member.mobile_number || null,
+          commission_amount: parseFloat(commission_amount.toFixed(2)),
+          total_paid: parseFloat(total_paid.toFixed(2)),
+          total_pending: parseFloat(total_pending.toFixed(2)),
+          payout_status: payout_status,
+          upload_document: upload_document
+        });
+      }
+    });
+
+    const membersList = Array.from(membersMap.values());
+
+    return successResponse(res, statusCodes.OK, 'Members in group retrieved successfully', {
+      group_id: group.id,
+      group_name: group.group_name,
+      chit_amount: parseFloat(group.chit_amount) || 0,
+      group_status: group.chits_group_status,
+      members: membersList,
+      count: membersList.length
+    });
+
+  } catch (error) {
+    console.error('Error in getHistoryByGroupIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getBusinessAgentChitDetailService = async (res, payload, agentId = null, companyId = null) => {
+  try {
+    const { configure_business_agent_id, group_id, member_id } = payload || {};
+    const effectiveAgentId = agentId;
+
+    if (effectiveAgentId && companyId) {
+      const agentMember = await Member.findOne({
+        where: { id: effectiveAgentId, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!agentMember) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent not found');
+      }
+    }
+
+    if (member_id && companyId) {
+      const mem = await Member.findOne({
+        where: { id: member_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!mem) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      }
+    }
+
+    if (group_id && companyId) {
+      const grp = await ChitsGroup.findOne({
+        where: { id: group_id, company_id: companyId, is_deleted_status: 0 }
+      });
+      if (!grp) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+      }
+    }
+
+    let config = null;
+    if (configure_business_agent_id) {
+      config = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          id: configure_business_agent_id,
+          is_deleted_status: 0,
+          ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {}),
+          ...(companyId ? { company_id: companyId } : {})
+        },
+        include: [
+          { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
+          { model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image'] }
+        ]
+      });
+    } else if (group_id && member_id) {
+      config = await ConfigureBusinessAgentCommission.findOne({
+        where: {
+          group_id,
+          member_id,
+          is_deleted_status: 0,
+          ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {}),
+          ...(companyId ? { company_id: companyId } : {})
+        },
+        include: [
+          { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status'] },
+          { model: Member, as: 'member', attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image'] }
+        ]
+      });
+    }
+
+    if (!config) {
+      // Fallback: If not configured in commission table, check if enrolled in group
+      if (group_id && member_id) {
+        const enrollment = await Enrollment.findOne({
+          where: {
+            group_id,
+            subscriber_id: member_id,
+            delete_status: 0,
+            ...(effectiveAgentId ? { business_agent_id: effectiveAgentId } : {}),
+            ...(companyId ? { company_id: companyId } : {})
+          },
+          include: [
+            { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount'] },
+            { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'other_info_user_code', 'mobile_number', 'upload_image'] }
+          ]
+        });
+        if (enrollment) {
+          const group = enrollment.group || {};
+          const member = enrollment.subscriber || {};
+          return successResponse(res, statusCodes.OK, 'Chit detail retrieved successfully', {
+            configure_business_agent_id: null,
+            group_id: group.id,
+            group_name: group.group_name,
+            chit_amount: parseFloat(group.chit_amount) || 0,
+            commission_amount: 0,
+            total_paid: 0,
+            total_pending: 0,
+            payout_status: 3,
+            member: {
+              id: member.id,
+              name: member.name,
+              user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+              mobile_number: member.mobile_number,
+              profile_image: member.upload_image
+            },
+            transaction_history: []
+          });
+        }
+      }
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Business agent commission record not found');
+    }
+
+    const histories = await HistoryBusinessAgent.findAll({
+      where: { configure_business_agent_id: config.id, is_deleted_status: 0 },
+      order: [['createdAt', 'DESC']]
+    });
+
+    const total_paid = histories.reduce((sum, h) => sum + (parseFloat(h.paid_amount) || 0), 0);
+    const commission_amount = parseFloat(config.commission_amount) || 0;
+    const total_pending = Math.max(0, commission_amount - total_paid);
+    const payout_status = getPayoutStatus(total_paid, total_pending);
+
+    const group = config.group || {};
+    const member = config.member || {};
+
+    const transaction_history = histories.map(h => ({
+      id: h.id,
+      paid_amount: parseFloat(h.paid_amount) || 0,
+      payment_date: h.createdAt ? formatDateDDMMYYYY(h.createdAt) : null,
+      created_at: h.createdAt,
+      description: h.description || '',
+      upload_document: h.upload_document || null,
+      has_attached_proof: !!h.upload_document,
+      attached_proof_url: h.upload_document ? (h.upload_document.startsWith('http') ? h.upload_document : `/uploads/${h.upload_document.replace(/^\/?(uploads\/+)*/i, '')}`) : null
+    }));
+
+    return successResponse(res, statusCodes.OK, 'Chit detail retrieved successfully', {
+      configure_business_agent_id: config.id,
+      group_id: group.id,
+      group_name: group.group_name,
+      chit_amount: parseFloat(group.chit_amount) || 0,
+      commission_amount: parseFloat(commission_amount.toFixed(2)),
+      total_paid: parseFloat(total_paid.toFixed(2)),
+      total_pending: parseFloat(total_pending.toFixed(2)),
+      payout_status: payout_status,
+      member: {
+        id: member.id,
+        name: member.name,
+        user_code: member.other_info_user_code ? String(member.other_info_user_code) : (member.member_id || ''),
+        mobile_number: member.mobile_number,
+        profile_image: member.upload_image
+      },
+      transaction_history
+    });
+  } catch (error) {
+    console.error('Error in getBusinessAgentChitDetailService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateCollectionSubmissionStatusService = async (res, id, status, account_id, userToken) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    const submission = await CollectionAgentAmount.findOne({
+      where: { id },
+      include: [
+        { model: Member, as: 'member', where: { company_id: companyId } },
+        { model: Member, as: 'collection_agent' }
+      ],
+      transaction
+    });
+    if (!submission) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Submission not found');
+    }
+
+    // Lock the submission row and re-read its status: without this, two
+    // concurrent verifications can both read "pending" and both credit the
+    // account. Locked with a separate query because Postgres cannot apply
+    // FOR UPDATE to the joined query above.
+    const lockedSubmission = await CollectionAgentAmount.findByPk(id, { transaction, lock: true });
+    if (lockedSubmission) submission.status = lockedSubmission.status;
+
+    if (submission.status !== 0 && submission.status !== 1) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Only pending submissions can be verified or rejected');
+    }
+
+    let verified_by_id = null;
+    let verified_by_role = null;
+    let verified_by_name = null;
+
+    if (status === 2 && userToken) {
+      verified_by_id = userToken.role === 'company' ? userToken.id : String(userToken.id);
+      verified_by_role = userToken.role;
+      verified_by_name = 'Unknown';
+      if (userToken.role === 'company') {
+        const company = await Company.findByPk(userToken.id, { transaction });
+        if (company) verified_by_name = company.company_name;
+      } else {
+        const staff = await StaffUser.findByPk(userToken.id, { transaction });
+        if (staff) verified_by_name = staff.name;
+      }
+    }
+
+    await submission.update({
+      status,
+      confirm_date: status === 2 ? new Date() : null,
+      ...(status === 2 && {
+        verified_by_id,
+        verified_by_role,
+        verified_by_name
+      })
+    }, { transaction });
+
+    if (status === 2) {
+      let targetAccount = null;
+      if (submission.payment_type === 1) {
+        targetAccount = await PaymentAccount.findOne({
+          where: { company_id: companyId, account_type: 'CASH', is_active: true },
+          order: [['id', 'ASC']],
+          transaction,
+          lock: true
+        });
+      } else {
+        if (!account_id) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Payment account is required for this payment type');
+        }
+        targetAccount = await PaymentAccount.findOne({
+          where: { id: account_id, company_id: companyId, is_active: true },
+          transaction,
+          lock: true
+        });
+        if (!targetAccount) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid payment account');
+        }
+        const expectedType = submission.payment_type === 2 ? 'UPI' : 'BANK';
+        if (targetAccount.account_type !== expectedType) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, `Selected account must be of type ${expectedType}`);
+        }
+      }
+
+      if (!targetAccount) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Target payment account not found or inactive');
+      }
+
+      const pendingPayments = await CustomerPayment.findAll({
+        where: { collection_agent_amount_id: id, payment_status: 0 },
+        transaction
+      });
+
+      const localDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+      let allocated = 0;
+      for (const payment of pendingPayments) {
+        const rowTotal = parseFloat(payment.received_amount) + parseFloat(payment.penalty_paid);
+        allocated += rowTotal;
+
+        let newReceiptNumber = payment.receipt_number;
+        if (!newReceiptNumber && companyId) {
+          newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId, transaction);
+        }
+
+        let splitUpdate = {
+          payment_status: 1,
+          receipt_number: newReceiptNumber,
+          payment_date: localDate
+        };
+        if (targetAccount.account_type === 'CASH') {
+          splitUpdate.cash_amount = rowTotal;
+        } else if (targetAccount.account_type === 'UPI') {
+          splitUpdate.upi_amount = rowTotal;
+          splitUpdate.upi_account_id = targetAccount.id;
+        } else if (targetAccount.account_type === 'BANK') {
+          splitUpdate.bank_amount = rowTotal;
+          splitUpdate.bank_account_id = targetAccount.id;
+        }
+
+        await payment.update(splitUpdate, { transaction });
+      }
+
+      let excess = parseFloat(submission.received_amount) - allocated;
+      excess = Math.round(excess * 100) / 100;
+      if (excess < 0.01 && excess > -0.01) excess = 0;
+
+      if (excess < 0) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Allocated amount exceeds submission amount');
+      }
+
+      if (excess > 0) {
+        const localDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        await MemberAdvance.create({
+          company_id: companyId,
+          member_id: submission.member_id,
+          collection_agent_amount_id: id,
+          account_id: targetAccount ? targetAccount.id : null,
+          payment_type: submission.payment_type,
+          amount: excess,
+          balance: excess,
+          date: localDate,
+          narration: `Advance created from excess collection (Sub ID: ${id})`
+        }, { transaction });
+      }
+
+      await targetAccount.update({
+        current_balance: parseFloat(targetAccount.current_balance) + parseFloat(submission.received_amount)
+      }, { transaction });
+
+    } else if (status === 3) {
+      await CustomerPayment.update({ payment_status: 2 }, {
+        where: { collection_agent_amount_id: id, payment_status: 0 },
+        transaction
+      });
+    }
+
+    await transaction.commit();
+
+    if (status === 2 && submission.member) {
+      try {
+        fcmService.sendPushToMember(
+          submission.member,
+          'Payment Verified!',
+          `Your payment of ₹${submission.received_amount} has been verified and credited to your account.`,
+          { type: 'PAYMENT_VERIFIED', submission_id: String(id), amount: String(submission.received_amount) }
+        );
+      } catch (fcmErr) {
+        console.error('Failed to send payment verified push:', fcmErr.message);
+      }
+    } else if (status === 3 && submission.member) {
+      try {
+        const agentName = submission.collection_agent ? submission.collection_agent.name : 'an agent';
+        const collectionDate = submission.paid_date ? new Date(submission.paid_date).toLocaleDateString('en-IN') : 'recently';
+
+        fcmService.sendPushToMember(
+          submission.member,
+          'Payment not confirmed',
+          `Your payment of ₹${submission.received_amount} collected by ${agentName} on ${collectionDate} was not confirmed by the office. Please contact the office.`,
+          { type: 'PAYMENT_REJECTED', submission_id: String(id), amount: String(submission.received_amount) }
+        );
+      } catch (fcmErr) {
+        console.error('Failed to send payment rejected push:', fcmErr.message);
+      }
+    }
+
+    return successResponse(res, statusCodes.OK, 'Submission status updated successfully', submission);
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    console.error('Error in updateCollectionSubmissionStatusService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeDirectPaymentService = async (res, user, data) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const {
+      chits_installment_id, received_amount, penalty_paid, payment_date,
+      payment_mode, transaction_reference,
+      cash_amount, upi_amount, upi_account_id, bank_amount, bank_account_id,
+      cheque_number, cheque_date, narration
+    } = data;
+
+    if (!chits_installment_id || received_amount === undefined) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Missing required payment fields');
+    }
+
+    const cash = parseFloat(cash_amount) || 0;
+    const upi = parseFloat(upi_amount) || 0;
+    const bank = parseFloat(bank_amount) || 0;
+    // received_amount is the instalment part only; penalty_paid rides on top. The
+    // money that actually arrived is both, so that is what the split must cover and
+    // what the accounts are credited with — the same rule agent verification uses.
+    const totalCollected = (parseFloat(received_amount) || 0) + (parseFloat(penalty_paid) || 0);
+
+    if (totalCollected > 0 && Math.abs(cash + upi + bank - totalCollected) > 0.01) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Sum of cash, upi, and bank amounts must equal the instalment amount plus penalty');
+    }
+
+    if (upi > 0 && !upi_account_id) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'UPI account is required when UPI amount is greater than 0');
+    }
+
+    if (bank > 0 && !bank_account_id) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Bank account is required when Bank amount is greater than 0');
+    }
+
+    const companyId = user.role === 'company' ? user.id : user.company_id;
+    if (!companyId) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin company ID is required');
+    }
+
+    // Verify installment belongs to the caller's company
+    const installmentInfo = await ChitsInstallment.findByPk(chits_installment_id, {
+      include: [{
+        model: Enrollment,
+        as: 'enrollment',
+        include: [{
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['company_id']
+        }]
+      }]
+    });
+
+    if (!installmentInfo || !installmentInfo.enrollment || !installmentInfo.enrollment.group) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Installment not found');
+    }
+
+    if (installmentInfo.enrollment.group.company_id !== companyId) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized access to this installment');
+    }
+
+    const { getInstallmentBalance } = require('./installmentBalanceHelper');
+    const paidSoFar = await getInstallmentBalance(chits_installment_id);
+    const dueAmount = Math.max(0, parseFloat(installmentInfo.payable_amount || 0) - paidSoFar);
+
+    const receivedAmountFloat = parseFloat(received_amount) || 0;
+    const penaltyPaidFloat = parseFloat(penalty_paid) || 0;
+
+    // The instalment part may not exceed what is still due on the instalment.
+    if (receivedAmountFloat > dueAmount + 0.01) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, `Payment exceeds the due amount. Maximum allowed is ${dueAmount}`);
+    }
+
+    // Generate gapless receipt number
+    const newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId, transaction);
+
+    let recorded_by_name = 'Unknown';
+    if (user.role === 'company') {
+      const company = await Company.findByPk(user.id);
+      if (company) recorded_by_name = company.company_name;
+    } else {
+      const staff = await StaffUser.findByPk(user.id);
+      if (staff) recorded_by_name = staff.name;
+    }
+
+    let final_payment_mode = parseInt(payment_mode);
+    if (!final_payment_mode) {
+      if (cash > 0 && upi === 0 && bank === 0 && !cheque_number) final_payment_mode = 1;
+      else if (cash === 0 && upi > 0 && bank === 0 && !cheque_number) final_payment_mode = 2;
+      else if (cash === 0 && upi === 0 && bank === 0 && cheque_number) final_payment_mode = 3;
+      else if (cash === 0 && upi === 0 && bank > 0 && !cheque_number) final_payment_mode = 4;
+      else final_payment_mode = 5; // Mixed / Others
+    }
+
+    const newPayment = await CustomerPayment.create({
+      chits_installment_id,
+      received_amount: parseFloat(received_amount) || 0.00,
+      penalty_paid: parseFloat(penalty_paid) || 0.00,
+      payment_status: 1, // Auto-verified for admin direct payments
+      payment_date: payment_date || new Date().toISOString().split('T')[0],
+      payment_mode: final_payment_mode,
+      transaction_reference: transaction_reference || null,
+      receipt_number: newReceiptNumber,
+      recorded_by_id: user.role === 'company' ? user.id : String(user.id),
+      recorded_by_role: user.role,
+      recorded_by_name,
+      cash_amount: cash,
+      upi_amount: upi,
+      upi_account_id: upi_account_id || null,
+      bank_amount: bank,
+      bank_account_id: bank_account_id || null,
+      cheque_number: cheque_number || null,
+      cheque_date: cheque_date || null,
+      narration: narration || null
+    }, { transaction });
+
+    // Update balances of the referenced payment accounts
+    if (upi > 0 && upi_account_id) {
+      const upiAccount = await PaymentAccount.findByPk(upi_account_id, { transaction, lock: true });
+      if (upiAccount) {
+        await upiAccount.update({
+          current_balance: Number(upiAccount.current_balance) + upi
+        }, { transaction });
+      }
+    }
+
+    if (bank > 0 && bank_account_id) {
+      const bankAccount = await PaymentAccount.findByPk(bank_account_id, { transaction, lock: true });
+      if (bankAccount) {
+        await bankAccount.update({
+          current_balance: Number(bankAccount.current_balance) + bank
+        }, { transaction });
+      }
+    }
+
+    if (cash > 0) {
+      // Find cash account to update
+      // Must match reportService's cash attribution: lowest-id active CASH account.
+      const cashAccount = await PaymentAccount.findOne({
+        where: { company_id: companyId, account_type: 'CASH', is_active: true },
+        order: [['id', 'ASC']],
+        transaction,
+        lock: true
+      });
+      if (cashAccount) {
+        await cashAccount.update({
+          current_balance: Number(cashAccount.current_balance) + cash
+        }, { transaction });
+      }
+    }
+
+    await transaction.commit();
+
+    // Trigger FCM Notification for Payment Received
+    try {
+      for (const holder of await holderMembersOf([installmentInfo.enrollment.id])) {
+        fcmService.sendPushToMember(
+          holder,
+          'Payment Received',
+          `Payment of ₹${receivedAmountFloat} received successfully for Receipt #${newReceiptNumber}.`,
+          { type: 'PAYMENT_RECEIVED', receipt_number: newReceiptNumber, amount: String(receivedAmountFloat) }
+        );
+      }
+    } catch (notifErr) {
+      console.error('Failed to dispatch payment received push notification:', notifErr);
+    }
+
+    return successResponse(res, statusCodes.CREATED, 'Direct payment recorded successfully', newPayment);
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    console.error('Error in storeDirectPaymentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+
+const getCompanyByIdService = async (res, id, companyId) => {
+  try {
+    const company = await Company.findByPk(id);
+    if (!company) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+    }
+    const data = company.toJSON();
+    if (data.country_id) data.country = await Country.findByPk(data.country_id);
+    if (data.state_id) data.state = await State.findByPk(data.state_id);
+    if (data.district_id) data.district = await District.findByPk(data.district_id);
+    if (data.city_id) data.city = await City.findByPk(data.city_id);
+
+    return successResponse(res, statusCodes.OK, 'Company retrieved successfully', data);
+  } catch (error) {
+    console.error('Error in getCompanyByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMemberByIdService = async (res, id, companyId) => {
+  try {
+    const where = { id, is_deleted_status: 0 };
+    if (companyId) {
+      where.company_id = companyId;
+    }
+
+    const member = await Member.findOne({
+      where,
+      attributes: { exclude: ['verification_otp', 'verification_otp_expires_at', 'verification_otp_attempts', 'other_info_user_password'] },
+      include: [
+        { model: StaticDropdownsList, as: 'title' },
+        { model: StaticDropdownSubcategoryList, as: 'parental_title' },
+        { model: StaticDropdownsList, as: 'gender_dropdown' },
+        { model: StaticDropdownsList, as: 'occupation' },
+        { model: StaticDropdownsList, as: 'emp_type' },
+        { model: StaticDropdownSubcategoryList, as: 'business_type_details' }
+      ]
+    });
+    if (!member) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+    }
+
+    const memberData = member.toJSON();
+
+    if (memberData.address_info_permanent_country_id) memberData.permanent_country = await Country.findByPk(memberData.address_info_permanent_country_id);
+    if (memberData.address_info_permanent_state_id) memberData.permanent_state = await State.findByPk(memberData.address_info_permanent_state_id);
+    if (memberData.address_info_permanent_district_id) memberData.permanent_district = await District.findByPk(memberData.address_info_permanent_district_id);
+    if (memberData.address_info_permanent_city_id) memberData.permanent_city = await City.findByPk(memberData.address_info_permanent_city_id);
+
+    if (memberData.address_info_office_country_id) memberData.office_country = await Country.findByPk(memberData.address_info_office_country_id);
+    if (memberData.address_info_office_state_id) memberData.office_state = await State.findByPk(memberData.address_info_office_state_id);
+    if (memberData.address_info_office_district_id) memberData.office_district = await District.findByPk(memberData.address_info_office_district_id);
+    if (memberData.address_info_office_city_id) memberData.office_city = await City.findByPk(memberData.address_info_office_city_id);
+
+    let intro = memberData.introduced_as;
+    if (typeof intro === 'string') {
+      try { intro = JSON.parse(intro); } catch (e) { intro = []; }
+    }
+    if (Array.isArray(intro)) {
+      const intIds = intro.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+      memberData.introduced_as = intIds;
+      if (intIds.length > 0) {
+        memberData.introduced_as_dropdown = await StaticDropdownsList.findAll({ where: { id: { [Op.in]: intIds } } });
+      } else {
+        memberData.introduced_as_dropdown = [];
+      }
+    }
+
+    if (Array.isArray(memberData.other_info_kyc_details)) {
+      const intIds = memberData.other_info_kyc_details.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+      if (intIds.length > 0) {
+        memberData.kyc_details_dropdown = await StaticDropdownsList.findAll({ where: { id: { [Op.in]: intIds } } });
+      } else {
+        memberData.kyc_details_dropdown = [];
+      }
+    }
+
+    const ratingDetails = await calculateMemberRating(member.id, member);
+    if (ratingDetails) {
+      memberData.star_rating = ratingDetails.star_rating;
+      memberData.rating_tier = ratingDetails.rating_tier;
+      memberData.rating_category = ratingDetails.rating_category;
+      memberData.rating_color = ratingDetails.rating_color;
+      memberData.rating_label = ratingDetails.rating_label;
+      memberData.trust_tier = ratingDetails.trust_tier;
+      memberData.risk_level = ratingDetails.risk_level;
+    }
+
+    // Clean image and gender fields
+    memberData.profile_image = memberData.upload_image || null;
+    memberData.gender_name = memberData.gender_dropdown?.dropdown_name || null;
+
+    return successResponse(res, statusCodes.OK, 'Member retrieved successfully', memberData);
+  } catch (error) {
+    console.error('Error in getMemberByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getRouteByIdService = async (res, id, companyId) => {
+  try {
+    const route = await Route.findOne({ where: { id, company_id: companyId } });
+    if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
+    return successResponse(res, statusCodes.OK, 'Route retrieved successfully', route);
+  } catch (error) {
+    console.error('Error in getRouteByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAreaByIdService = async (res, id, companyId) => {
+  try {
+    const area = await Area.findOne({
+      where: { id, company_id: companyId },
+      include: [{ model: Route, as: 'route' }]
+    });
+    if (!area) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
+    return successResponse(res, statusCodes.OK, 'Area retrieved successfully', area);
+  } catch (error) {
+    console.error('Error in getAreaByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getChitsGroupByIdService = async (res, id, companyId) => {
+  try {
+    const where = { id };
+    if (companyId && companyId !== '') where.company_id = companyId;
+    const group = await ChitsGroup.findOne({ where });
+    if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'ChitsGroup not found');
+    const groupData = group.toJSON ? group.toJSON() : { ...group };
+    groupData.company_seats = await getGroupCompanySeats(group.id, group);
+    return successResponse(res, statusCodes.OK, 'ChitsGroup retrieved successfully', groupData);
+  } catch (error) {
+    console.error('Error in getChitsGroupByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCountryByIdService = async (res, id, companyId) => {
+  try {
+    const country = await Country.findByPk(id);
+    if (!country) return errorResponse(res, statusCodes.NOT_FOUND, 'Country not found');
+    return successResponse(res, statusCodes.OK, 'Country retrieved successfully', country);
+  } catch (error) {
+    console.error('Error in getCountryByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStateByIdService = async (res, id, companyId) => {
+  try {
+    const state = await State.findOne({
+      where: { id },
+      include: [{ model: Country }]
+    });
+    if (!state) return errorResponse(res, statusCodes.NOT_FOUND, 'State not found');
+    return successResponse(res, statusCodes.OK, 'State retrieved successfully', state);
+  } catch (error) {
+    console.error('Error in getStateByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getDistrictByIdService = async (res, id, companyId) => {
+  try {
+    const district = await District.findOne({
+      where: { id, company_id: companyId },
+      include: [{ model: State }]
+    });
+    if (!district) return errorResponse(res, statusCodes.NOT_FOUND, 'District not found');
+    return successResponse(res, statusCodes.OK, 'District retrieved successfully', district);
+  } catch (error) {
+    console.error('Error in getDistrictByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCityByIdService = async (res, id, companyId) => {
+  try {
+    const city = await City.findOne({
+      where: { id, company_id: companyId },
+      include: [{ model: District }]
+    });
+    if (!city) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
+    return successResponse(res, statusCodes.OK, 'City retrieved successfully', city);
+  } catch (error) {
+    console.error('Error in getCityByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getEnrollmentByIdService = async (res, id, companyId) => {
+  try {
+    const enrollment = await Enrollment.findOne({
+      where: { id, company_id: companyId },
+      include: [
+        { model: ChitsGroup, as: 'group' },
+        { model: Member, as: 'subscriber' },
+        { model: Member, as: 'business_agent' },
+        { model: Member, as: 'collection_agent' },
+        { model: EnrollmentJointHolder, as: 'joint_holders', separate: true, where: { removed_on: null }, attributes: ['id', 'member_id', 'share_percent', 'added_on'], include: [{ model: Member, as: 'member', attributes: ['id', 'name', 'member_id'] }] }
+      ]
+    });
+    if (!enrollment) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+    return successResponse(res, statusCodes.OK, 'Enrollment retrieved successfully', enrollment);
+  } catch (error) {
+    console.error('Error in getEnrollmentByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getUpcomingChitByIdService = async (res, id, companyId) => {
+  try {
+    const upcomingChit = await UpcomingChit.findOne({ where: { id, company_id: companyId } });
+    if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'UpcomingChit not found');
+    return successResponse(res, statusCodes.OK, 'UpcomingChit retrieved successfully', upcomingChit);
+  } catch (error) {
+    console.error('Error in getUpcomingChitByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSuitFileInformationByIdService = async (res, id, companyId) => {
+  try {
+    const info = await SuitFileInformation.findOne({
+      where: { id, company_id: companyId },
+      include: [
+        { model: Member, as: 'subscriber' },
+        { model: ChitsGroup, as: 'group' }
+      ]
+    });
+    if (!info) return errorResponse(res, statusCodes.NOT_FOUND, 'SuitFileInformation not found');
+    return successResponse(res, statusCodes.OK, 'SuitFileInformation retrieved successfully', info);
+  } catch (error) {
+    console.error('Error in getSuitFileInformationByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAuctionByIdService = async (res, id, companyId) => {
+  try {
+    const auction = await Auction.findOne({
+      where: { id, company_id: companyId },
+      include: [
+        { model: ChitsGroup, as: 'group' },
+        { model: Member, as: 'bidder' }
+      ]
+    });
+    if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+    return successResponse(res, statusCodes.OK, 'Auction retrieved successfully', auction);
+  } catch (error) {
+    console.error('Error in getAuctionByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const changePasswordService = async (res, userPayload, old_password, new_password) => {
+  try {
+    const { id, role } = userPayload;
+    let user;
+
+    if (role === 'company') {
+      user = await Company.scope('withPassword').findOne({ where: { id, is_deleted_status: 0 } });
+      if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+      if (!(await bcrypt.compare(old_password, user.company_password))) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Incorrect old password');
+      }
+      const hashedPassword = await bcrypt.hash(new_password, 10);
+      await user.update({ company_password: hashedPassword });
+    } else if (role === 'member') {
+      user = await Member.scope('withPassword').findOne({ where: { id, is_deleted_status: 0 } });
+      if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      if (!(await bcrypt.compare(old_password, user.other_info_user_password))) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Incorrect old password');
+      }
+      const hashedPassword = await bcrypt.hash(new_password, 10);
+      await user.update({ other_info_user_password: hashedPassword });
+    } else {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Unsupported user role');
+    }
+
+    return successResponse(res, statusCodes.OK, 'Password updated successfully');
+  } catch (error) {
+    console.error('Error in changePasswordService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to change password');
+  }
+};
+
+const storeOrUpdateContactUsService = async (res, data = {}) => {
+  try {
+    const { id, ...contactData } = data;
+    if (!contactData.company_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company ID is required');
+    }
+    if (id) {
+      const contact = await ContactUs.findOne({ where: { id, is_deleted_status: 0 } });
+      if (!contact) return errorResponse(res, statusCodes.NOT_FOUND, 'Contact record not found');
+      await contact.update(contactData);
+      return successResponse(res, statusCodes.OK, 'Contact record updated successfully', contact);
+    } else {
+      const newContact = await ContactUs.create(contactData);
+      return successResponse(res, statusCodes.CREATED, 'Contact record created successfully', newContact);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateContactUsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllContactUsService = async (res, company_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const where = {
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && {
+        [Op.or]: [
+          { address: { [Op.like]: `%${search}%` } },
+          { website_link: { [Op.like]: `%${search}%` } }
+        ]
+      })
+    };
+
+    const contacts = await ContactUs.findAndCountAll({
+      limit,
+      offset,
+      where,
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Contact records retrieved successfully', contacts);
+  } catch (error) {
+    console.error('Error in getAllContactUsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getContactUsByIdService = async (res, id, companyId) => {
+  try {
+    const contact = await ContactUs.findOne({
+      where: { id, company_id: companyId, is_deleted_status: 0 },
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }]
+    });
+    if (!contact) return errorResponse(res, statusCodes.NOT_FOUND, 'Contact record not found');
+    return successResponse(res, statusCodes.OK, 'Contact record retrieved successfully', contact);
+  } catch (error) {
+    console.error('Error in getContactUsByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteContactUsService = async (res, id, companyId) => {
+  try {
+    const contact = await ContactUs.findOne({ where: { id, company_id: companyId, is_deleted_status: 0 } });
+    if (!contact) return errorResponse(res, statusCodes.NOT_FOUND, 'Contact record not found');
+    await contact.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Contact record deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteContactUsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateFAQService = async (res, data = {}) => {
+  try {
+    const { id, ...faqData } = data;
+    if (!faqData.company_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company ID is required');
+    }
+    if (id) {
+      const faq = await FAQ.findOne({ where: { id, is_deleted_status: 0 } });
+      if (!faq) return errorResponse(res, statusCodes.NOT_FOUND, 'FAQ not found');
+      await faq.update(faqData);
+      return successResponse(res, statusCodes.OK, 'FAQ updated successfully', faq);
+    } else {
+      const newFaq = await FAQ.create(faqData);
+      return successResponse(res, statusCodes.CREATED, 'FAQ created successfully', newFaq);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateFAQService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllFAQService = async (res, company_id, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = {
+      is_deleted_status: 0,
+
+      ...(company_id && company_id !== '' && { company_id }),
+      ...(search && {
+        [Op.or]: [
+          { question: { [Op.like]: `%${search}%` } },
+          { answer: { [Op.like]: `%${search}%` } }
+        ]
+      })
+    };
+    const faqs = await FAQ.findAndCountAll({
+      limit,
+      offset,
+      where,
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }],
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'FAQs retrieved successfully', faqs);
+  } catch (error) {
+    console.error('Error in getAllFAQService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getFAQByIdService = async (res, id, companyId) => {
+  try {
+    const faq = await FAQ.findOne({
+      where: { id, company_id: companyId, is_deleted_status: 0 },
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }]
+    });
+    if (!faq) return errorResponse(res, statusCodes.NOT_FOUND, 'FAQ not found');
+    return successResponse(res, statusCodes.OK, 'FAQ retrieved successfully', faq);
+  } catch (error) {
+    console.error('Error in getFAQByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteFAQService = async (res, id, companyId) => {
+  try {
+    const faq = await FAQ.findOne({ where: { id, company_id: companyId, is_deleted_status: 0 } });
+    if (!faq) return errorResponse(res, statusCodes.NOT_FOUND, 'FAQ not found');
+    await faq.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'FAQ deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteFAQService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateTermsPrivacyService = async (res, company_id, type, content) => {
+  try {
+    if (!company_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company ID is required');
+    }
+    const existing = await TermsPrivacy.findOne({
+      where: { company_id, type, is_deleted_status: 0 }
+    });
+
+    if (existing) {
+      await existing.update({ content });
+      return successResponse(res, statusCodes.OK, 'Terms/Privacy record updated successfully', existing);
+    } else {
+      const newRecord = await TermsPrivacy.create({ company_id, type, content });
+      return successResponse(res, statusCodes.CREATED, 'Terms/Privacy record created successfully', newRecord);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateTermsPrivacyService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTermsPrivacyService = async (res, company_id, type) => {
+  try {
+    if (!company_id) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company ID is required');
+    }
+    const record = await TermsPrivacy.findOne({
+      where: { company_id, type, is_deleted_status: 0 },
+      include: [{ model: Company, as: 'company', attributes: ['company_name'] }]
+    });
+    if (!record) {
+      const label = type === 1 ? 'Terms & Conditions' : 'Privacy Policy';
+      return successResponse(res, statusCodes.OK, `${label} record not found for this company`, null);
+    }
+    return successResponse(res, statusCodes.OK, 'Terms/Privacy record retrieved successfully', record);
+  } catch (error) {
+    console.error('Error in getTermsPrivacyService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const logoutService = async (req, res, userPayload) => {
+  try {
+    const { id, role } = userPayload;
+    const companyId = await resolveCompanyIdForAuth(userPayload);
+
+    if (role === 'company') {
+      const user = await Company.findOne({ where: { id } });
+      if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+      await user.update({ device_id: null, device_unique_id: null });
+    } else if (role === 'member') {
+      const user = await Member.findOne({ where: { id, company_id: companyId } });
+      if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      await user.update({ device_id: null, device_unique_id: null, fcm_token: null });
+    } else if (role === 'staff') {
+      const user = await StaffUser.findOne({ where: { id, company_id: companyId } });
+      if (user) await user.update({ device_id: null, device_unique_id: null, fcm_token: null });
+    } else {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid user role for logout');
+    }
+
+    // Revoke the token
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token) {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.decode(token);
+      let expires_at = new Date();
+      if (decoded && decoded.exp) {
+        expires_at = new Date(decoded.exp * 1000);
+      } else {
+        expires_at.setDate(expires_at.getDate() + 1); // fallback 1 day
+      }
+
+      const { RevokedToken } = require('../models');
+      await RevokedToken.create({ token, expires_at });
+    }
+
+    return successResponse(res, statusCodes.OK, 'Logged out successfully');
+  } catch (error) {
+    console.error('Error in logoutService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to log out');
+  }
+};
+
+const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id) => {
+  try {
+    const whereClause = {};
+    if (collection_agent_id) {
+      whereClause.collection_agent_id = collection_agent_id;
+    }
+    // 1 - all, 2 - pending, 3 - verified, 4 - rejected
+    if (type === 2) whereClause.status = { [Op.in]: [0, 1] }; // pending
+    if (type === 3) whereClause.status = 2; // verified
+    if (type === 4) whereClause.status = 3; // rejected
+
+    if (from_date || to_date) {
+      // Joi has already turned the dates into Date objects; take their IST calendar day.
+      const istDay = (d) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      whereClause.createdAt = {};
+      if (from_date) {
+        whereClause.createdAt[Op.gte] = new Date(`${istDay(from_date)}T00:00:00+05:30`);
+      }
+      if (to_date) {
+        whereClause.createdAt[Op.lte] = new Date(`${istDay(to_date)}T23:59:59.999+05:30`);
+      }
+    }
+
+    if (group_id) {
+      const groupEnrollments = await Enrollment.findAll({
+        where: { group_id, delete_status: 0 },
+        attributes: ['subscriber_id']
+      });
+      const groupMemberIds = groupEnrollments.map(e => e.subscriber_id);
+      whereClause.member_id = { [Op.in]: groupMemberIds };
+    }
+
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const submissionsData = await CollectionAgentAmount.findAndCountAll({
+      where: whereClause,
+      include: [
+        { model: Member, as: 'member' },
+        {
+          model: Member,
+          as: 'collection_agent',
+          where: companyId ? { company_id: companyId } : undefined,
+          required: !!companyId
+        }
+      ],
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    const submissions = submissionsData.rows;
+    const count = submissionsData.count;
+
+    // Get group names for each member
+    const memberIds = submissions.map(s => s.member_id).filter(id => id);
+    const enrollments = await Enrollment.findAll({
+      where: { subscriber_id: { [Op.in]: memberIds }, delete_status: 0 },
+      include: [{ model: ChitsGroup, as: 'group', where: { is_deleted_status: 0 }, required: true }]
+    });
+
+    const submissionIds = submissions.map(s => s.id);
+    let advances = [];
+    if (MemberAdvance && typeof MemberAdvance.findAll === 'function') {
+      try {
+        advances = await MemberAdvance.findAll({ where: { collection_agent_amount_id: { [Op.in]: submissionIds } } });
+      } catch (e) {
+        console.error('Warning: could not fetch advances in getAllCollectionSubmissionsService:', e.message);
+      }
+    }
+
+    let creditedPayments = [];
+    if (CustomerPayment && typeof CustomerPayment.findAll === 'function') {
+      try {
+        const includeList = [];
+        if (PaymentAccount && typeof PaymentAccount.findAll === 'function') {
+          includeList.push(
+            { model: PaymentAccount, as: 'upi_account', attributes: ['name'] },
+            { model: PaymentAccount, as: 'bank_account', attributes: ['name'] }
+          );
+        }
+        creditedPayments = await CustomerPayment.findAll({
+          where: { collection_agent_amount_id: { [Op.in]: submissionIds } },
+          attributes: ['collection_agent_amount_id'],
+          include: includeList
+        });
+      } catch (e) {
+        console.error('Warning: could not fetch credited payments in getAllCollectionSubmissionsService:', e.message);
+      }
+    }
+
+    const accountNames = (subId, key) =>
+      Array.isArray(creditedPayments) ? (creditedPayments.find(p => p.collection_agent_amount_id === subId && p[key])?.[key]?.name || null) : null;
+
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const formatDate = (date) => {
+      if (!date) return '';
+      const d = new Date(date);
+      return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+    };
+
+    const formatDateOnly = (d) => {
+      if (!d) return null;
+      if (typeof d === 'string' && d.includes('T')) {
+        return d.split('T')[0];
+      }
+      if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) {
+        return d.substring(0, 10);
+      }
+      const dateObj = new Date(d);
+      return !isNaN(dateObj.getTime()) ? dateObj.toISOString().split('T')[0] : String(d);
+    };
+
+    const getPaymentMethod = (type) => {
+      switch (type) {
+        case 1: return 'Cash';
+        case 2: return 'UPI';
+        case 3: return 'Cheque';
+        case 4: return 'Bank';
+        default: return 'Others';
+      }
+    };
+
+    const getStatusStr = (status) => {
+      switch (status) {
+        case 0: return 'Pending';
+        case 1: return 'Pending';
+        case 2: return 'Verified';
+        case 3: return 'Rejected';
+        default: return 'Unknown';
+      }
+    };
+
+    const formatted = submissions.map(sub => {
+      let amount = sub.received_amount ? parseFloat(sub.received_amount) : 0;
+      if (amount === 0) {
+        if (sub.cash && sub.cash.amount) {
+          amount = sub.cash.amount;
+        } else if (sub.bank_details && sub.bank_details.amount) {
+          amount = sub.bank_details.amount;
+        }
+      }
+
+      const memberEnrollments = enrollments.filter(e => e.subscriber_id === sub.member_id && e.group && Number(e.group.is_deleted_status) === 0);
+      const groupNames = memberEnrollments.map(e => e.group ? e.group.group_name : '').filter(Boolean).join(', ');
+
+      const statusStr = getStatusStr(sub.status);
+      let status_note = `Submitted on ${formatDate(sub.createdAt)}`;
+      if (sub.status === 2 && sub.confirm_date) {
+        status_note = `Verified on ${formatDate(sub.confirm_date)}`;
+      } else if (sub.status === 3 && sub.confirm_date) {
+        status_note = `Rejected on ${formatDate(sub.confirm_date)}`;
+      }
+
+      let collection_id_value = sub.id ? `COL${sub.id.substring(0, 8).toUpperCase()}` : 'Unknown';
+      let agent_name_value = sub.collection_agent ? sub.collection_agent.name : 'Unknown';
+
+      return {
+        id: sub.id,
+        member_name: sub.member ? sub.member.name : 'Unknown',
+        agent_name: agent_name_value,
+        gender: sub.member ? sub.member.gender : null,
+        profile_image: sub.member ? sub.member.upload_image : '',
+        group_name: groupNames || 'No Group',
+        amount,
+        cash_amount: sub.payment_type === 1 ? amount : null,
+        upi_amount: sub.payment_type === 2 ? amount : null,
+        upi_account: accountNames(sub.id, 'upi_account'),
+        bank_amount: [3, 4, 5].includes(sub.payment_type) || sub.bank_details ? amount : null,
+        bank_account: accountNames(sub.id, 'bank_account'),
+        advance_created: advances.find(a => a.collection_agent_amount_id === sub.id)?.amount || 0,
+        method: getPaymentMethod(sub.payment_type),
+        date: formatDateOnly(sub.createdAt),
+        payment_date: formatDateOnly(sub.paid_date || sub.createdAt),
+        collection_id: collection_id_value,
+        status: statusStr,
+        status_int: sub.status,
+        status_note,
+        denominations: sub.cash?.denominations || null,
+        transaction_ref: sub.transaction_id || sub.cheque_number || null
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Submissions retrieved successfully', { count, rows: formatted });
+  } catch (error) {
+    console.error('Error in getAllCollectionSubmissionsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateGalleryService = async (res, reqBody, userPayload) => {
+  try {
+    const { id, gallery_image, status } = reqBody;
+    const company_id = await resolveCompanyIdForAssociation(userPayload, reqBody);
+
+    if (id) {
+      // Update
+      const whereClause = { id };
+      if (company_id) {
+        whereClause.company_id = company_id;
+      }
+      const gallery = await Gallery.findOne({ where: whereClause });
+      if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+      // If updating image and it changed, remove previous file from uploads folder
+      if (gallery_image && gallery.gallery_image && gallery.gallery_image !== gallery_image) {
+        deleteUploadedFile(gallery.gallery_image);
+      }
+
+      await gallery.update({
+        gallery_image: gallery_image !== undefined ? gallery_image : gallery.gallery_image,
+        status: status !== undefined ? status : gallery.status
+      });
+      return successResponse(res, statusCodes.OK, 'Gallery updated successfully', gallery);
+    } else {
+      // Store
+      const gallery = await Gallery.create({
+        company_id,
+        gallery_image,
+        status: status !== undefined ? status : 0
+      });
+      return successResponse(res, statusCodes.CREATED, 'Gallery added successfully', gallery);
+    }
+  } catch (error) {
+    console.error('Error in storeOrUpdateGalleryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllGalleryService = async (res, reqBody, userPayload) => {
+  try {
+    const { min = 0, max = 10, status } = reqBody || {};
+    let company_id = reqBody ? reqBody.company_id : null;
+    if (!company_id && userPayload) {
+      company_id = await resolveCompanyIdForAuth(userPayload);
+    }
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {};
+    if (company_id) whereClause.company_id = company_id;
+    if (status !== undefined) whereClause.status = status;
+
+    const galleries = await Gallery.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Galleries retrieved successfully', galleries);
+  } catch (error) {
+    console.error('Error in getAllGalleryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getGalleryByIdService = async (res, id, userOrCompanyId) => {
+  try {
+    let companyId = null;
+    if (userOrCompanyId && typeof userOrCompanyId === 'object') {
+      companyId = await resolveCompanyIdForAuth(userOrCompanyId);
+    } else if (typeof userOrCompanyId === 'string' || typeof userOrCompanyId === 'number') {
+      companyId = userOrCompanyId;
+    }
+
+    const gallery = await Gallery.findByPk(id);
+    if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+    if (companyId && gallery.company_id && gallery.company_id !== companyId) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized to view this gallery');
+    }
+
+    return successResponse(res, statusCodes.OK, 'Gallery retrieved successfully', gallery);
+  } catch (error) {
+    console.error('Error in getGalleryByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteGalleryService = async (res, id, userOrCompanyId) => {
+  try {
+    let companyId = null;
+    if (userOrCompanyId && typeof userOrCompanyId === 'object') {
+      companyId = await resolveCompanyIdForAuth(userOrCompanyId);
+    } else if (typeof userOrCompanyId === 'string' || typeof userOrCompanyId === 'number') {
+      companyId = userOrCompanyId;
+    }
+
+    const gallery = await Gallery.findByPk(id);
+    if (!gallery) return errorResponse(res, statusCodes.NOT_FOUND, 'Gallery record not found');
+
+    if (companyId && gallery.company_id && gallery.company_id !== companyId) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized to delete this gallery');
+    }
+
+    // Delete image from uploads folder if exists on disk
+    if (gallery.gallery_image) {
+      deleteUploadedFile(gallery.gallery_image);
+    }
+
+    await gallery.destroy();
+    return successResponse(res, statusCodes.OK, 'Gallery deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteGalleryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const sendMemberVerificationOtpService = async (res, member_id) => {
+  try {
+    const member = await Member.findOne({ where: { id: member_id, is_deleted_status: 0 } });
+    if (!member) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+    }
+
+    const now = new Date();
+    if (member.verification_otp_expires_at) {
+      const expiresAt = new Date(member.verification_otp_expires_at);
+      const diffMs = expiresAt - now;
+      if (diffMs > 4 * 60 * 1000) { // If remaining time is > 4 mins, it was sent < 1 min ago
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Please wait before requesting another OTP');
+      }
+    }
+
+    const isStatic = twilioService.isStaticOtp();
+    const otp = isStatic ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
+    const expiry = new Date(now.getTime() + 5 * 60 * 1000);
+
+    await member.update({
+      verification_otp: otp,
+      verification_otp_expires_at: expiry,
+      verification_otp_attempts: 0
+    });
+
+    const targetMobile = member.mobile_number;
+    console.log(`[MEMBER VERIFICATION OTP] Triggered OTP for Member ID ${member.id} (${member.other_info_user_code || member.name || 'Member'}) | Mobile: ${targetMobile || 'NO MOBILE'} | Mode: ${isStatic ? 'STATIC (123456)' : 'DYNAMIC TWILIO'}`);
+
+    // Send OTP via Twilio
+    let twilioStatus = null;
+    let twilioMsg = null;
+    if (targetMobile) {
+      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', member.country_code || null);
+      twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
+      twilioMsg = twilioRes.message;
+    } else {
+      console.warn(`[MEMBER VERIFICATION OTP] Member ID ${member.id} has no mobile number on file. SMS trigger skipped.`);
+    }
+
+    const maskedMobile = targetMobile ? targetMobile.replace(/.(?=.{2})/g, 'x') : null;
+    return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP sent successfully', {
+      member_id,
+      is_static_otp: isStatic,
+      static_otp: isStatic ? '123456' : undefined,
+      mobile_number_masked: maskedMobile,
+      twilio_status: twilioStatus,
+      info: twilioMsg
+    });
+  } catch (error) {
+    console.error('Error in sendMemberVerificationOtpService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const verifyMemberOtpService = async (res, member_id, otp) => {
+  try {
+    const member = await Member.findOne({ where: { id: member_id, is_deleted_status: 0 } });
+    if (!member) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+    }
+
+    if (!member.verification_otp) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'No OTP has been sent for this member');
+    }
+
+    // if (member.verification_otp_attempts >= 3) {
+    //   return errorResponse(res, statusCodes.BAD_REQUEST, 'Too many failed attempts. Please request a new OTP after 15 minutes.');
+    // }
+
+    const now = new Date();
+    if (now > new Date(member.verification_otp_expires_at)) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'OTP has expired, please resend');
+    }
+
+    // Match Static OTP, DB OTP, or check Twilio Verify
+    const isStatic = twilioService.isStaticOtp();
+    let isOtpValid = isStatic ? (String(otp).trim() === '123456' || member.verification_otp === String(otp).trim()) : (member.verification_otp === String(otp).trim());
+
+    if (!isOtpValid && member.mobile_number && twilioService.isConfigured()) {
+      const verifyCheck = await twilioService.checkVerificationOtp(member.mobile_number, otp, member.country_code || null);
+      if (verifyCheck.valid) {
+        isOtpValid = true;
+      }
+    }
+
+    if (!isOtpValid) {
+      console.warn(`[MEMBER VERIFICATION OTP FAILED] Member ID ${member.id} entered invalid OTP: "${otp}"`);
+      const attempts = member.verification_otp_attempts + 1;
+      let updateData = { verification_otp_attempts: attempts };
+      if (attempts >= 3) {
+        updateData.verification_otp_expires_at = new Date(now.getTime() + 15 * 60 * 1000); // 15 min lockout
+      }
+      await member.update(updateData);
+      const remaining = 3 - attempts;
+      return errorResponse(res, statusCodes.BAD_REQUEST, `Invalid OTP. ${remaining} attempts remaining.`);
+    }
+
+    console.log(`[MEMBER VERIFICATION OTP SUCCESS] Member ID ${member.id} successfully verified OTP.`);
+    await member.update({
+      is_verified: true,
+      verification_otp: null,
+      verification_otp_expires_at: null,
+      verification_otp_attempts: 0
+    });
+
+    return successResponse(res, statusCodes.OK, 'Member verified successfully', { member_id, is_verified: true });
+  } catch (error) {
+    console.error('Error in verifyMemberOtpService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAppSupportedCountriesService = async (res) => {
+  try {
+    const countries = twilioService.getSupportedCountries();
+    return successResponse(res, statusCodes.OK, 'Supported countries retrieved successfully', {
+      static_otp_status: twilioService.isStaticOtp(),
+      total_supported: countries.length,
+      countries
+    });
+  } catch (error) {
+    console.error('Error in getAppSupportedCountriesService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to fetch supported countries');
+  }
+};
+
+const generateUniqueStaffUserCode = async () => {
+  let userCode;
+  let exists = true;
+  while (exists) {
+    userCode = Math.floor(100000 + Math.random() * 900000);
+    const count = await StaffUser.count({ where: { user_code: userCode } });
+    if (count === 0) exists = false;
+  }
+  return userCode;
+};
+
+const storeOrUpdateStaffService = async (res, data = {}, userToken) => {
+  try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can manage staff users');
+    }
+    const { id, password, ...staffData } = data;
+    const companyId = userToken.id;
+
+    if (id) {
+      const staff = await StaffUser.findOne({ where: { id, company_id: companyId } });
+      if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
+      await staff.update(staffData);
+      const { password: _p, ...safeStaff } = staff.toJSON();
+      return successResponse(res, statusCodes.OK, 'Staff user updated successfully', safeStaff);
+    }
+
+    const user_code = await generateUniqueStaffUserCode();
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newStaff = await StaffUser.create({ ...staffData, password: hashedPassword, user_code, company_id: companyId });
+    const { password: _p, ...safeStaff } = newStaff.toJSON();
+    return successResponse(res, statusCodes.CREATED, 'Staff user created successfully', safeStaff);
+  } catch (error) {
+    console.error('Error in storeOrUpdateStaffService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllStaffService = async (res, companyId, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = { company_id: companyId, is_deleted_status: 0 };
+    if (search) {
+      where[Op.or] = [
+        { first_name: { [Op.like]: `%${search}%` } },
+        { last_name: { [Op.like]: `%${search}%` } },
+        sequelize.where(sequelize.cast(sequelize.col('user_code'), 'varchar'), { [Op.like]: `%${search}%` }),
+      ];
+    }
+    const staffUsers = await StaffUser.findAndCountAll({
+      where,
+      limit,
+      offset,
+      attributes: { exclude: ['password', 'otp'] },
+      include: [{ model: Role, as: 'role', attributes: ['name'] }],
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'Staff users retrieved successfully', staffUsers);
+  } catch (error) {
+    console.error('Error in getAllStaffService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStaffByIdService = async (res, id, companyId) => {
+  try {
+    const staff = await StaffUser.findOne({
+      where: { id, company_id: companyId, is_deleted_status: 0 },
+      attributes: { exclude: ['password', 'otp'] },
+      include: [{ model: Role, as: 'role' }]
+    });
+    if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
+    return successResponse(res, statusCodes.OK, 'Staff user retrieved successfully', staff);
+  } catch (error) {
+    console.error('Error in getStaffByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteStaffService = async (res, id, companyId, userToken) => {
+  try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can delete staff users');
+    }
+    const staff = await StaffUser.findOne({ where: { id, company_id: companyId } });
+    if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
+    await staff.update({ is_deleted_status: 1 });
+    return successResponse(res, statusCodes.OK, 'Staff user deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteStaffService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const staffChangePasswordService = async (res, userToken, member_id, new_password) => {
+  try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can reset staff passwords');
+    }
+    const staff = await StaffUser.findOne({ where: { id: member_id, company_id: userToken.id } });
+    if (!staff) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+    await staff.update({ password: hashedPassword });
+    return successResponse(res, statusCodes.OK, 'Password updated successfully');
+  } catch (error) {
+    console.error('Error in staffChangePasswordService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const storeOrUpdateRoleService = async (res, data = {}, userToken) => {
+  try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can manage roles');
+    }
+    const { id, ...roleData } = data;
+    const companyId = userToken.id;
+
+    if (roleData.status !== undefined) {
+      roleData.status = (roleData.status === true || roleData.status === 'true' || roleData.status == 1) ? 1 : 0;
+    }
+
+    if (id) {
+      const role = await Role.findOne({ where: { id, company_id: companyId } });
+      if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
+      await role.update(roleData);
+      return successResponse(res, statusCodes.OK, 'Role updated successfully', role);
+    }
+
+    const newRole = await Role.create({ ...roleData, company_id: companyId });
+    return successResponse(res, statusCodes.CREATED, 'Role created successfully', newRole);
+  } catch (error) {
+    console.error('Error in storeOrUpdateRoleService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllRoleService = async (res, companyId, min, max, search) => {
+  try {
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+    const where = { company_id: companyId, status: 1 };
+    if (search) {
+      where.name = { [Op.like]: `%${search}%` };
+    }
+    const roles = await Role.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'Roles retrieved successfully', roles);
+  } catch (error) {
+    console.error('Error in getAllRoleService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getRoleByIdService = async (res, id, companyId) => {
+  try {
+    const role = await Role.findOne({ where: { id, company_id: companyId, status: 1 } });
+    if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
+    return successResponse(res, statusCodes.OK, 'Role retrieved successfully', role);
+  } catch (error) {
+    console.error('Error in getRoleByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const deleteRoleService = async (res, id, companyId, userToken) => {
+  try {
+    if (!userToken || userToken.role !== 'company') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can delete roles');
+    }
+    const role = await Role.findOne({ where: { id, company_id: companyId } });
+    if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
+
+    const assignedStaffCount = await StaffUser.count({ where: { role_id: id, is_deleted_status: 0 } });
+    if (assignedStaffCount > 0) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, `Cannot delete this role — ${assignedStaffCount} staff user(s) are still assigned to it`);
+    }
+
+    await role.update({ status: 0 });
+    return successResponse(res, statusCodes.OK, 'Role deleted successfully');
+  } catch (error) {
+    console.error('Error in deleteRoleService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getDashboardSummaryService = async (res, companyId) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    const nextWeek = new Date(today);
+    nextWeek.setDate(today.getDate() + 7);
+
+    // 1. collection_today & collection_month
+    // NOTE: Falling back to createdAt because payment_date migration has not shipped yet.
+    const collectionToday = await CustomerPayment.sum('received_amount', {
+      where: {
+        payment_status: 1,
+        createdAt: { [Op.gte]: today }
+      },
+      include: [{
+        model: ChitsInstallment, as: 'installment', required: true, attributes: [],
+        include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId }, required: true, attributes: [] }]
+      }]
+    });
+
+    const collectionMonth = await CustomerPayment.sum('received_amount', {
+      where: {
+        payment_status: 1,
+        createdAt: { [Op.gte]: firstDayOfMonth }
+      },
+      include: [{
+        model: ChitsInstallment, as: 'installment', required: true, attributes: [],
+        include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId }, required: true, attributes: [] }]
+      }]
+    });
+
+    // 2. outstanding_dues & defaulters_count
+    const pendingInstallments = await ChitsInstallment.findAll({
+      where: {
+        id: {
+          [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+        }
+      },
+      include: [{
+        model: Enrollment,
+        as: 'enrollment',
+        where: { company_id: companyId, delete_status: 0 },
+        required: true,
+        include: [
+          {
+            model: ChitsGroup,
+            as: 'group',
+            where: { chits_group_status: 1, is_deleted_status: 0 }, // Only started groups
+            required: true
+          },
+          {
+            model: Member,
+            as: 'subscriber',
+            where: { group_status: { [Op.ne]: 1 } },
+            required: true
+          }
+        ]
+      }]
+    });
+
+    let outstandingDues = 0;
+    const defaulterMembers = new Set();
+
+    pendingInstallments.forEach(inst => {
+      outstandingDues += (parseFloat(inst.payable_amount) || 0);
+      if (inst.due_date) {
+        const dueDate = new Date(inst.due_date);
+        dueDate.setHours(0, 0, 0, 0);
+        if (dueDate < today) {
+          defaulterMembers.add(inst.enrollment.subscriber_id);
+        }
+      }
+    });
+
+    // 3. commission_earned & dividend_distributed & self_transfer & borrow
+    const commissionEarned = await Auction.sum('company_commission', { where: { company_id: companyId } });
+    const dividendDistributed = await Auction.sum('dividend_payable', { where: { company_id: companyId } });
+    const selfTransferTotal = await SelfTransfer.sum('amount', { where: { company_id: companyId } }) || 0;
+
+    const totalBorrowed = await BorrowRepay.sum('amount', { where: { company_id: companyId, type: 'BORROW' } }) || 0;
+    const totalRepaid = await BorrowRepay.sum('amount', { where: { company_id: companyId, type: 'REPAY' } }) || 0;
+    const borrowOutstanding = Math.max(0, totalBorrowed - totalRepaid);
+
+    // 4. Statistics
+    const activeMembersCount = await Member.count({ where: { company_id: companyId, is_deleted_status: 0 } });
+    const activeGroupsCount = await ChitsGroup.count({ where: { company_id: companyId, chits_group_status: 1, is_deleted_status: 0 } });
+    const newEnrollmentsCount = await Enrollment.count({
+      where: { company_id: companyId, delete_status: 0, createdAt: { [Op.gte]: firstDayOfMonth } }
+    });
+
+    // 5. Alerts
+    const upcomingAuctions = await ChitsGroup.findAll({
+      where: { company_id: companyId, auction_date: { [Op.between]: [today.toISOString().split('T')[0], nextWeek.toISOString().split('T')[0]] }, is_deleted_status: 0 },
+      attributes: ['group_name', 'auction_date'],
+      limit: 10,
+      order: [['auction_date', 'ASC']]
+    });
+
+    const installmentsDueThisWeek = await ChitsInstallment.count({
+      where: {
+        due_date: { [Op.between]: [today.toISOString().split('T')[0], nextWeek.toISOString().split('T')[0]] },
+        id: {
+          [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
+        }
+      },
+      include: [{ model: Enrollment, as: 'enrollment', where: { company_id: companyId, delete_status: 0 }, required: true }]
+    });
+
+    // 6. Leaderboards (Collection Agents & Business Agents)
+    const topCollectionAgents = await CustomerPayment.findAll({
+      attributes: [
+        [sequelize.col('collection_submission.collection_agent_id'), 'collection_agent_id'],
+        [sequelize.fn('sum', sequelize.col('CustomerPayment.received_amount')), 'collected_amount'],
+        [sequelize.col('collection_submission->collection_agent.id'), 'agent_id'],
+        [sequelize.col('collection_submission->collection_agent.name'), 'agent_name'],
+        [sequelize.col('collection_submission->collection_agent.mobile_number'), 'mobile_number'],
+        [sequelize.col('collection_submission->collection_agent.upload_image'), 'upload_image']
+      ],
+      where: {
+        payment_status: 1,
+        createdAt: { [Op.gte]: firstDayOfMonth }
+      },
+      include: [{
+        model: CollectionAgentAmount,
+        as: 'collection_submission',
+        required: true,
+        attributes: [],
+        include: [{
+          model: Member,
+          as: 'collection_agent',
+          where: { company_id: companyId },
+          required: true,
+          attributes: []
+        }]
+      }],
+      group: [
+        'collection_submission.collection_agent_id',
+        'collection_submission->collection_agent.id',
+        'collection_submission->collection_agent.name',
+        'collection_submission->collection_agent.mobile_number',
+        'collection_submission->collection_agent.upload_image'
+      ],
+      order: [[sequelize.literal('collected_amount'), 'DESC']],
+      limit: 5,
+      raw: true
+    });
+
+    const topAgents = topCollectionAgents.map(a => ({
+      collection_agent_id: a.collection_agent_id || a.agent_id,
+      agent_id: a.agent_id || a.collection_agent_id,
+      agent_name: a.agent_name || 'Unknown',
+      mobile_number: a.mobile_number || '',
+      profile_image: a.upload_image || null,
+      collected_amount: parseFloat(a.collected_amount || 0)
+    }));
+
+    const topBusinessAgents = await Enrollment.findAll({
+      attributes: [
+        'business_agent_id',
+        [sequelize.fn('sum', sequelize.col('group.chit_amount')), 'business_amount'],
+        [sequelize.fn('count', sequelize.col('Enrollment.id')), 'enrollments_count'],
+        [sequelize.col('business_agent.id'), 'agent_id'],
+        [sequelize.col('business_agent.name'), 'agent_name'],
+        [sequelize.col('business_agent.mobile_number'), 'mobile_number'],
+        [sequelize.col('business_agent.upload_image'), 'upload_image']
+      ],
+      where: {
+        company_id: companyId,
+        delete_status: 0,
+        business_agent_id: { [Op.ne]: null },
+        createdAt: { [Op.gte]: firstDayOfMonth }
+      },
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: [], required: true },
+        { model: Member, as: 'business_agent', attributes: [], required: true }
+      ],
+      group: ['Enrollment.business_agent_id', 'business_agent.id', 'business_agent.name', 'business_agent.mobile_number', 'business_agent.upload_image'],
+      order: [[sequelize.literal('business_amount'), 'DESC']],
+      limit: 5,
+      raw: true
+    });
+
+    const topBusinessList = topBusinessAgents.map(a => ({
+      agent_id: a.agent_id || a.business_agent_id,
+      business_agent_id: a.business_agent_id || a.agent_id,
+      agent_name: a.agent_name || 'Unknown',
+      mobile_number: a.mobile_number || '',
+      profile_image: a.upload_image || null,
+      business_amount: parseFloat(a.business_amount || 0),
+      enrollments_count: parseInt(a.enrollments_count || 0, 10)
+    }));
+
+    // 7. Charts
+    const monthlyCollections = await CustomerPayment.findAll({
+      attributes: [
+        [sequelize.literal('EXTRACT(MONTH FROM "CustomerPayment"."createdAt")'), 'month'],
+        [sequelize.literal('EXTRACT(YEAR FROM "CustomerPayment"."createdAt")'), 'year'],
+        [sequelize.fn('sum', sequelize.literal('received_amount + penalty_paid')), 'amount']
+      ],
+      where: { payment_status: 1 },
+      include: [{
+        model: ChitsInstallment, as: 'installment', attributes: [], required: true,
+        include: [{ model: Enrollment, as: 'enrollment', attributes: [], where: { company_id: companyId }, required: true }]
+      }],
+      group: ['year', 'month'],
+      order: [['year', 'DESC'], ['month', 'DESC']],
+      limit: 6
+    });
+
+    const groupStatusCounts = await ChitsGroup.findAll({
+      attributes: [
+        'chits_group_status',
+        [sequelize.fn('count', sequelize.col('id')), 'count']
+      ],
+      where: { company_id: companyId, is_deleted_status: 0 },
+      group: ['chits_group_status']
+    });
+
+    let not_started = 0, running = 0, completed = 0;
+    groupStatusCounts.forEach(g => {
+      if (g.chits_group_status === 0) not_started = parseInt(g.get('count'), 10);
+      else if (g.chits_group_status === 1) running = parseInt(g.get('count'), 10);
+      else if (g.chits_group_status === 2) completed = parseInt(g.get('count'), 10);
+    });
+
+    // 8. Current Month Birthday List (Company-based)
+    const currentMonth = today.getMonth() + 1;
+    const birthdayWhere = {
+      is_deleted_status: 0,
+      ...(companyId ? { company_id: companyId } : {}),
+      date_of_birth: { [Op.ne]: null },
+      [Op.and]: [
+        sequelize.where(sequelize.fn('EXTRACT', sequelize.literal('MONTH FROM "date_of_birth"')), currentMonth)
+      ]
+    };
+
+    const memberBirthdays = await Member.findAll({
+      where: birthdayWhere,
+      attributes: ['id', 'member_id', 'name', 'date_of_birth', 'mobile_number', 'upload_image'],
+      order: [[sequelize.literal('EXTRACT(DAY FROM "date_of_birth")'), 'ASC']]
+    });
+
+    const birthdayList = memberBirthdays.map(m => ({
+      id: m.id,
+      member_id: m.member_id,
+      name: m.name,
+      dob: m.date_of_birth,
+      date_of_birth: m.date_of_birth,
+      mobile_number: m.mobile_number,
+      profile_image: m.upload_image
+    }));
+
+    return successResponse(res, statusCodes.OK, 'Dashboard data retrieved successfully', {
+      financials: {
+        collection_today: collectionToday || 0,
+        collection_month: collectionMonth || 0,
+        outstanding_dues: outstandingDues,
+        commission_earned: commissionEarned || 0,
+        dividend_distributed: dividendDistributed || 0,
+        self_transfer_total: selfTransferTotal || 0,
+        borrow_outstanding: borrowOutstanding || 0,
+        total_borrowed: totalBorrowed || 0,
+        total_repaid: totalRepaid || 0
+      },
+      statistics: {
+        total_active_members: activeMembersCount || 0,
+        self_transfers_total: selfTransferTotal || 0,
+        borrow_outstanding: borrowOutstanding || 0,
+        active_chit_groups: activeGroupsCount || 0,
+        new_enrollments_this_month: newEnrollmentsCount || 0,
+        birthdays_this_month: birthdayList.length
+      },
+      alerts: {
+        upcoming_auctions: upcomingAuctions.map(g => ({ group_name: g.group_name, auction_date: g.auction_date })),
+        installments_due_this_week: installmentsDueThisWeek || 0,
+        defaulters_count: defaulterMembers.size,
+        birthdays_this_month: birthdayList
+      },
+      leaderboards: {
+        top_collection_agents: topAgents || [],
+        top_business_agents: topBusinessList || []
+      },
+      charts: {
+        monthly_collections: monthlyCollections.map(m => ({ month: m.get('month'), year: m.get('year'), amount: parseFloat(m.get('amount') || 0) })),
+        group_status: {
+          not_started,
+          running,
+          completed
+        }
+      },
+      birthdays: birthdayList
+    });
+  } catch (error) {
+    console.error('Error in getDashboardSummaryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTopCollectionAgentsService = async (res, companyId, query = {}) => {
+  try {
+    const { from_date, to_date, month, year, search, min, max } = query;
+    const limit = parseInt(max, 10) || 50;
+    const offset = parseInt(min, 10) || 0;
+
+    let dateWhere = {};
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      dateWhere = { createdAt: { [Op.between]: [dateRange.startDate, dateRange.endDate] } };
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = new Date(Date.UTC(currentYear, monthNum - 1, 1, 0, 0, 0, 0));
+        const endOfMonth = new Date(Date.UTC(currentYear, monthNum, 0, 23, 59, 59, 999));
+        dateWhere = { createdAt: { [Op.between]: [startOfMonth, endOfMonth] } };
+      }
+    } else {
+      const today = new Date();
+      const firstDayOfMonth = new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1, 0, 0, 0, 0));
+      dateWhere = { createdAt: { [Op.gte]: firstDayOfMonth } };
+    }
+
+    const results = await CustomerPayment.findAll({
+      attributes: [
+        [sequelize.col('collection_submission.collection_agent_id'), 'collection_agent_id'],
+        [sequelize.fn('sum', sequelize.col('CustomerPayment.received_amount')), 'collected_amount'],
+        [sequelize.fn('count', sequelize.col('CustomerPayment.id')), 'receipts_count'],
+        [sequelize.col('collection_submission->collection_agent.id'), 'agent_id'],
+        [sequelize.col('collection_submission->collection_agent.name'), 'agent_name'],
+        [sequelize.col('collection_submission->collection_agent.member_id'), 'agent_code'],
+        [sequelize.col('collection_submission->collection_agent.mobile_number'), 'mobile_number'],
+        [sequelize.col('collection_submission->collection_agent.upload_image'), 'upload_image']
+      ],
+      where: {
+        payment_status: 1,
+        ...dateWhere
+      },
+      include: [{
+        model: CollectionAgentAmount,
+        as: 'collection_submission',
+        required: true,
+        attributes: [],
+        include: [{
+          model: Member,
+          as: 'collection_agent',
+          where: {
+            company_id: companyId,
+            ...(search ? {
+              [Op.or]: [
+                { name: { [Op.like]: `%${search}%` } },
+                { mobile_number: { [Op.like]: `%${search}%` } },
+                { member_id: { [Op.like]: `%${search}%` } }
+              ]
+            } : {})
+          },
+          required: true,
+          attributes: []
+        }]
+      }],
+      group: [
+        'collection_submission.collection_agent_id',
+        'collection_submission->collection_agent.id',
+        'collection_submission->collection_agent.name',
+        'collection_submission->collection_agent.member_id',
+        'collection_submission->collection_agent.mobile_number',
+        'collection_submission->collection_agent.upload_image'
+      ],
+      order: [[sequelize.literal('collected_amount'), 'DESC']],
+      raw: true
+    });
+
+    let totalCollected = 0;
+    let totalReceipts = 0;
+
+    const list = results.map((a, idx) => {
+      const collected = parseFloat(a.collected_amount || 0);
+      const receipts = parseInt(a.receipts_count || 0, 10);
+      totalCollected += collected;
+      totalReceipts += receipts;
+      return {
+        rank: idx + 1,
+        agent_id: a.agent_id || a.collection_agent_id,
+        agent_name: a.agent_name || 'Unknown',
+        agent_code: a.agent_code || '',
+        mobile_number: a.mobile_number || '',
+        profile_image: a.upload_image || null,
+        collected_amount: collected,
+        receipts_count: receipts,
+        avg_collection_size: receipts > 0 ? parseFloat((collected / receipts).toFixed(2)) : 0
+      };
+    });
+
+    const paginated = list.slice(offset, offset + limit);
+
+    return successResponse(res, statusCodes.OK, 'Top collection agents retrieved successfully', {
+      count: list.length,
+      rows: paginated,
+      stats: {
+        total_collected: totalCollected,
+        total_receipts: totalReceipts,
+        active_agents_count: list.length,
+        top_agent_name: list[0]?.agent_name || '-',
+        top_agent_amount: list[0]?.collected_amount || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error in getTopCollectionAgentsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getTopBusinessAgentsService = async (res, companyId, query = {}) => {
+  try {
+    const { from_date, to_date, month, year, search, min, max } = query;
+    const limit = parseInt(max, 10) || 50;
+    const offset = parseInt(min, 10) || 0;
+
+    let dateWhere = {};
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      dateWhere = { createdAt: { [Op.between]: [dateRange.startDate, dateRange.endDate] } };
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = new Date(Date.UTC(currentYear, monthNum - 1, 1, 0, 0, 0, 0));
+        const endOfMonth = new Date(Date.UTC(currentYear, monthNum, 0, 23, 59, 59, 999));
+        dateWhere = { createdAt: { [Op.between]: [startOfMonth, endOfMonth] } };
+      }
+    } else {
+      const today = new Date();
+      const firstDayOfMonth = new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1, 0, 0, 0, 0));
+      dateWhere = { createdAt: { [Op.gte]: firstDayOfMonth } };
+    }
+
+    const results = await Enrollment.findAll({
+      attributes: [
+        'business_agent_id',
+        [sequelize.fn('sum', sequelize.col('group.chit_amount')), 'business_amount'],
+        [sequelize.fn('count', sequelize.col('Enrollment.id')), 'enrollments_count'],
+        [sequelize.col('business_agent.id'), 'agent_id'],
+        [sequelize.col('business_agent.name'), 'agent_name'],
+        [sequelize.col('business_agent.member_id'), 'agent_code'],
+        [sequelize.col('business_agent.mobile_number'), 'mobile_number'],
+        [sequelize.col('business_agent.upload_image'), 'upload_image']
+      ],
+      where: {
+        company_id: companyId,
+        delete_status: 0,
+        business_agent_id: { [Op.ne]: null },
+        ...dateWhere
+      },
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: [], required: true },
+        {
+          model: Member,
+          as: 'business_agent',
+          where: {
+            company_id: companyId,
+            ...(search ? {
+              [Op.or]: [
+                { name: { [Op.like]: `%${search}%` } },
+                { mobile_number: { [Op.like]: `%${search}%` } },
+                { member_id: { [Op.like]: `%${search}%` } }
+              ]
+            } : {})
+          },
+          required: true,
+          attributes: []
+        }
+      ],
+      group: [
+        'Enrollment.business_agent_id',
+        'business_agent.id',
+        'business_agent.name',
+        'business_agent.member_id',
+        'business_agent.mobile_number',
+        'business_agent.upload_image'
+      ],
+      order: [[sequelize.literal('business_amount'), 'DESC']],
+      raw: true
+    });
+
+    let totalBusiness = 0;
+    let totalEnrollments = 0;
+
+    const list = results.map((a, idx) => {
+      const business = parseFloat(a.business_amount || 0);
+      const enrollments = parseInt(a.enrollments_count || 0, 10);
+      totalBusiness += business;
+      totalEnrollments += enrollments;
+      return {
+        rank: idx + 1,
+        agent_id: a.agent_id || a.business_agent_id,
+        agent_name: a.agent_name || 'Unknown',
+        agent_code: a.agent_code || '',
+        mobile_number: a.mobile_number || '',
+        profile_image: a.upload_image || null,
+        business_amount: business,
+        enrollments_count: enrollments,
+        avg_deal_size: enrollments > 0 ? parseFloat((business / enrollments).toFixed(2)) : 0
+      };
+    });
+
+    const paginated = list.slice(offset, offset + limit);
+
+    return successResponse(res, statusCodes.OK, 'Top business agents retrieved successfully', {
+      count: list.length,
+      rows: paginated,
+      stats: {
+        total_business: totalBusiness,
+        total_enrollments: totalEnrollments,
+        active_agents_count: list.length,
+        top_agent_name: list[0]?.agent_name || '-',
+        top_agent_amount: list[0]?.business_amount || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error in getTopBusinessAgentsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCommissionEarnedDetailsService = async (res, companyId, query = {}) => {
+  try {
+    const { from_date, to_date, month, year, search, group_id, min, max } = query;
+    const limit = parseInt(max, 10) || 15;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      company_id: companyId,
+      ...(group_id ? { group_id } : {})
+    };
+
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      whereClause.auction_date = { [Op.between]: [dateRange.fromStr, dateRange.toStr] };
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = `${currentYear}-${String(monthNum).padStart(2, '0')}-01`;
+        const lastDay = new Date(currentYear, monthNum, 0).getDate();
+        const endOfMonth = `${currentYear}-${String(monthNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        whereClause.auction_date = { [Op.between]: [startOfMonth, endOfMonth] };
+      }
+    }
+
+    const groupWhere = search ? {
+      [Op.or]: [
+        { group_name: { [Op.like]: `%${search}%` } },
+        { chit_agreement_number: { [Op.like]: `%${search}%` } }
+      ]
+    } : undefined;
+
+    const auctions = await Auction.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['auction_date', 'DESC'], ['auction_number', 'DESC']],
+      include: [
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'company_commission'],
+          where: groupWhere,
+          required: !!search
+        },
+        {
+          model: Member,
+          as: 'bidder',
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        }
+      ]
+    });
+
+    const allMatching = await Auction.findAll({
+      where: whereClause,
+      attributes: ['company_commission', 'gst_amount', 'bid_amount', 'chit_amount', 'auction_number', 'group_id'],
+      include: [
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id'],
+          where: groupWhere,
+          required: !!search
+        }
+      ]
+    });
+
+    let totalCommission = 0;
+    let totalGst = 0;
+    let totalChitValue = 0;
+    const uniqueGroups = new Set();
+
+    allMatching.forEach(a => {
+      totalCommission += (parseFloat(a.company_commission) || 0);
+      totalGst += (parseFloat(a.gst_amount) || 0);
+      totalChitValue += (parseFloat(a.chit_amount) || 0);
+      if (a.group_id) uniqueGroups.add(a.group_id);
+    });
+
+    const auctionCount = allMatching.length;
+    const avgCommission = auctionCount > 0 ? (totalCommission / auctionCount) : 0;
+
+    return successResponse(res, statusCodes.OK, 'Commission earned details retrieved successfully', {
+      count: auctions.count,
+      rows: auctions.rows,
+      stats: {
+        total_commission: parseFloat(totalCommission.toFixed(2)),
+        total_gst: parseFloat(totalGst.toFixed(2)),
+        net_commission: parseFloat((totalCommission + totalGst).toFixed(2)),
+        total_chit_value: parseFloat(totalChitValue.toFixed(2)),
+        auctions_count: auctionCount,
+        unique_groups_count: uniqueGroups.size,
+        avg_commission: parseFloat(avgCommission.toFixed(2))
+      }
+    });
+  } catch (error) {
+    console.error('Error in getCommissionEarnedDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getDividendDistributedDetailsService = async (res, companyId, query = {}) => {
+  try {
+    const { from_date, to_date, month, year, search, group_id, min, max } = query;
+    const limit = parseInt(max, 10) || 15;
+    const offset = parseInt(min, 10) || 0;
+
+    const whereClause = {
+      company_id: companyId,
+      ...(group_id ? { group_id } : {})
+    };
+
+    const dateRange = safeDateRange(from_date, to_date);
+    if (dateRange) {
+      whereClause.auction_date = { [Op.between]: [dateRange.fromStr, dateRange.toStr] };
+    } else if (month) {
+      const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const monthNum = parseInt(month, 10);
+      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+        const startOfMonth = `${currentYear}-${String(monthNum).padStart(2, '0')}-01`;
+        const lastDay = new Date(currentYear, monthNum, 0).getDate();
+        const endOfMonth = `${currentYear}-${String(monthNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        whereClause.auction_date = { [Op.between]: [startOfMonth, endOfMonth] };
+      }
+    }
+
+    const groupWhere = search ? {
+      [Op.or]: [
+        { group_name: { [Op.like]: `%${search}%` } },
+        { chit_agreement_number: { [Op.like]: `%${search}%` } }
+      ]
+    } : undefined;
+
+    const auctions = await Auction.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['auction_date', 'DESC'], ['auction_number', 'DESC']],
+      include: [
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'company_commission'],
+          where: groupWhere,
+          required: !!search
+        },
+        {
+          model: Member,
+          as: 'bidder',
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        }
+      ]
+    });
+
+    const allMatching = await Auction.findAll({
+      where: whereClause,
+      attributes: ['dividend_payable', 'dividend', 'bid_amount', 'subscription_amount', 'net_payable', 'chit_amount', 'group_id'],
+      include: [
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'no_of_installments'],
+          where: groupWhere,
+          required: !!search
+        }
+      ]
+    });
+
+    let totalDividendDistributed = 0;
+    let totalBidDiscount = 0;
+    let totalChitValue = 0;
+    let totalDividendPerSubSum = 0;
+    const uniqueGroups = new Set();
+
+    allMatching.forEach(a => {
+      totalDividendDistributed += (parseFloat(a.dividend_payable) || 0);
+      totalBidDiscount += (parseFloat(a.bid_amount) || 0);
+      totalChitValue += (parseFloat(a.chit_amount) || 0);
+      totalDividendPerSubSum += (parseFloat(a.dividend) || 0);
+      if (a.group_id) uniqueGroups.add(a.group_id);
+    });
+
+    const auctionCount = allMatching.length;
+    const avgDividendPerSub = auctionCount > 0 ? (totalDividendPerSubSum / auctionCount) : 0;
+
+    return successResponse(res, statusCodes.OK, 'Dividend distributed details retrieved successfully', {
+      count: auctions.count,
+      rows: auctions.rows,
+      stats: {
+        total_dividend_distributed: parseFloat(totalDividendDistributed.toFixed(2)),
+        total_bid_discount: parseFloat(totalBidDiscount.toFixed(2)),
+        total_chit_value: parseFloat(totalChitValue.toFixed(2)),
+        auctions_count: auctionCount,
+        unique_groups_count: uniqueGroups.size,
+        avg_dividend_per_subscriber: parseFloat(avgDividendPerSub.toFixed(2))
+      }
+    });
+  } catch (error) {
+    console.error('Error in getDividendDistributedDetailsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const registerAdminTokenService = async (res, userPayload, fcm_token) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    await StaffUser.update({ fcm_token }, { where: { id: userPayload.id } });
+    return successResponse(res, statusCodes.OK, 'Admin device token registered successfully');
+  } catch (error) {
+    console.error('Error in registerAdminTokenService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const sendManualNotificationService = async (res, userPayload, data) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+
+    const { target_type, target_id, title, body, data_payload } = data;
+    const companyId = userPayload.company_id;
+
+    if (target_type === 'ALL') {
+      const allMembers = await Member.findAll({ where: { company_id: companyId, is_deleted_status: 0, fcm_token: { [Op.ne]: null } } });
+      fcmService.sendPushToMulticast(allMembers, companyId, title, body, data_payload);
+    } else if (target_type === 'SPECIFIC_MEMBER') {
+      const member = await Member.findOne({ where: { id: target_id, company_id: companyId, is_deleted_status: 0 } });
+      if (!member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
+      fcmService.sendPushToMember(member, title, body, data_payload);
+    } else if (target_type === 'GROUP') {
+      const enrollments = await Enrollment.findAll({
+        where: { group_id: target_id, company_id: companyId, delete_status: 0 },
+        include: [{ model: Member, as: 'subscriber', where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } }, required: true }]
+      });
+      const members = enrollments.map(e => e.subscriber);
+      fcmService.sendPushToMulticast(members, companyId, title, body, data_payload);
+    }
+
+    return successResponse(res, statusCodes.OK, 'Notification sending triggered successfully');
+  } catch (error) {
+    console.error('Error in sendManualNotificationService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMemberDocumentsAdminService = async (res, group_id, member_id) => {
+  try {
+    const docRecord = await MemberDocument.findOne({
+      where: { group_id, member_id }
+    });
+
+    let documents = docRecord && docRecord.documents ? docRecord.documents : {};
+
+    const documentDefinitions = [
+      { key: 'aadhar', title: 'Aadhaar Card _ (Both sides)', aliases: ['aadhaar', 'aadhaar_card'] },
+      { key: 'pan_card', title: 'PAN Card', aliases: ['pan'] },
+      { key: 'bank_statement', title: 'Bank Statement', aliases: ['bank_id'] },
+      { key: 'photos', title: "Photo's", aliases: ['photo'] },
+      { key: 'bond_paper_100', title: '100 ruppees Bond Paper', aliases: ['bond_paper'] },
+      { key: 'pay_slips', title: 'Pay Slips', aliases: ['pay_slip', 'salary_slips'] },
+      { key: 'id_cards', title: 'ID Cards (Employee Card)', aliases: ['id_card', 'employee_card'] },
+      { key: 'property_documents', title: 'Property Dcoments Zerox', aliases: ['property_documents_xerox'] },
+      { key: 'cheques', title: "Cheque's", aliases: ['cheque'] }
+    ];
+
+    const result = documentDefinitions.map(def => {
+      let doc = documents[def.key];
+      if (!doc && def.aliases) {
+        for (const alias of def.aliases) {
+          if (documents[alias]) {
+            doc = documents[alias];
+            break;
+          }
+        }
+      }
+      doc = doc || { url: null, status: null };
+
+      return {
+        document_type: def.key,
+        document_title: def.title,
+        document_url: doc.url || null,
+        status: doc.status !== undefined ? doc.status : null
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Member documents retrieved', { documents: result });
+  } catch (error) {
+    console.error('Error in getMemberDocumentsAdminService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const uploadMemberDocumentService = async (res, reqBody, userPayload) => {
+  try {
+    const { group_id, member_id, document_type, document_url, status = 1 } = reqBody;
+
+    let uploaded_by = null;
+    if (userPayload && userPayload.id) {
+      const memberExists = await Member.findByPk(userPayload.id);
+      if (memberExists) {
+        uploaded_by = userPayload.id;
+      }
+    }
+
+    let docRecord = await MemberDocument.findOne({
+      where: { group_id, member_id }
+    });
+
+    let documents = docRecord && docRecord.documents ? { ...docRecord.documents } : {};
+
+    documents[document_type] = {
+      url: document_url || null,
+      status: parseInt(status, 10) || 1,
+      uploaded_at: new Date().toISOString()
+    };
+
+    if (docRecord) {
+      await docRecord.update({
+        documents,
+        uploaded_by: uploaded_by || docRecord.uploaded_by,
+        status: 1
+      });
+    } else {
+      docRecord = await MemberDocument.create({
+        group_id,
+        member_id,
+        documents,
+        uploaded_by,
+        status: 1
+      });
+    }
+
+    return successResponse(res, statusCodes.OK, 'Document uploaded successfully', {
+      member_id,
+      group_id,
+      document_type,
+      document_url,
+      documents: docRecord.documents
+    });
+  } catch (error) {
+    console.error('Error in uploadMemberDocumentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const verifyMemberDocumentService = async (res, payload) => {
+  try {
+    const { group_id, member_id, document_type, status, rejection_reason } = payload;
+
+    const docRecord = await MemberDocument.findOne({
+      where: { group_id, member_id }
+    });
+
+    if (!docRecord || !docRecord.documents) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Documents not found for this member and group');
+    }
+
+    let documents = { ...docRecord.documents };
+
+    if (!documents[document_type]) {
+      documents[document_type] = { url: null, status: parseInt(status, 10) };
+    } else {
+      documents[document_type].status = parseInt(status, 10);
+      if (rejection_reason) {
+        documents[document_type].rejection_reason = rejection_reason;
+      }
+    }
+
+    await docRecord.update({ documents });
+
+    return successResponse(res, statusCodes.OK, 'Document status updated successfully', { documents: docRecord.documents });
+  } catch (error) {
+    console.error('Error in verifyMemberDocumentService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllAuditLogsService = async (res, user_id, action_type, min, max, search, company_id) => {
+  try {
+    const whereCondition = {};
+    if (user_id) whereCondition.user_id = user_id;
+    if (action_type) whereCondition.action_type = action_type;
+    if (company_id) whereCondition.company_id = company_id;
+
+    if (search) {
+      whereCondition[Op.or] = [
+        { module_or_route: { [Op.iLike]: `%${search}%` } },
+        { action_type: { [Op.iLike]: `%${search}%` } }
+      ];
+    }
+
+    // Set pagination limits
+    const limit = max ? parseInt(max) : 10;
+    const offset = min ? parseInt(min) : 0;
+
+    const { count, rows } = await AuditLog.findAndCountAll({
+      where: whereCondition,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Audit logs retrieved successfully', {
+      total: count,
+      auditLogs: rows
+    });
+  } catch (error) {
+    console.error('Error fetching audit logs:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllReceiptsService = async (res, companyId, filters = {}) => {
+  try {
+    const { min = 0, max = 20, source, group_id, member_id, payment_mode, date_from, date_to, search, collection_agent_id } = filters;
+
+    const where = { payment_status: 1 };
+    if (payment_mode) where.payment_mode = payment_mode;
+    if (date_from || date_to) {
+      where.payment_date = {};
+      if (date_from) where.payment_date[Op.gte] = date_from;
+      if (date_to) where.payment_date[Op.lte] = date_to;
+    }
+    if (source === 'direct') where.collection_agent_amount_id = null;
+    if (source === 'collection_agent') where.collection_agent_amount_id = { [Op.ne]: null };
+
+    if (search) {
+      where[Op.or] = [
+        { receipt_number: { [Op.like]: `%${search}%` } },
+        { transaction_reference: { [Op.like]: `%${search}%` } },
+        // To support searching by member/group name gracefully without breaking counts:
+        sequelize.where(sequelize.col('installment.enrollment.subscriber.name'), { [Op.like]: `%${search}%` }),
+        sequelize.where(sequelize.col('installment.enrollment.group.group_name'), { [Op.like]: `%${search}%` }),
+      ];
+    }
+
+    const enrollmentInclude = {
+      model: Enrollment,
+      as: 'enrollment',
+      required: true,
+      where: { company_id: companyId, ...(member_id && { subscriber_id: member_id }) },
+      include: [
+        { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'mobile_number'] },
+        {
+          model: ChitsGroup,
+          as: 'group',
+          attributes: ['id', 'group_name'],
+          ...(group_id && { where: { id: group_id } })
+        }
+      ]
+    };
+
+    const { count, rows } = await CustomerPayment.findAndCountAll({
+      where,
+      include: [
+        {
+          model: ChitsInstallment,
+          as: 'installment',
+          required: true,
+          include: [enrollmentInclude]
+        },
+        {
+          model: CollectionAgentAmount,
+          as: 'collection_submission',
+          required: collection_agent_id ? true : false,
+          ...(collection_agent_id && { where: { collection_agent_id } }),
+          include: [{ model: Member, as: 'collection_agent', attributes: ['id', 'name'] }]
+        },
+        { model: PaymentAccount, as: 'upi_account', attributes: ['id', 'name'] },
+        { model: PaymentAccount, as: 'bank_account', attributes: ['id', 'name'] }
+      ],
+      limit: parseInt(max, 10) || 20,
+      offset: parseInt(min, 10) || 0,
+      order: [['payment_date', 'DESC'], ['createdAt', 'DESC']],
+      subQuery: false
+    });
+
+    const formatted = rows.map(p => {
+      const isDirect = !p.collection_agent_amount_id;
+      const recAmt = parseFloat(p.received_amount || 0);
+      const penAmt = parseFloat(p.penalty_paid || 0);
+      return {
+        id: p.id,
+        receipt_number: p.receipt_number,
+        payment_date: p.payment_date,
+        payment_mode: p.payment_mode,
+        cash_amount: p.cash_amount || 0,
+        upi_amount: p.upi_amount || 0,
+        upi_account: p.upi_account?.name || null,
+        bank_amount: p.bank_amount || 0,
+        bank_account: p.bank_account?.name || null,
+        cheque_number: p.cheque_number || null,
+        cheque_date: p.cheque_date || null,
+        narration: p.narration || null,
+        is_advance: !!p.member_advance_id,
+        transaction_reference: p.transaction_reference,
+        received_amount: recAmt,
+        penalty_paid: penAmt,
+        total_paid: (recAmt + penAmt).toFixed(2),
+        member_name: p.installment?.enrollment?.subscriber?.name || null,
+        member_code: p.installment?.enrollment?.subscriber?.member_id || null,
+        phone_number: p.installment?.enrollment?.subscriber?.mobile_number || null,
+        group_name: p.installment?.enrollment?.group?.group_name || null,
+        ticket_number: p.installment?.enrollment?.group_position_number || null,
+        installment_no: p.installment?.installment_no || null,
+        installment_amount: p.installment?.payable_amount || null,
+        source: isDirect ? 'direct' : 'collection_agent',
+        recorded_by: isDirect
+          ? { name: p.recorded_by_name, role: p.recorded_by_role }
+          : { name: p.collection_submission?.verified_by_name, role: p.collection_submission?.verified_by_role },
+        collected_by: isDirect ? null : { name: p.collection_submission?.collection_agent?.name || null },
+      };
+    });
+
+    // Summary calculation for all matching items
+    let summary = {
+      total_receipts: count,
+      total_amount: '0.00',
+      total_received: '0.00',
+      total_penalty: '0.00',
+      total_cash: '0.00',
+      total_upi: '0.00',
+      total_bank: '0.00'
+    };
+
+    try {
+      const allMatching = await CustomerPayment.findAll({
+        where,
+        attributes: [
+          [sequelize.fn('SUM', sequelize.col('received_amount')), 'sum_received'],
+          [sequelize.fn('SUM', sequelize.col('penalty_paid')), 'sum_penalty'],
+          [sequelize.fn('SUM', sequelize.col('cash_amount')), 'sum_cash'],
+          [sequelize.fn('SUM', sequelize.col('upi_amount')), 'sum_upi'],
+          [sequelize.fn('SUM', sequelize.col('bank_amount')), 'sum_bank'],
+        ],
+        include: [
+          {
+            model: ChitsInstallment,
+            as: 'installment',
+            required: true,
+            attributes: [],
+            include: [{
+              model: Enrollment,
+              as: 'enrollment',
+              required: true,
+              attributes: [],
+              where: { company_id: companyId, ...(member_id && { subscriber_id: member_id }) },
+              ...(group_id && {
+                include: [{
+                  model: ChitsGroup,
+                  as: 'group',
+                  attributes: [],
+                  where: { id: group_id }
+                }]
+              })
+            }]
+          },
+          ...(collection_agent_id ? [{
+            model: CollectionAgentAmount,
+            as: 'collection_submission',
+            required: true,
+            attributes: [],
+            where: { collection_agent_id }
+          }] : [])
+        ],
+        raw: true
+      });
+
+      if (allMatching && allMatching[0]) {
+        const row = allMatching[0];
+        const sRec = parseFloat(row.sum_received || 0);
+        const sPen = parseFloat(row.sum_penalty || 0);
+        summary = {
+          total_receipts: count,
+          total_amount: (sRec + sPen).toFixed(2),
+          total_received: sRec.toFixed(2),
+          total_penalty: sPen.toFixed(2),
+          total_cash: (parseFloat(row.sum_cash || 0)).toFixed(2),
+          total_upi: (parseFloat(row.sum_upi || 0)).toFixed(2),
+          total_bank: (parseFloat(row.sum_bank || 0)).toFixed(2)
+        };
+      }
+    } catch (sumErr) {
+      console.warn('Could not compute aggregate summary:', sumErr.message);
+    }
+
+    return successResponse(res, statusCodes.OK, 'Receipts retrieved successfully', { count, rows: formatted, summary });
+  } catch (error) {
+    console.error('Error in getAllReceiptsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSystemSettingsService = async (res) => {
+  try {
+    const settings = await SystemSettingsService.getSettings();
+    return successResponse(res, statusCodes.OK, 'System settings retrieved', settings);
+  } catch (error) {
+    console.error('Error in getSystemSettingsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateBusinessDateService = async (res, userPayload, body) => {
+  try {
+    if (userPayload.role !== 'superadmin') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can update system settings');
+    }
+    const settings = await SystemSettingsService.updateBusinessDate({
+      newDate: body.business_date,
+      reason: body.reason,
+      remarks: body.remarks,
+      changedBy: userPayload.id
+    });
+    const { runGroupStatusJob, calculateDailyPenalties } = require('../utils/cronJobs');
+    await runGroupStatusJob();
+    await calculateDailyPenalties();
+    return successResponse(res, statusCodes.OK, 'Business date updated successfully', settings);
+  } catch (error) {
+    console.error('Error in updateBusinessDateService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateSchedulerModeService = async (res, userPayload, body) => {
+  try {
+    if (userPayload.role !== 'superadmin') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can update system settings');
+    }
+    const settings = await SystemSettingsService.updateSchedulerMode({
+      mode: body.scheduler_mode,
+      reason: body.reason,
+      remarks: body.remarks,
+      changedBy: userPayload.id
+    });
+    return successResponse(res, statusCodes.OK, 'Scheduler mode updated successfully', settings);
+  } catch (error) {
+    console.error('Error in updateSchedulerModeService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, error.message || 'Internal server error');
+  }
+};
+
+const getSystemImpactPreviewService = async (res, userPayload, candidateDateStr) => {
+  try {
+    if (userPayload.role !== 'superadmin') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can access system utilities');
+    }
+
+    const businessDate = candidateDateStr ? new Date(candidateDateStr) : await SystemSettingsService.getBusinessDate();
+
+    const overdueCount = await ChitsInstallment.count({
+      where: {
+        due_date: {
+          [Op.lt]: businessDate.toISOString().split('T')[0]
+        },
+        id: {
+          [Op.notIn]: sequelize.literal(`(
+            SELECT cp.chits_installment_id 
+            FROM customer_payments cp 
+            JOIN chits_installments ci ON ci.id = cp.chits_installment_id 
+            WHERE cp.payment_status = 1 AND cp.chits_installment_id IS NOT NULL 
+            GROUP BY cp.chits_installment_id, ci.payable_amount 
+            HAVING SUM(cp.received_amount) >= ci.payable_amount
+          )`)
+        }
+      }
+    });
+
+    const previewData = {
+      impacted_records: overdueCount,
+      estimated_time: `${Math.max(1, Math.ceil(overdueCount / 100))} min`
+    };
+
+    return successResponse(res, statusCodes.OK, 'Impact preview retrieved', previewData);
+  } catch (error) {
+    console.error('Error in getSystemImpactPreviewService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const runSystemJobsService = async (res, userPayload, body) => {
+  try {
+    if (userPayload.role !== 'superadmin') {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Only Super Admin can run system jobs');
+    }
+
+    const { job_type } = body;
+    const { runGroupStatusJob, calculateDailyPenalties } = require('../utils/cronJobs');
+    await runGroupStatusJob();
+    const result = await calculateDailyPenalties();
+    return successResponse(res, statusCodes.OK, `Job ${job_type || 'default'} triggered manually successfully`, result);
+  } catch (error) {
+    console.error('Error in runSystemJobsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getSystemAuditLogsService = async (res, userPayload, { min = 0, max = 20 } = {}) => {
+  try {
+    const { SystemAuditLog } = require('../models');
+    const { count, rows } = await SystemAuditLog.findAndCountAll({
+      include: [{ model: StaffUser, as: 'changedBy', attributes: ['id', 'first_name', 'last_name'] }],
+      limit: parseInt(max, 10) || 20,
+      offset: parseInt(min, 10) || 0,
+      order: [['changed_on', 'DESC']]
+    });
+    return successResponse(res, statusCodes.OK, 'System audit logs retrieved successfully', { count, rows });
+  } catch (error) {
+    console.error('Error in getSystemAuditLogsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAllCustomerVisitsService = async (res, userPayload, payload) => {
+  try {
+    const { search, status, min, max } = payload;
+    const limit = parseInt(max, 10) || 10;
+    const offset = parseInt(min, 10) || 0;
+
+    const companyId = await resolveCompanyIdForAuth(userPayload);
+
+    let where = {};
+    if (status !== undefined && status !== null) {
+      where.customer_vistor_status = status;
+    }
+
+    let includeWhere = {};
+    if (companyId) {
+      includeWhere.company_id = companyId;
+    }
+
+    if (search) {
+      includeWhere = {
+        ...includeWhere,
+        [Op.or]: [
+          { name: { [Op.iLike]: `%${search}%` } },
+          { member_id: { [Op.iLike]: `%${search}%` } }
+        ]
+      };
+    }
+
+    const visits = await CustomerVisit.findAndCountAll({
+      where,
+      limit,
+      offset,
+      include: [
+        {
+          model: Member,
+          as: 'member',
+          where: Object.keys(includeWhere).length ? includeWhere : undefined,
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        },
+        {
+          model: Member,
+          as: 'collection_agent',
+          attributes: ['id', 'name', 'member_id']
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Customer visits retrieved successfully', visits);
+  } catch (error) {
+    console.error('Error in getAllCustomerVisitsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getCustomerVisitByIdService = async (res, userPayload, payload) => {
+  try {
+    const { id } = payload;
+
+    const companyId = await resolveCompanyIdForAuth(userPayload);
+    const memberWhere = companyId ? { company_id: companyId } : undefined;
+
+    const visit = await CustomerVisit.findByPk(id, {
+      include: [
+        {
+          model: Member,
+          as: 'member',
+          where: memberWhere,
+          attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image']
+        },
+        {
+          model: Member,
+          as: 'collection_agent',
+          attributes: ['id', 'name', 'member_id']
+        }
+      ]
+    });
+
+    if (!visit) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Customer visit not found');
+    }
+
+    return successResponse(res, statusCodes.OK, 'Customer visit retrieved successfully', visit);
+  } catch (error) {
+    console.error('Error in getCustomerVisitByIdService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateCustomerVisitStatusService = async (res, userPayload, payload) => {
+  try {
+    const { id, customer_vistor_status } = payload;
+
+    const companyId = await resolveCompanyIdForAuth(userPayload);
+    const memberWhere = companyId ? { company_id: companyId } : undefined;
+
+    const visit = await CustomerVisit.findByPk(id, {
+      include: [{ model: Member, as: 'member', where: memberWhere }]
+    });
+
+    if (!visit) {
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Customer visit not found');
+    }
+
+    visit.customer_vistor_status = customer_vistor_status;
+    await visit.save();
+
+    return successResponse(res, statusCodes.OK, 'Customer visit status updated successfully', visit);
+  } catch (error) {
+    console.error('Error in updateCustomerVisitStatusService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getLedgerReportService = async (res, reqBody) => {
+  try {
+    const { start_date, end_date, member_id } = reqBody;
+
+    let whereClause = {};
+    if (start_date && end_date) {
+      whereClause.payment_date = { [Op.between]: [start_date, end_date] };
+    } else if (start_date) {
+      whereClause.payment_date = { [Op.gte]: start_date };
+    } else if (end_date) {
+      whereClause.payment_date = { [Op.lte]: end_date };
+    }
+
+    const includeOptions = [
+      {
+        model: ChitsInstallment,
+        as: 'installment',
+        include: [
+          {
+            model: Enrollment,
+            as: 'enrollment',
+            include: [
+              { model: Member, as: 'subscriber', ...(member_id ? { where: { id: member_id } } : {}) },
+              { model: ChitsGroup, as: 'group' }
+            ],
+            required: !!member_id
+          }
+        ],
+        required: true
+      }
+    ];
+
+    const payments = await CustomerPayment.findAll({
+      where: whereClause,
+      include: includeOptions,
+      order: [['payment_date', 'DESC'], ['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Ledger report fetched successfully', { rows: payments });
+  } catch (error) {
+    console.error('Error in getLedgerReportService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+// Company Setup: the company's own profile, including what the statutory
+// registrar forms print. Scoped to the caller's company — never takes an id.
+const SETUP_FIELDS = [
+  'company_name', 'company_address', 'bank_name', 'gst_percentage', 'gst_number', 'gst_type',
+  'pan_number', 'sac_code', 'cheque_return_charges', 'enrollment_charges', 'notice_charges',
+  'transaction_lock_days', 'late_join_grace_days', 'rect_print_format', 'latitude', 'longitude', 'location',
+  'foreman_name', 'foreman_father_name', 'foreman_address', 'cin', 'place', 'registrar_office_address',
+];
+
+const getCompanySetupService = async (res, userToken) => {
+  try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    if (!companyId) return errorResponse(res, statusCodes.BAD_REQUEST, 'No company on this session');
+
+    const company = await Company.findByPk(companyId, { attributes: ['id', ...SETUP_FIELDS] });
+    if (!company) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+
+    return successResponse(res, statusCodes.OK, 'Company setup retrieved successfully', company);
+  } catch (error) {
+    console.error('Error in getCompanySetupService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateCompanySetupService = async (res, data = {}, userToken) => {
+  try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    if (!companyId) return errorResponse(res, statusCodes.BAD_REQUEST, 'No company on this session');
+
+    const company = await Company.findByPk(companyId);
+    if (!company) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
+
+    const patch = {};
+    SETUP_FIELDS.forEach((f) => {
+      if (data[f] !== undefined) patch[f] = data[f];
+    });
+    await company.update(patch);
+
+    const fresh = await Company.findByPk(companyId, { attributes: ['id', ...SETUP_FIELDS] });
+    return successResponse(res, statusCodes.OK, 'Company setup saved successfully', fresh);
+  } catch (error) {
+    console.error('Error in updateCompanySetupService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getStatutoryReportService = async (res, reqBody) => {
+  try {
+    const { start_date, end_date } = reqBody;
+
+    let whereClause = {};
+    if (start_date && end_date) {
+      whereClause.createdAt = { [Op.between]: [new Date(start_date), new Date(end_date)] };
+    }
+
+    const groups = await ChitsGroup.findAll({
+      where: whereClause,
+      order: [['createdAt', 'DESC']]
+    });
+
+    return successResponse(res, statusCodes.OK, 'Statutory report fetched successfully', { rows: groups });
+  } catch (error) {
+    console.error('Error in getStatutoryReportService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const searchEnquiryService = async (res, reqBody) => {
+  try {
+    const { query, min = 0, max = 10 } = reqBody;
+    const limit = parseInt(max, 10);
+    const offset = parseInt(min, 10);
+
+    let memberWhere = {};
+    let groupWhere = {};
+
+    if (query) {
+      memberWhere = {
+        [Op.or]: [
+          { name: { [Op.like]: `%${query}%` } },
+          { mobile_number: { [Op.like]: `%${query}%` } },
+          { member_id: { [Op.like]: `%${query}%` } }
+        ]
+      };
+      groupWhere = {
+        group_name: { [Op.like]: `%${query}%` }
+      };
+    }
+    const [members, groups] = await Promise.all([
+      Member.findAndCountAll({ where: memberWhere, limit, offset }),
+      ChitsGroup.findAndCountAll({ where: groupWhere, limit, offset })
+    ]);
+
+    return successResponse(res, statusCodes.OK, 'Search completed successfully', {
+      members: members.rows,
+      groups: groups.rows,
+      totalMembers: members.count,
+      totalGroups: groups.count
+    });
+  } catch (error) {
+    console.error('Error in searchEnquiryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getMemberReferralsService = async (res, min = 0, max = 10, search = '', status, userToken) => {
+  try {
+    const limit = parseInt(max, 10);
+    const offset = parseInt(min, 10);
+
+    const whereClause = {};
+    if (search) {
+      whereClause.name = { [Op.iLike]: `%${search}%` };
+    }
+    if (status !== undefined && status !== null && status !== '') {
+      whereClause.status = Number(status);
+    }
+
+    // A referral has no company of its own; it belongs to the company of the
+    // member who made it. Without this, every company saw every company's referrals.
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    if (!companyId) return errorResponse(res, statusCodes.BAD_REQUEST, 'No company on this session');
+
+    const { count, rows } = await MemberReferral.findAndCountAll({
+      where: whereClause,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']],
+      include: [
+        {
+          model: Member,
+          as: 'referrer',
+          attributes: ['id', 'name', 'member_id', 'mobile_number'],
+          where: { company_id: companyId },
+          required: true,
+        }
+      ],
+      distinct: true,
+    });
+
+    return successResponse(res, statusCodes.OK, 'Member referrals retrieved successfully', { count, rows });
+  } catch (error) {
+    console.error('Error in getMemberReferralsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const updateMemberReferralStatusService = async (res, referral_id, status, userToken) => {
+  try {
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    const referral = await MemberReferral.findOne({
+      where: { id: referral_id },
+      include: [{ model: Member, as: 'referrer', attributes: ['id'], where: { company_id: companyId }, required: true }],
+    });
+    if (!referral) return errorResponse(res, statusCodes.NOT_FOUND, 'Referral not found');
+
+    await referral.update({ status });
+    return successResponse(res, statusCodes.OK, 'Referral status updated successfully', referral);
+  } catch (error) {
+    console.error('Error in updateMemberReferralStatusService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getAdvancesByMemberService = async (res, member_id, userToken) => {
+  try {
+    if (!MemberAdvance || typeof MemberAdvance.findAll !== 'function') {
+      return successResponse(res, statusCodes.OK, 'Advances fetched successfully', {
+        advances: [],
+        total_balance: 0
+      });
+    }
+
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    const advances = await MemberAdvance.findAll({
+      where: {
+        member_id,
+        company_id: companyId,
+        balance: { [Op.gt]: 0 }
+      },
+      order: [['date', 'ASC']]
+    });
+
+    let total = 0;
+    advances.forEach(adv => total += parseFloat(adv.balance));
+
+    return successResponse(res, statusCodes.OK, 'Advances fetched successfully', {
+      advances,
+      total_balance: total
+    });
+  } catch (error) {
+    console.error('Error in getAdvancesByMemberService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const applyAdvanceService = async (res, member_advance_id, chits_installment_id, amount, userToken) => {
+  const transaction = await sequelize.transaction();
+  try {
+    if (!MemberAdvance || typeof MemberAdvance.findOne !== 'function') {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Advance feature is unavailable');
+    }
+
+    const companyId = await resolveCompanyIdForAuth(userToken);
+    // Lock the advance row: without it two concurrent applications both read the
+    // same balance, both pass the check, and the member is credited twice.
+    const advance = await MemberAdvance.findOne({
+      where: { id: member_advance_id, company_id: companyId },
+      transaction,
+      lock: true
+    });
+
+    if (!advance || advance.balance < amount) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid advance or insufficient balance');
+    }
+
+    const installment = await ChitsInstallment.findOne({
+      where: { id: chits_installment_id },
+      include: [{
+        model: Enrollment, as: 'enrollment',
+        where: { company_id: companyId, subscriber_id: advance.member_id },
+        required: true
+      }],
+      transaction
+    });
+
+    if (!installment) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid installment or member mismatch');
+    }
+
+    const { getInstallmentBalance } = require('./installmentBalanceHelper');
+    const paidSoFar = await getInstallmentBalance(chits_installment_id);
+    const due = parseFloat(installment.payable_amount) - paidSoFar;
+
+    if (amount > due) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Advance application exceeds installment dues');
+    }
+
+    if (amount > parseFloat(advance.balance)) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Amount exceeds advance balance');
+    }
+
+    let newReceiptNumber = null;
+    if (companyId) {
+      newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId, transaction);
+    }
+
+    let verified_by_id = null;
+    let verified_by_role = null;
+    let verified_by_name = null;
+    if (userToken) {
+      verified_by_id = userToken.role === 'company' ? userToken.id : String(userToken.id);
+      verified_by_role = userToken.role;
+      verified_by_name = 'Unknown';
+      if (userToken.role === 'company') {
+        const company = await Company.findByPk(userToken.id, { transaction });
+        if (company) verified_by_name = company.company_name;
+      } else {
+        const staff = await StaffUser.findByPk(userToken.id, { transaction });
+        if (staff) verified_by_name = staff.name;
+      }
+    }
+
+    await CustomerPayment.create({
+      chits_installment_id,
+      received_amount: amount,
+      penalty_paid: 0,
+      payment_status: 1,
+      payment_mode: 6,
+      receipt_number: newReceiptNumber,
+      member_advance_id: advance.id,
+      cash_amount: 0,
+      upi_amount: 0,
+      bank_amount: 0,
+      upi_account_id: null,
+      bank_account_id: null,
+      payment_date: new Date(),
+      recorded_by_id: verified_by_id,
+      recorded_by_role: verified_by_role,
+      recorded_by_name: verified_by_name
+    }, { transaction });
+
+    await advance.update({
+      balance: parseFloat(advance.balance) - parseFloat(amount)
+    }, { transaction });
+
+    await transaction.commit();
+    return successResponse(res, statusCodes.OK, 'Advance applied successfully');
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    console.error('Error in applyAdvanceService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+const getGroupStartDate = (group) => {
+  return group.commencement_date || group.chit_start_date || null;
+};
+
+const lateJoinPreviewService = async (res, payload) => {
+  try {
+    const { group_id, enrollment_date, payment_mode_id, company_id } = payload;
+    const group = await ChitsGroup.findOne({ where: { id: group_id, is_deleted_status: 0, ...(company_id ? { company_id } : {}) } });
+    if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+
+    let mappedType = 1;
+    if (payment_mode_id) {
+      const mode = await StaticDropdownsList.findByPk(payment_mode_id);
+      mappedType = frequencyFromModeName(mode && mode.dropdown_name);
+    }
+
+    const enrollmentDateStr = toDateStr(enrollment_date);
+    const schedule = await buildGroupSchedule(group, mappedType);
+
+    const installmentsDue = catchUpRows(schedule, enrollmentDateStr).map((r) => ({
+      installment_no: r.installment_no,
+      due_date: r.due_date,
+      payable_amount: parseFloat(r.payable_amount) || 0,
+      days_overdue: Math.max(0, daysBetween(r.due_date, enrollmentDateStr))
+    }));
+
+    const totalDue = installmentsDue.reduce((sum, r) => sum + r.payable_amount, 0);
+    // A new member hasn't won an auction, so the non-prized rate applies.
+    const suggested = installmentsDue.reduce((sum, r) => sum + r.days_overdue * dailyPenaltyFor(group, false, r.payable_amount), 0);
+
+    return successResponse(res, statusCodes.OK, 'Late-join preview', {
+      is_late: installmentsDue.length > 0,
+      installments_due: installmentsDue,
+      count: installmentsDue.length,
+      total_due: parseFloat(totalDue.toFixed(2)),
+      penalty_percent_per_day: penaltyPercentFor(group, false),
+      suggested_penalty: Math.round(suggested),
+      grace_days: await lateJoinGraceDays(group.company_id)
+    });
+  } catch (err) {
+    console.error('Error in lateJoinPreviewService:', err);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+module.exports = {
+  lateJoinPreviewService,
+  getGroupStartDate,
+  storeOrUpdateFAQService,
+  getAllFAQService,
+  getFAQByIdService,
+  deleteFAQService,
+  storeOrUpdateTermsPrivacyService,
+  getTermsPrivacyService,
+  logoutService,
+  storeOrUpdateContactUsService,
+  getAllContactUsService,
+  getContactUsByIdService,
+  deleteContactUsService,
+  changePasswordService,
+  loginAdminService,
+  loginCompanyService,
+  forgotPasswordService,
+  verifyOtpService,
+  resetPasswordService,
+  refreshTokenService,
+  generateUniqueUserCode,
+  storeOrUpdateCompanyService,
+  getAllCompanyDetailsService,
+  deleteCompanyService,
+  storeOrUpdateMemberService,
+  getAllMemberDetailsService,
+  deleteMemberService,
+  uploadDocumentService,
+  storeOrUpdateRouteService,
+  getAllRouteDetailsService,
+  deleteRouteService,
+  storeOrUpdateAreaService,
+  getAllAreaDetailsService,
+  deleteAreaService,
+  storeOrUpdateChitsGroupService,
+  getAllChitsGroupDetailsService,
+  deleteChitsGroupService,
+  updateChitsGroupStatusService,
+  checkChitsGroupCapacityService,
+  importLocationsService,
+  getCountriesListService,
+  getStatesListService,
+  storeOrUpdateDistrictService,
+  getAllDistrictDetailsService,
+  storeOrUpdateCityService,
+  getAllCityDetailsService,
+  getDistrictsListService,
+  deleteCityService,
+  fetchStaticDropdownService,
+  updateJointHoldersService,
+  storeOrUpdateEnrollmentService,
+  getAllEnrollmentDetailsService,
+  deleteEnrollmentService,
+  getPositionNumbersService,
+  storeOrUpdateUpcomingChitService,
+  getAllUpcomingChitsService,
+  deleteUpcomingChitService,
+  updateFavoritesService,
+  getGroupMembersService,
+  getInstallmentsByGroupService,
+  storeOrUpdateSuitFileInformationService,
+  getAllSuitFileInformationService,
+  deleteSuitFileInformationService,
+  storeOrUpdateAuctionService,
+  recordWinnerService,
+  getAllAuctionsService,
+  deleteAuctionService,
+  getAllSubcategoriesService,
+  getAgentByAgentTypeService,
+  getAgentEnrollmentsService,
+  storeOrUpdateAgentTargetEntryService,
+  getAllAgentTargetEntryService,
+  getFilteredMembersByGroupAndAgentService,
+  transferAgentUpdateService,
+  getBusinessListUnderMembersService,
+  getAllGroupUnderStaticListsService,
+  getCompanyByIdService,
+  getMemberByIdService,
+  getRouteByIdService,
+  getAreaByIdService,
+  getChitsGroupByIdService,
+  getCountryByIdService,
+  getStateByIdService,
+  getDistrictByIdService,
+  getCityByIdService,
+  getEnrollmentByIdService,
+  getUpcomingChitByIdService,
+  getSuitFileInformationByIdService,
+  getAuctionByIdService,
+  resolveCompanyIdForAssociation,
+  resolveCompanyIdForAuth,
+  storeOrUpdateGroupUnderStaticListService,
+  deleteGroupUnderStaticListService,
+  getGroupUnderStaticListByIdService,
+  storeOrUpdateAccountCreationDetailService,
+  getAllAccountCreationDetailsService,
+  getAllAccountTreeService,
+  getAccountCreationDetailByIdService,
+  deleteAccountCreationDetailService,
+  bulkEditAccountCreationDetailsService,
+  storeOrUpdateSelfChitService,
+  getAllSelfChitDetailsService,
+  getSelfChitByIdService,
+  deleteSelfChitService,
+  storeOrUpdateConfigureBusinessAgentCommissionService,
+  getAllConfigureBusinessAgentCommissionsService,
+  getConfigureBusinessAgentCommissionByIdService,
+  deleteConfigureBusinessAgentCommissionService,
+  storeOrUpdateHistoryBusinessAgentService,
+  getAllHistoryBusinessAgentsService,
+  getHistoryBusinessAgentByIdService,
+  deleteHistoryBusinessAgentService,
+  getBusinessAgentCommissionSummaryService,
+  getHistoryByGroupIdService,
+  getBusinessAgentChitDetailService,
+  updateCollectionSubmissionStatusService,
+  getAllCollectionSubmissionsService,
+  storeDirectPaymentService,
+  storeOrUpdateGalleryService,
+  getAllGalleryService,
+  getGalleryByIdService,
+  deleteGalleryService,
+  sendMemberVerificationOtpService,
+  verifyMemberOtpService,
+  storeOrUpdateStaffService,
+  getAllStaffService,
+  getStaffByIdService,
+  deleteStaffService,
+  staffChangePasswordService,
+  storeOrUpdateRoleService,
+  getAllRoleService,
+  getRoleByIdService,
+  deleteRoleService,
+  getDashboardSummaryService,
+  getTopCollectionAgentsService,
+  getTopBusinessAgentsService,
+  getCommissionEarnedDetailsService,
+  getDividendDistributedDetailsService,
+  registerAdminTokenService,
+  sendManualNotificationService,
+  getAllAuditLogsService,
+  getMemberDocumentsAdminService,
+  uploadMemberDocumentService,
+  verifyMemberDocumentService,
+  getAllReceiptsService,
+  getSystemSettingsService,
+  updateBusinessDateService,
+  updateSchedulerModeService,
+  getSystemImpactPreviewService,
+  runSystemJobsService,
+  getSystemAuditLogsService,
+  getAllCustomerVisitsService,
+  getCustomerVisitByIdService,
+  updateCustomerVisitStatusService,
+  getLedgerReportService,
+  getStatutoryReportService,
+  getCompanySetupService,
+  updateCompanySetupService,
+  searchEnquiryService,
+  getMemberReferralsService,
+  updateMemberReferralStatusService,
+  getAppSupportedCountriesService,
+  getAdvancesByMemberService,
+  applyAdvanceService,
+  computeGroupStatus,
+  createInstallmentsForEnrollment,
+  createInstallmentsForGroup
+};
