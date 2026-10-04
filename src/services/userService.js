@@ -424,7 +424,9 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
 
         const singleChitAmount = group ? (parseFloat(group.chit_amount) || 0) : 0;
         const totalMonths = group ? (parseInt(group.no_of_installments, 10) || 0) : 0;
-        const monthlyInstAmt = group ? (parseFloat(group.installment_amount) || (totalMonths > 0 ? singleChitAmount / totalMonths : 0)) : 0;
+        const monthlyInstAmt = (upcomingInstallment && parseFloat(upcomingInstallment.payable_amount) > 0)
+            ? parseFloat(upcomingInstallment.payable_amount)
+            : (group ? (parseFloat(group.installment_amount) || (totalMonths > 0 ? singleChitAmount / totalMonths : 0)) : 0);
         const resolvedAuctionType = resolveChitGroupAuctionType(group);
         const runningStatusLabel = group ? (Number(group.chits_group_status) === 1 ? 'Active chit' : (Number(group.chits_group_status) === 2 ? 'Completed' : 'Upcoming')) : 'Upcoming';
 
@@ -532,7 +534,9 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
 
             const singleChitAmount = group ? (parseFloat(group.chit_amount) || 0) : 0;
             const totalMonths = group ? (parseInt(group.no_of_installments, 10) || 0) : 0;
-            const monthlyInstAmt = group ? (parseFloat(group.installment_amount) || (totalMonths > 0 ? singleChitAmount / totalMonths : 0)) : 0;
+            const monthlyInstAmt = (upcomingInstallment && parseFloat(upcomingInstallment.payable_amount) > 0)
+                ? parseFloat(upcomingInstallment.payable_amount)
+                : (group ? (parseFloat(group.installment_amount) || (totalMonths > 0 ? singleChitAmount / totalMonths : 0)) : 0);
 
             let completedInstallmentsCount = 0;
             if (group && Number(group.chits_group_status) === 2) {
@@ -896,8 +900,16 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
             const auction = allAuctions.find(a => a.group_id === group.id && dividendMonthOf(a) === installment.installment_no);
             const totalMembersCount = (group && groupCountMap[group.id]) || parseInt(group?.no_of_installments, 10) || 20;
 
+            const enr = installment.enrollment;
+            const isWithdrawn = allAuctions.some(a =>
+                a.group_id === enr?.group_id &&
+                ((a.ticket_number != null && Number(a.ticket_number) === Number(enr?.group_position_number)) ||
+                 (a.ticket_number == null && a.bidder_id != null && Number(a.bidder_id) === Number(enr?.subscriber_id))) &&
+                Number(installment.installment_no) >= Number(a.auction_number)
+            );
+
             const fallbackInstallment = parseFloat(group?.installment_amount) || (parseFloat(group?.chit_amount) / (parseInt(group?.no_of_installments, 10) || 12)) || parseFloat(installment.payable_amount) || 0.00;
-            const originalAmount = (auction || schemeConfig ? getSchemeOriginalAmount(schemeConfig, auction) : fallbackInstallment) || fallbackInstallment;
+            const originalAmount = (auction || schemeConfig ? getSchemeOriginalAmount(schemeConfig, auction || { auction_number: installment.installment_no }, isWithdrawn) : fallbackInstallment) || fallbackInstallment;
 
             let profitAmount = 0.00;
             if (auction) {
@@ -1825,9 +1837,40 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 const geInstallment = allInstallmentsForAuction.find((inst) => inst.enrollment_id === ge.id) ||
                     allUserInstallments.find((inst) => inst.enrollment_id === ge.id && inst.installment_no === m);
 
-                const ticketOriginal = originalAmountPerTicket;
-                const ticketProfit = profitAmountPerTicket;
-                const ticketPayable = payableAmountPerTicket;
+                const geHolders = getEnrollmentHolders(ge);
+                const geHolderIds = new Set(geHolders.map(h => Number(h.member_id)));
+                const geWinAuction = auctions.find(a =>
+                    (a.ticket_number != null && Number(a.ticket_number) === Number(ge.group_position_number)) ||
+                    (a.ticket_number == null && a.bidder_id != null && geHolderIds.has(Number(a.bidder_id)))
+                );
+                const isGeWithdrawn = geWinAuction ? Number(m) >= Number(geWinAuction.auction_number) : false;
+
+                const ticketOriginal = schemeConfig
+                    ? getSchemeOriginalAmount(schemeConfig, { auction_number: m }, isGeWithdrawn)
+                    : (auction ? getSchemeOriginalAmount(schemeConfig, auction) : defaultInstAmt);
+
+                let ticketProfit = 0.00;
+                if (dividendAuction) {
+                    if (dividendAuction.net_payable && parseFloat(dividendAuction.net_payable) > 0) {
+                        const netPayable = parseFloat(dividendAuction.net_payable);
+                        ticketProfit = Math.max(0, ticketOriginal - netPayable);
+                    } else if (dividendAuction.dividend && parseFloat(dividendAuction.dividend) > 0) {
+                        const divVal = parseFloat(dividendAuction.dividend);
+                        const count = totalMembersCount || (group ? group.no_of_installments : 6) || 6;
+                        const divPerMember = divVal < ticketOriginal ? divVal : (divVal / count);
+                        ticketProfit = Math.max(0, divPerMember);
+                    } else if (geInstallment && geInstallment.payable_amount && parseFloat(geInstallment.payable_amount) < ticketOriginal) {
+                        const payableVal = parseFloat(geInstallment.payable_amount);
+                        ticketProfit = Math.max(0, ticketOriginal - payableVal);
+                    }
+                } else if (geInstallment && geInstallment.payable_amount && parseFloat(geInstallment.payable_amount) < ticketOriginal) {
+                    const payableVal = parseFloat(geInstallment.payable_amount) || 0.00;
+                    ticketProfit = Math.max(0, ticketOriginal - payableVal);
+                }
+
+                const ticketPayable = (geInstallment && geInstallment.payable_amount != null && !isNaN(parseFloat(geInstallment.payable_amount)) && parseFloat(geInstallment.payable_amount) > 0)
+                    ? parseFloat(geInstallment.payable_amount)
+                    : Math.max(0, ticketOriginal - ticketProfit);
 
                 const holders = getEnrollmentHolders(ge);
                 const paymentsForInst = geInstallment
@@ -2352,8 +2395,7 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id, from
 
             const instDateStr = toDateOnlyStr(inst.due_date);
             const isDue = (grp && Number(grp.chits_group_status) === 2) ||
-                (instDateStr && instDateStr <= currentDateStr) ||
-                (inst.installment_no <= currentMonthCount);
+                (instDateStr ? instDateStr <= currentDateStr : inst.installment_no <= currentMonthCount);
 
             if (!isDue) return;
 
@@ -2421,8 +2463,7 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id, from
 
                 const instDateStr = toDateOnlyStr(inst.due_date);
                 const isDue = Number(group.chits_group_status) === 2 ||
-                    (instDateStr && instDateStr <= currentDateStr) ||
-                    (inst.installment_no <= currentMonthCount);
+                    (instDateStr ? instDateStr <= currentDateStr : inst.installment_no <= currentMonthCount);
 
                 if (!isDue) return;
                 dueInstallmentCount++;
@@ -2587,8 +2628,7 @@ const getCollectionAgentActiveGroupsService = async (res, collection_agent_id, m
 
                 const instDateStr = toDateOnlyStr(inst.due_date);
                 const isDue = Number(group.chits_group_status) === 2 ||
-                    (instDateStr && instDateStr <= currentDateStr) ||
-                    (inst.installment_no <= currentMonthCount);
+                    (instDateStr ? instDateStr <= currentDateStr : inst.installment_no <= currentMonthCount);
 
                 if (!isDue) return;
                 dueInstallmentCount++;
@@ -2773,8 +2813,7 @@ const getTotalPendingCollectionService = async (res, collection_agent_id, min, m
             const instDateStr = toDateOnlyStr(inst.due_date);
             if (!from_date && !to_date) {
                 const isDue = Number(group.chits_group_status) === 2 ||
-                    (instDateStr && instDateStr <= currentDateStr) ||
-                    (inst.installment_no <= currentMonthCount);
+                    (instDateStr ? instDateStr <= currentDateStr : inst.installment_no <= currentMonthCount);
                 if (!isDue) return;
             }
 
@@ -3193,8 +3232,7 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
 
             const instDateStr = toDateOnlyStr(inst.due_date);
             const isDue = Number(group.chits_group_status) === 2 ||
-                (instDateStr && instDateStr <= currentDateStr) ||
-                (inst.installment_no <= currentMonthCount);
+                (instDateStr ? instDateStr <= currentDateStr : inst.installment_no <= currentMonthCount);
 
             if (!isDue) return;
 
@@ -3398,8 +3436,7 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
             const currentMonthCount = (grp && groupMonthCountMap[grp.id]) || 1;
             const instDateStr = toDateOnlyStr(inst.due_date);
             const isDue = (grp && Number(grp.chits_group_status) === 2) ||
-                (instDateStr && instDateStr <= currentDateStr) ||
-                (inst.installment_no <= currentMonthCount);
+                (instDateStr ? instDateStr <= currentDateStr : inst.installment_no <= currentMonthCount);
 
             if (!isDue) return;
 
@@ -3627,8 +3664,7 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
 
             const instDateStr = toDateOnlyStr(inst.due_date);
             const isDue = (grp && Number(grp.chits_group_status) === 2) ||
-                (instDateStr && instDateStr <= currentDateStr) ||
-                (inst.installment_no <= currentMonthCount);
+                (instDateStr ? instDateStr <= currentDateStr : inst.installment_no <= currentMonthCount);
 
             if (!isDue) return;
 

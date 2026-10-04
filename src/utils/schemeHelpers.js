@@ -18,21 +18,33 @@ function getSchemeWinningAmount(schemeConfig, auctionNumber) {
   return parseFloat(row?.chit_amount) || 0;
 }
 
-function getSchemeOriginalAmount(schemeConfig, auction) {
+function getSchemeOriginalAmount(schemeConfig, auctionOrMonth, isWithdrawn = false) {
   if (!schemeConfig) {
-    return parseFloat(auction?.subscription_amount) || 0.00;
+    return parseFloat(auctionOrMonth?.subscription_amount) || 0.00;
   }
 
   const prices = typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices;
+
+  const auctionNumber = typeof auctionOrMonth === 'number'
+    ? auctionOrMonth
+    : (auctionOrMonth?.auction_number || 1);
+
+  const withdrawn = Boolean(
+    isWithdrawn ||
+    (typeof auctionOrMonth === 'object' && auctionOrMonth !== null && (auctionOrMonth.is_withdrawn || auctionOrMonth.isWithdrawn))
+  );
 
   if (schemeConfig.scheme_type === 63) {
     return parseFloat(schemeConfig.installment) || 0.00;
   }
   if (schemeConfig.scheme_type === 62) {
-    const row = prices?.[(auction?.auction_number || 1) - 1];
+    const row = prices?.[auctionNumber - 1];
+    if (withdrawn && row?.withdrawn != null) {
+      return parseFloat(row.withdrawn) || 0.00;
+    }
     return parseFloat(row?.not_withdrawn) || 0.00;
   }
-  const row = prices?.[(auction?.auction_number || 1) - 1];
+  const row = prices?.[auctionNumber - 1];
   return parseFloat(row?.installment) || 0.00;
 }
 
