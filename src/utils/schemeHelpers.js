@@ -65,16 +65,105 @@ function lastInstalmentDate(startDateStr, noOfInstallments, dueDay) {
 //   - the dividend of the auction in month N reduces the instalment of the next month that is not
 //     the company month.
 
-/** The company's month in an open-auction group, or null. */
+/** The company's month in an open-auction group, or null (legacy single-month helper). */
 function openCompanyMonth(group) {
   const n = parseInt(group && group.company_chit_number, 10);
   return n > 0 ? n : null;
 }
 
-/** The auction number to record next, skipping the company month. */
-function nextOpenAuctionNumber(lastRecorded, group) {
+/**
+ * Synchronous extraction of company seats from group and optional selfChits list.
+ */
+function extractCompanySeats(group, selfChitsList = null) {
+  const seats = new Set();
+  const companyChitNum = parseInt(group && group.company_chit_number, 10);
+  if (companyChitNum > 0) {
+    seats.add(companyChitNum);
+  }
+
+  const isSelfChitAsCompany = group && (
+    group.self_chits_as_company_months === true ||
+    group.self_chits_as_company_months === 1 ||
+    group.self_chits_as_company_months === '1'
+  );
+
+  const list = selfChitsList !== null ? selfChitsList : (group && group.self_chits ? group.self_chits : []);
+
+  if (isSelfChitAsCompany && Array.isArray(list)) {
+    for (const sc of list) {
+      const slot = parseInt(typeof sc === 'object' && sc !== null ? sc.slot_id : sc, 10);
+      if (slot > 0) {
+        seats.add(slot);
+      }
+    }
+  }
+  return Array.from(seats).sort((a, b) => a - b);
+}
+
+/**
+ * Async resolution of all company seat/month numbers for a group.
+ * If self_chits_as_company_months is enabled on the group, combines company_chit_number
+ * with all active SelfChit.slot_id records.
+ */
+async function getGroupCompanySeats(groupOrGroupId, groupRecord = null, transaction = null) {
+  const { ChitsGroup, SelfChit } = require('../models');
+  let group = groupRecord;
+  let groupId = null;
+
+  if (typeof groupOrGroupId === 'object' && groupOrGroupId !== null) {
+    group = groupOrGroupId;
+    groupId = group.id;
+  } else if (groupOrGroupId) {
+    groupId = groupOrGroupId;
+    if (!group) {
+      group = await ChitsGroup.findByPk(groupId, {
+        attributes: ['id', 'company_chit_number', 'self_chits_as_company_months', 'auction_type', 'no_of_installments'],
+        transaction
+      });
+    }
+  }
+
+  const seats = new Set();
+  const companyChitNum = parseInt(group && group.company_chit_number, 10);
+  if (companyChitNum > 0) {
+    seats.add(companyChitNum);
+  }
+
+  const isSelfChitAsCompany = group && (
+    group.self_chits_as_company_months === true ||
+    group.self_chits_as_company_months === 1 ||
+    group.self_chits_as_company_months === '1'
+  );
+
+  if (isSelfChitAsCompany && groupId) {
+    const selfChits = await SelfChit.findAll({
+      where: { group_id: groupId, is_deleted_status: 0 },
+      attributes: ['slot_id'],
+      transaction
+    });
+    for (const sc of selfChits) {
+      const slot = parseInt(sc.slot_id, 10);
+      if (slot > 0) {
+        seats.add(slot);
+      }
+    }
+  }
+
+  return Array.from(seats).sort((a, b) => a - b);
+}
+
+/** The auction number to record next, skipping all company months. */
+function nextOpenAuctionNumber(lastRecorded, group, companySeats = null) {
+  let seats = companySeats;
+  if (!Array.isArray(seats)) {
+    seats = extractCompanySeats(group);
+  }
   let n = (parseInt(lastRecorded, 10) || 0) + 1;
-  if (openCompanyMonth(group) === n) n += 1;
+  while (seats.includes(n)) {
+    n += 1;
+  }
+  const total = parseInt(group && group.no_of_installments, 10) || 0;
+  if (total > 0 && n > total) return null;
   return n;
 }
 
@@ -85,9 +174,15 @@ function isFinalOpenMonth(auctionNumber, group) {
 }
 
 /** The instalment number the dividend of auction `auctionNumber` reduces, or null when there is none. */
-function dividendTargetMonth(auctionNumber, group) {
+function dividendTargetMonth(auctionNumber, group, companySeats = null) {
+  let seats = companySeats;
+  if (!Array.isArray(seats)) {
+    seats = extractCompanySeats(group);
+  }
   let t = (parseInt(auctionNumber, 10) || 0) + 1;
-  if (openCompanyMonth(group) === t) t += 1;
+  while (seats.includes(t)) {
+    t += 1;
+  }
   const total = parseInt(group && group.no_of_installments, 10) || 0;
   return t <= total ? t : null;
 }
@@ -160,9 +255,18 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
   const options = transaction ? { transaction } : {};
 
   // The dividend reduces the next non-company month's instalment (see "Open-auction months" above).
-  const target = auctionData.dividend_installment_no != null
+  let target = auctionData.dividend_installment_no != null
     ? Number(auctionData.dividend_installment_no)
-    : dividendTargetMonth(auctionData.auction_number, await ChitsGroup.findByPk(groupId, { attributes: ['no_of_installments', 'company_chit_number'], ...options }));
+    : null;
+
+  if (target === null) {
+    const grp = await ChitsGroup.findByPk(groupId, {
+      attributes: ['id', 'no_of_installments', 'company_chit_number', 'self_chits_as_company_months'],
+      ...options
+    });
+    const companySeats = await getGroupCompanySeats(groupId, grp, transaction);
+    target = dividendTargetMonth(auctionData.auction_number, grp, companySeats);
+  }
   if (!target) return; // last instalment: nothing to adjust
 
   const allEnrollments = await Enrollment.findAll({
@@ -244,6 +348,8 @@ module.exports = {
   applyOpenAuctionAdjustments,
   calculateOpenAuctionFinancials,
   openCompanyMonth,
+  getGroupCompanySeats,
+  extractCompanySeats,
   nextOpenAuctionNumber,
   isFinalOpenMonth,
   lastInstalmentDate,

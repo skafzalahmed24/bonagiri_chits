@@ -4,6 +4,7 @@ const { Op } = require('sequelize');
 const fcmService = require('../services/fcmService');
 const SystemSettingsService = require('../services/systemSettingsService');
 const { dailyPenaltyFor } = require('./penalty');
+const { getGroupCompanySeats } = require('./schemeHelpers');
 const { isTicketPrized, holderMembersOf } = require('./jointHolders');
 
 const runGroupStatusJob = async () => {
@@ -87,6 +88,11 @@ const calculateDailyPenalties = async () => {
     for (const installment of unpaidInstallments) {
       const group = installment.enrollment?.group;
       if (!group) continue;
+
+      // Exclude company seat enrollments from daily penalties
+      if (installment.enrollment?.subscriber?.group_status === 1) continue;
+      const compSeats = await getGroupCompanySeats(group.id, group);
+      if (compSeats.includes(Number(installment.enrollment?.group_position_number))) continue;
       
       const payments = await sequelize.models.CustomerPayment.findAll({
         where: { chits_installment_id: installment.id, payment_status: { [Op.in]: [0, 1] } }

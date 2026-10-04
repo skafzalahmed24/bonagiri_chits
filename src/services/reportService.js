@@ -656,7 +656,7 @@ class ReportService {
     const enrollments = await Enrollment.findAll({
       where: enrollmentWhere,
       include: [
-        { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'mobile_number'] },
+        { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'mobile_number', 'group_status'] },
         { model: Member, as: 'collection_agent', attributes: ['id', 'name'], required: false },
         { model: Member, as: 'business_agent', attributes: ['id', 'name'], required: false },
         { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount'], required: false },
@@ -667,9 +667,9 @@ class ReportService {
       ],
     });
 
-    const scoped = route_id
+    const scoped = (route_id
       ? enrollments.filter((e) => e.area && String(e.area.route_id) === String(route_id))
-      : enrollments;
+      : enrollments).filter((e) => !e.subscriber || e.subscriber.group_status !== 1);
     const empty = { as_on_date: asOn, group_by, summary: { total_outstanding: 0, members_count: 0, buckets_count: 0 }, rows: [] };
     if (scoped.length === 0) return empty;
 

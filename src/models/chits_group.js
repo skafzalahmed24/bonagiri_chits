@@ -104,6 +104,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER,
       defaultValue: 1
     },
+    self_chits_as_company_months: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
     company_id: DataTypes.UUID,
     is_deleted_status: {
       type: DataTypes.INTEGER,

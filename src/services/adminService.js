@@ -5,7 +5,7 @@ const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
 const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, EnrollmentJointHolder, SelfTransfer, BorrowRepay, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
-const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials, nextOpenAuctionNumber, isFinalOpenMonth, dividendTargetMonth, lastInstalmentDate } = require('../utils/schemeHelpers');
+const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials, nextOpenAuctionNumber, isFinalOpenMonth, dividendTargetMonth, lastInstalmentDate, getGroupCompanySeats, extractCompanySeats } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 const SystemSettingsService = require('./systemSettingsService');
 const twilioService = require('./twilioService');
@@ -1085,6 +1085,15 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
         (chitsGroupData.chit_amount !== undefined && String(chitsGroupData.chit_amount) !== String(chitsGroup.chit_amount)) ||
         (chitsGroupData.scheme_configuration_id !== undefined && String(chitsGroupData.scheme_configuration_id) !== String(chitsGroup.scheme_configuration_id));
 
+      // Check if self_chits_as_company_months is being changed on an existing group with recorded auctions
+      if (chitsGroupData.self_chits_as_company_months !== undefined &&
+          Boolean(chitsGroupData.self_chits_as_company_months) !== Boolean(chitsGroup.self_chits_as_company_months)) {
+        const auctionsCount = await Auction.count({ where: { group_id: id } });
+        if (auctionsCount > 0) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot change self chits company month setting after auctions have started');
+        }
+      }
+
       if (scheduleFieldsChanged) {
         const hasPayments = await CustomerPayment.count({
           where: { payment_status: { [Op.in]: [0, 1] } },
@@ -1112,7 +1121,9 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
         await chitsGroup.update(updatedGroupData);
       }
 
-      return successResponse(res, statusCodes.OK, 'Chits group updated successfully', chitsGroup);
+      const groupJson = chitsGroup.toJSON();
+      groupJson.company_seats = await getGroupCompanySeats(chitsGroup.id, chitsGroup);
+      return successResponse(res, statusCodes.OK, 'Chits group updated successfully', groupJson);
     } else {
       console.log('Creating new ChitsGroup with data:', chitsGroupData);
       const derivedEnd = deriveEndDate();
@@ -1201,7 +1212,9 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
         console.error('Error sending FCM push for new group marketing:', pushErr);
       }
 
-      return successResponse(res, statusCodes.CREATED, 'Chits group created successfully', newChitsGroup);
+      const createdGroupJson = newChitsGroup.toJSON();
+      createdGroupJson.company_seats = await getGroupCompanySeats(newChitsGroup.id, newChitsGroup);
+      return successResponse(res, statusCodes.CREATED, 'Chits group created successfully', createdGroupJson);
     }
   } catch (error) {
     console.error('Error in storeOrUpdateChitsGroupService:', error);
@@ -1252,6 +1265,7 @@ const getAllChitsGroupDetailsService = async (res, company_id, min, max, search,
       const enrollmentsCount = await Enrollment.count({ where: { group_id: groupData.id, delete_status: 0 } });
       groupData.slot_filled_count = await takenSeatCount(groupData.id);
       groupData.active_members_count = enrollmentsCount;
+      groupData.company_seats = await getGroupCompanySeats(groupData.id, group);
       return groupData;
     }));
 
@@ -2096,12 +2110,12 @@ const getGroupMembersService = async (res, company_id, group_id, min, max, filte
       attributes: ['bidder_id', 'auction_number']
     });
 
-    const group = await ChitsGroup.findByPk(group_id, { attributes: ['company_chit_number'] });
-    const companyChitNumber = group ? group.company_chit_number : null;
+    const companySeats = await getGroupCompanySeats(group_id);
 
     let members = enrollments.map(e => {
       const memberId = e.subscriber ? e.subscriber.id : null;
       const winData = auctions.find(a => a.bidder_id === memberId);
+      const isCompanySeat = companySeats.includes(Number(e.group_position_number));
       return {
         id: memberId,
         enrollment_id: e.id,
@@ -2109,7 +2123,7 @@ const getGroupMembersService = async (res, company_id, group_id, min, max, filte
         position: e.group_position_number,
         has_won: !!winData,
         won_month: winData ? parseInt(winData.auction_number, 10) : null,
-        is_company: e.group_position_number === companyChitNumber
+        is_company: isCompanySeat
       };
     });
 
@@ -2315,19 +2329,21 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       transaction
     }) : null;
 
-    // Open auction, new record: the auction number skips the company's month, the last instalment is
+    const companySeats = await getGroupCompanySeats(targetGroupId, groupForMath, transaction);
+
+    // Open auction, new record: the auction number skips all company months, the last instalment is
     // recorded at the full chit amount (no discount, no dividend), and the dividend is booked against
     // the next non-company month.
     let openAuctionNumber = null;
     if (!id && groupForMath && !groupForMath.scheme_configuration_id) {
       const lastForNumber = await Auction.findOne({ where: { group_id: targetGroupId }, order: [['auction_number', 'DESC']], transaction });
-      openAuctionNumber = nextOpenAuctionNumber(lastForNumber ? lastForNumber.auction_number : 0, groupForMath);
+      openAuctionNumber = nextOpenAuctionNumber(lastForNumber ? lastForNumber.auction_number : 0, groupForMath, companySeats);
       if (openAuctionNumber > (parseInt(groupForMath.no_of_installments, 10) || 0)) {
         await transaction.rollback();
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Auction schedule is already finished for this group');
       }
       if (isFinalOpenMonth(openAuctionNumber, groupForMath)) auctionData.bid_amount = groupForMath.chit_amount;
-      auctionData.dividend_installment_no = dividendTargetMonth(openAuctionNumber, groupForMath);
+      auctionData.dividend_installment_no = dividendTargetMonth(openAuctionNumber, groupForMath, companySeats);
     }
 
     if (groupForMath && !groupForMath.scheme_configuration_id && auctionData.bid_amount) {
@@ -2381,8 +2397,15 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         const lastRecorded = lastAuction ? parseInt(lastAuction.auction_number, 10) : 0;
         auctionData.auction_number = openAuctionNumber != null ? openAuctionNumber : lastRecorded + 1;
 
-        // Duplicate-winner guard for new auctions
+        // Duplicate-winner guard and company-seat winner rejection for new auctions
         if (auctionData.bidder_id) {
+          const bidderTickets = await memberTicketsInGroup(auctionData.group_id, auctionData.bidder_id, { transaction });
+          const hasEligibleTicket = bidderTickets.some(t => !companySeats.includes(Number(t.group_position_number)));
+          if (!hasEligibleTicket && bidderTickets.length > 0) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
+          }
+
           const existingWin = await Auction.findOne({
             where: { group_id: auctionData.group_id, bidder_id: auctionData.bidder_id },
             transaction
@@ -2390,6 +2413,22 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
           if (existingWin) {
             await transaction.rollback();
             return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
+          }
+        }
+
+        if (auctionData.ticket_number) {
+          const ticketNum = parseInt(auctionData.ticket_number, 10);
+          if (companySeats.includes(ticketNum)) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
+          }
+        }
+
+        if (auctionData.enrollment_id) {
+          const winEnrollment = await Enrollment.findByPk(auctionData.enrollment_id, { transaction });
+          if (winEnrollment && companySeats.includes(Number(winEnrollment.group_position_number))) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
           }
         }
       }
@@ -2502,9 +2541,11 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, `This member's ticket has already won auction #${existingWin.auction_number} in this group`);
     }
 
-    if (group.company_chit_number && winnerEnrollment.group_position_number === group.company_chit_number) {
+    const companySeats = await getGroupCompanySeats(group.id, group, transaction);
+
+    if (companySeats.includes(Number(winnerEnrollment.group_position_number))) {
       await transaction.rollback();
-      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company cannot be recorded as an auction winner');
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
     }
 
     // 3. Duplicate-winner guard
@@ -2533,8 +2574,8 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       }
     }
 
-    // Open auction: skip the company's month. Fixed schemes: skip their company months.
-    const nextAuctionNumber = schemeConfig ? Math.max(lastRecorded, companyMonths) + 1 : nextOpenAuctionNumber(lastRecorded, group);
+    // Open auction: skip all company months. Fixed schemes: skip their company months.
+    const nextAuctionNumber = schemeConfig ? Math.max(lastRecorded, companyMonths) + 1 : nextOpenAuctionNumber(lastRecorded, group, companySeats);
 
     // Guard against exceeding schedule
     if (nextAuctionNumber > (group.no_of_installments || 0)) {
@@ -2579,7 +2620,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
         }
       }
       auctionData.bid_amount = bid_amount;
-      auctionData.dividend_installment_no = dividendTargetMonth(nextAuctionNumber, group);
+      auctionData.dividend_installment_no = dividendTargetMonth(nextAuctionNumber, group, companySeats);
       const installments = parseInt(group.no_of_installments, 10) || 1;
       const companyCommissionPct = parseFloat(group.company_commission) || 0;
 
@@ -3763,14 +3804,139 @@ const storeOrUpdateSelfChitService = async (res, data = {}) => {
     if (id) {
       const selfChit = await SelfChit.findByPk(id);
       if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
+      if (selfChitData.slot_id !== undefined && Number(selfChitData.slot_id) !== Number(selfChit.slot_id)) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Changing the seat of a self chit is not allowed; delete and re-add instead');
+      }
       await selfChit.update(selfChitData);
       await checkAndUpdateChitFullStatus(selfChit.group_id);
       return successResponse(res, statusCodes.OK, 'Self chit updated successfully', selfChit);
-    } else {
-      const newSelfChit = await SelfChit.create(selfChitData);
-      await checkAndUpdateChitFullStatus(newSelfChit.group_id);
-      return successResponse(res, statusCodes.CREATED, 'Self chit created successfully', newSelfChit);
     }
+
+    const groupId = selfChitData.group_id;
+    const slotId = parseInt(selfChitData.slot_id, 10);
+    if (!groupId || isNaN(slotId) || slotId <= 0) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'group_id and a positive slot_id are required');
+    }
+
+    const group = await ChitsGroup.findByPk(groupId);
+    if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+
+    const totalInstallments = parseInt(group.no_of_installments, 10) || 0;
+    if (totalInstallments > 0 && slotId >= totalInstallments) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Self chit cannot be placed on the final installment month');
+    }
+
+    // Guard 1: Check if seat is already enrolled by an active member
+    const existingEnrollment = await Enrollment.findOne({
+      where: {
+        group_id: groupId,
+        group_position_number: slotId,
+        delete_status: 0
+      }
+    });
+
+    const targetCompanyId = group.company_id || selfChitData.company_id;
+    let existingCompanyMember = await Member.findOne({
+      where: {
+        company_id: targetCompanyId,
+        group_status: 1,
+        is_deleted_status: 0
+      }
+    });
+
+    if (existingEnrollment) {
+      if (!existingCompanyMember || existingEnrollment.subscriber_id !== existingCompanyMember.id) {
+        return errorResponse(res, statusCodes.CONFLICT, `Seat #${slotId} is already occupied by an enrolled member`);
+      }
+    }
+
+    // Guard 2: Group already had its first auction
+    const auctionsCount = await Auction.count({ where: { group_id: groupId } });
+    if (auctionsCount > 0) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot add a self chit after the group has started auctions');
+    }
+
+    // Guard 3: Month already behind group
+    const lastAuction = await Auction.findOne({ where: { group_id: groupId }, order: [['auction_number', 'DESC']] });
+    if (lastAuction && Number(lastAuction.auction_number) >= slotId) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot add a self chit on a month that has already passed');
+    }
+
+    // Guard 4: Active self chit already exists for this seat
+    const existingSelfChit = await SelfChit.findOne({
+      where: { group_id: groupId, slot_id: slotId, is_deleted_status: 0 }
+    });
+    if (existingSelfChit) {
+      return errorResponse(res, statusCodes.CONFLICT, `A self chit already exists for seat #${slotId}`);
+    }
+
+    let newSelfChit = null;
+    await sequelize.transaction(async (t) => {
+      let companyMember = existingCompanyMember;
+      if (!companyMember) {
+        companyMember = await Member.findOne({
+          where: {
+            company_id: targetCompanyId,
+            group_status: 1,
+            is_deleted_status: 0
+          },
+          transaction: t
+        });
+      }
+
+      if (!companyMember) {
+        const company = await Company.findByPk(targetCompanyId, { transaction: t });
+        companyMember = await Member.create({
+          name: company ? company.company_name : 'Company Member',
+          company_id: targetCompanyId,
+          group_status: 1,
+          member_id: `COMP-${targetCompanyId.toString().slice(0, 8).toUpperCase()}`,
+          is_deleted_status: 0,
+          other_info_user_code: await generateUniqueUserCode()
+        }, { transaction: t });
+      }
+
+      let enrollment = await Enrollment.findOne({
+        where: {
+          group_id: groupId,
+          group_position_number: slotId,
+          delete_status: 0
+        },
+        transaction: t
+      });
+
+      if (!enrollment) {
+        enrollment = await Enrollment.create({
+          company_id: targetCompanyId,
+          group_id: groupId,
+          group_position_number: slotId,
+          subscriber_id: companyMember.id,
+          enrollment_date: group.commencement_date || new Date().toISOString().split('T')[0],
+          address_type: 1,
+          business_type_id: 1,
+          delete_status: 0
+        }, { transaction: t });
+
+        const loadedEnrollment = await Enrollment.findByPk(enrollment.id, {
+          include: [{ model: StaticDropdownsList, as: 'payment_mode', attributes: ['dropdown_name'] }],
+          transaction: t
+        });
+
+        await createInstallmentsForEnrollment(loadedEnrollment, group, { transaction: t });
+      }
+
+      newSelfChit = await SelfChit.create({
+        ...selfChitData,
+        company_id: targetCompanyId,
+        group_id: groupId,
+        subscriber_id: companyMember.id,
+        slot_id: slotId,
+        is_deleted_status: 0
+      }, { transaction: t });
+    });
+
+    await checkAndUpdateChitFullStatus(groupId);
+    return successResponse(res, statusCodes.CREATED, 'Self chit created successfully', newSelfChit);
   } catch (error) {
     console.error('Error in storeOrUpdateSelfChitService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -3822,9 +3988,51 @@ const getSelfChitByIdService = async (res, id, companyId) => {
 
 const deleteSelfChitService = async (res, id, companyId) => {
   try {
-    const selfChit = await SelfChit.findOne({ where: { id, company_id: companyId } });
+    const where = { id };
+    if (companyId && companyId !== '') where.company_id = companyId;
+    const selfChit = await SelfChit.findOne({ where });
     if (!selfChit) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
-    await selfChit.update({ is_deleted_status: 1 });
+
+    const slotId = parseInt(selfChit.slot_id, 10);
+
+    // Guard: Check if month has already passed or auctions occurred at or past this seat
+    const pastAuction = await Auction.findOne({
+      where: {
+        group_id: selfChit.group_id,
+        auction_number: { [Op.gte]: slotId }
+      }
+    });
+    if (pastAuction) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot delete a self chit on a month that has already passed or been auctioned');
+    }
+
+    const companyEnrollment = await Enrollment.findOne({
+      where: {
+        group_id: selfChit.group_id,
+        group_position_number: slotId,
+        delete_status: 0
+      }
+    });
+
+    if (companyEnrollment) {
+      const paymentsCount = await CustomerPayment.count({
+        where: {
+          enrollment_id: companyEnrollment.id,
+          payment_status: { [Op.in]: [0, 1] }
+        }
+      });
+      if (paymentsCount > 0) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot delete a self chit that has recorded payments');
+      }
+    }
+
+    await sequelize.transaction(async (t) => {
+      await selfChit.update({ is_deleted_status: 1 }, { transaction: t });
+      if (companyEnrollment) {
+        await companyEnrollment.update({ delete_status: 1 }, { transaction: t });
+      }
+    });
+
     await checkAndUpdateChitFullStatus(selfChit.group_id);
     return successResponse(res, statusCodes.OK, 'Self chit deleted successfully');
   } catch (error) {
@@ -5203,9 +5411,13 @@ const getAreaByIdService = async (res, id, companyId) => {
 
 const getChitsGroupByIdService = async (res, id, companyId) => {
   try {
-    const group = await ChitsGroup.findOne({ where: { id, company_id: companyId } });
+    const where = { id };
+    if (companyId && companyId !== '') where.company_id = companyId;
+    const group = await ChitsGroup.findOne({ where });
     if (!group) return errorResponse(res, statusCodes.NOT_FOUND, 'ChitsGroup not found');
-    return successResponse(res, statusCodes.OK, 'ChitsGroup retrieved successfully', group);
+    const groupData = group.toJSON ? group.toJSON() : { ...group };
+    groupData.company_seats = await getGroupCompanySeats(group.id, group);
+    return successResponse(res, statusCodes.OK, 'ChitsGroup retrieved successfully', groupData);
   } catch (error) {
     console.error('Error in getChitsGroupByIdService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -6276,12 +6488,20 @@ const getDashboardSummaryService = async (res, companyId) => {
         as: 'enrollment',
         where: { company_id: companyId, delete_status: 0 },
         required: true,
-        include: [{
-          model: ChitsGroup,
-          as: 'group',
-          where: { chits_group_status: 1, is_deleted_status: 0 }, // Only started groups
-          required: true
-        }]
+        include: [
+          {
+            model: ChitsGroup,
+            as: 'group',
+            where: { chits_group_status: 1, is_deleted_status: 0 }, // Only started groups
+            required: true
+          },
+          {
+            model: Member,
+            as: 'subscriber',
+            where: { group_status: { [Op.ne]: 1 } },
+            required: true
+          }
+        ]
       }]
     });
 

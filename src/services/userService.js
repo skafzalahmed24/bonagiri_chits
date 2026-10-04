@@ -12,7 +12,7 @@ const {
 const { Op } = require('sequelize');
 const { memberTicketsInGroup, ticketWin, holderNamesByEnrollment } = require('../utils/jointHolders');
 const { generateReceiptNumber } = require('../utils/receiptGenerator');
-const { getSchemeWinningAmount, getSchemeOriginalAmount, dividendMonthOf, lastInstalmentDate } = require('../utils/schemeHelpers');
+const { getSchemeWinningAmount, getSchemeOriginalAmount, dividendMonthOf, lastInstalmentDate, getGroupCompanySeats, extractCompanySeats } = require('../utils/schemeHelpers');
 
 // ---- Joint enrollment: a member's tickets are the ones they hold as main holder
 // (Enrollment.subscriber_id) or as an active joint holder.
@@ -403,6 +403,8 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
         const singleChitAmount = group ? (parseFloat(group.chit_amount) || 0) : 0;
         const totalMonths = group ? (parseInt(group.no_of_installments, 10) || 0) : 0;
         const monthlyInstAmt = group ? (parseFloat(group.installment_amount) || (totalMonths > 0 ? singleChitAmount / totalMonths : 0)) : 0;
+        const resolvedAuctionType = resolveChitGroupAuctionType(group);
+        const runningStatusLabel = group ? (Number(group.chits_group_status) === 1 ? 'Active chit' : (Number(group.chits_group_status) === 2 ? 'Completed' : 'Upcoming')) : 'Upcoming';
 
         const responseData = {
             id: enrollment.id,
@@ -410,6 +412,10 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
             subscriber_id: enrollment.subscriber_id,
             group_name: group ? group.group_name : null,
             chit_amount: singleChitAmount,
+            auction_type: resolvedAuctionType,
+            auction_type_label: resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard'),
+            running_status_label: runningStatusLabel,
+            badge_label: group ? Number(group.chits_group_status) : 0,
             upcoming_instalment_id: upcomingInstallment ? upcomingInstallment.id : null,
             enrollment_id: enrollment.id,
             next_due_date: upcomingInstallment ? upcomingInstallment.due_date : null,
@@ -528,6 +534,7 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
             }
 
             const resolvedAuctionType = resolveChitGroupAuctionType(group);
+            const runningStatusLabel = group ? (Number(group.chits_group_status) === 1 ? 'Active chit' : (Number(group.chits_group_status) === 2 ? 'Completed' : 'Upcoming')) : 'Upcoming';
 
             return {
                 id: enrollment.id,
@@ -541,6 +548,8 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 total_positions: totalMonths,
                 auction_type: resolvedAuctionType,
                 auction_type_label: resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard'),
+                running_status_label: runningStatusLabel,
+                badge_label: group ? Number(group.chits_group_status) : 0,
                 scheme_type: schemeType,
                 completed_installments_count: completedInstallmentsCount,
                 completed_percentage,
@@ -1627,11 +1636,14 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             }
         });
 
+        const companySeats = await getGroupCompanySeats(group.id, group);
+
         const monthlyActivity = [];
         const monthsList = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
         const defaultInstAmt = parseFloat(group.installment_amount) || (singleChitAmount / totalMonthsCount) || 0.00;
 
         for (let m = 1; m <= totalMonthsCount; m++) {
+            const isCompanyMonth = companySeats.includes(m);
             const auction = auctions.find((a) => a.auction_number === m);
 
             // Month Date & Name: Derive sequentially from installment schedule
@@ -2118,6 +2130,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 winner_member_id: winnerTicketFormatted,
                 winner_info: winnerInfo,
                 is_winner_status: isWinnerStatus,
+                is_company_month: isCompanyMonth,
 
                 // Amounts (supports all UI cards & screens)
                 original_amount: parseFloat(monthOriginalTotal.toFixed(2)),
@@ -2176,7 +2189,9 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 ticket_member_number: positionNumbersFormatted,
                 joint_with: [...new Set(Object.values(detailCoHolders).flat())],
                 collection_agent_name: collectionAgentName,
-                business_agent_name: agentName
+                business_agent_name: agentName,
+                company_seats: companySeats,
+                self_chits_as_company_months: Boolean(group.self_chits_as_company_months)
             },
             auction_type: resolvedAuctionType,
             auction_type_label: resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard'),
@@ -3272,7 +3287,7 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
             enrollmentWhere.group_id = groupId;
         }
 
-        const enrollments = await Enrollment.findAll({
+        const rawEnrollments = await Enrollment.findAll({
             where: enrollmentWhere,
             include: [
                 { model: ChitsGroup, as: 'group', where: { is_deleted_status: 0 }, required: true },
@@ -3286,6 +3301,15 @@ const getMemberDuesService = async (res, member_id, userPayload, groupId = null)
                 }
             ]
         });
+
+        const enrollments = [];
+        for (const e of rawEnrollments) {
+            if (e.subscriber && e.subscriber.group_status === 1) continue;
+            const compSeats = await getGroupCompanySeats(e.group_id, e.group);
+            if (!compSeats.includes(Number(e.group_position_number))) {
+                enrollments.push(e);
+            }
+        }
 
         if (enrollments.length === 0) {
             return successResponse(res, statusCodes.OK, 'Member dues', {

@@ -396,6 +396,7 @@ const chitsGroupValidator = Joi.object({
   asset_value: Joi.number().precision(2).allow(null).optional(),
   company_id: Joi.string().uuid().allow('', null).optional(),
   running_status: Joi.number().integer().allow(null).optional(),
+  self_chits_as_company_months: Joi.boolean().allow(null).optional(),
   chits_group_status: Joi.number().integer().allow(null).optional(),
   chit_start_date: Joi.date().iso().allow('', null).optional(),
   chit_end_date: Joi.date().iso().allow('', null).optional(),
