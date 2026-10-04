@@ -297,7 +297,7 @@ const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) =>
                 as: 'group',
                 where: { is_deleted_status: 0 },
                 required: true,
-                attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'installment_amount', 'chits_group_status']
+                attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'installment_amount', 'chits_group_status', 'scheme_configuration_id', 'auction_type']
             }],
             order: [['createdAt', 'DESC']]
         });
