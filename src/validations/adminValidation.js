@@ -110,6 +110,17 @@ const forgotPasswordSchema = Joi.object({
   })
 });
 
+const resendOtpSchema = Joi.object({
+  user_code: Joi.alternatives().try(Joi.string(), Joi.number()).required().messages({
+    'any.required': 'User code is required',
+    'string.empty': 'User code cannot be empty'
+  }),
+  type: Joi.number().integer().valid(1, 2).required().messages({
+    'any.required': 'Type is required',
+    'any.only': 'Invalid type'
+  })
+});
+
 const verifyOtpSchema = Joi.object({
   user_code: Joi.string().required(),
   type: Joi.number().integer().valid(1, 2).required(),
@@ -573,6 +584,7 @@ module.exports = {
   deleteCompanySchema,
   companyLoginSchema,
   forgotPasswordSchema,
+  resendOtpSchema,
   verifyOtpSchema,
   sendMemberOtpSchema,
   verifyMemberOtpSchema,

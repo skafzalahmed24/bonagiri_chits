@@ -46,8 +46,9 @@ router.post('/refresh-token', authMiddleware.authenticateDefaultToken, validate(
 // company routes
 router.post('/user/login', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.companyLoginSchema), adminController.loginCompany);
 
-// forgot password routes
+// forgot password & OTP routes
 router.post('/forgot-password', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.forgotPasswordSchema), adminController.forgotPassword);
+router.post('/resendOTP', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
 router.post('/verify-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyOtpSchema), adminController.verifyOtp);
 router.post('/reset-password', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resetPasswordSchema), adminController.resetPassword);
 router.post('/change-password', authRateLimiter, authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.changePassword);

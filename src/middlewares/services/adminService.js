@@ -332,6 +332,75 @@ const forgotPasswordService = async (res, user_code, type) => {
   }
 };
 
+const resendOtpService = async (res, user_code, type) => {
+  try {
+    let user, role;
+    if (type === 1) {
+      user = await Company.findOne({ where: { company_id: user_code, is_deleted_status: 0 } });
+      role = 'company';
+      if (!user) {
+        user = await StaffUser.findOne({ where: { user_code, is_deleted_status: 0 } });
+        role = 'staff';
+      }
+    } else {
+      const numCode = !isNaN(user_code) ? parseInt(user_code, 10) : null;
+      const memberOrConds = [
+        { other_info_user_code: user_code },
+        { member_id: String(user_code) }
+      ];
+      if (numCode !== null) {
+        memberOrConds.push({ other_info_user_code: numCode });
+      }
+      user = await Member.findOne({
+        where: {
+          [Op.or]: memberOrConds,
+          is_deleted_status: 0
+        }
+      });
+      role = 'member';
+    }
+
+    if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
+
+    const isStatic = twilioService.isStaticOtp();
+    const otp = isStatic ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 15 * 60000);
+
+    if (role === 'staff') {
+      await user.update({ otp, otp_expires_at: expiresAt, otp_attempts: 0 });
+    } else {
+      await user.update({ mobile_otp: otp, mobile_otp_expires_at: expiresAt, mobile_otp_attempts: 0 });
+    }
+
+    const targetMobile = user.mobile_number;
+    console.log(`[RESEND OTP] Triggered OTP for User '${user_code}' (${role}) | Mobile: ${targetMobile || 'NO MOBILE'} | Mode: ${isStatic ? 'STATIC (123456)' : 'DYNAMIC TWILIO'}`);
+
+    let twilioStatus = null;
+    let twilioMsg = null;
+    if (targetMobile) {
+      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', user.country_code || null);
+      twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
+      twilioMsg = twilioRes.message;
+    } else {
+      console.warn(`[RESEND OTP] User '${user_code}' has no mobile number on file. SMS trigger skipped.`);
+    }
+
+    const maskedMobile = targetMobile ? targetMobile.replace(/.(?=.{2})/g, 'x') : null;
+    return successResponse(res, statusCodes.OK, isStatic ? 'Static OTP mode: Use 123456' : 'OTP resent successfully', {
+      user_code,
+      type,
+      is_static_otp: isStatic,
+      static_otp: isStatic ? '123456' : undefined,
+      mobile_number_masked: maskedMobile,
+      twilio_status: twilioStatus,
+      info: twilioMsg
+    });
+  } catch (error) {
+    console.error('[RESEND OTP] Error in resendOtpService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Failed to resend OTP');
+  }
+};
+
 const verifyOtpService = async (res, user_code, type, otp) => {
   try {
     let user, role;
@@ -8202,6 +8271,7 @@ module.exports = {
   loginAdminService,
   loginCompanyService,
   forgotPasswordService,
+  resendOtpService,
   verifyOtpService,
   resetPasswordService,
   refreshTokenService,

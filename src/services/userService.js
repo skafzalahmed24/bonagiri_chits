@@ -1038,6 +1038,16 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
         const simulatedNow = new Date(globalSimulatedNow);
         const simulatedTodayStr = simulatedNow.toISOString().split('T')[0];
 
+        const groupIds = [...new Set(uniqueEnrollments.map(e => e.group_id).filter(Boolean))];
+        const allAuctions = await Auction.findAll({
+            where: { group_id: { [Op.in]: groupIds } },
+            order: [['auction_number', 'DESC']]
+        });
+        const schemeConfigIds = uniqueEnrollments.map(e => e.group?.scheme_configuration_id).filter(Boolean);
+        const schemeConfigs = schemeConfigIds.length > 0
+            ? await FixedSchemeChitsConfiguration.findAll({ where: { id: { [Op.in]: schemeConfigIds } } })
+            : [];
+
         for (const e of uniqueEnrollments) {
             const group = e.group;
             if (!group) continue;
@@ -1045,6 +1055,8 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
             let isMatch = false;
             let badgeLabel = 0;
             let timingLabel = '';
+            let currentAuctionNumber = null;
+            let effectiveAuctionDate = group.auction_date;
 
             const groupStatus = Number(group.chits_group_status); // 0 - Not started, 1 - started, 2 - completed
             const typeInt = Number(type);
@@ -1053,24 +1065,53 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
             const isAuctionFuture = group.auction_date && group.auction_date > simulatedTodayStr;
             const isAuctionPast = group.auction_date && group.auction_date < simulatedTodayStr;
 
+            const grpAuctions = allAuctions.filter(a => a.group_id === group.id);
+            const latestAuction = grpAuctions.length > 0 ? grpAuctions[0] : null;
+            const pastAuctionsCount = grpAuctions.length;
+
+            const resolvedAuctionType = resolveChitGroupAuctionType(group);
+            const auctionTypeLabel = resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard');
+
+            let schemeType = null;
+            if (group && group.scheme_configuration_id) {
+                const scheme = schemeConfigs.find(sc => sc.id === group.scheme_configuration_id);
+                if (scheme) schemeType = scheme.scheme_type;
+            }
+
             if (typeInt === 1) {
                 if (groupStatus === 1 && isAuctionToday) {
                     isMatch = true;
                     badgeLabel = 1;
                     timingLabel = 'Today';
+                    currentAuctionNumber = latestAuction ? (latestAuction.auction_number + 1) : 1;
+                    effectiveAuctionDate = group.auction_date;
                 }
             } else if (typeInt === 2) {
                 if (groupStatus === 0 || (groupStatus === 1 && isAuctionFuture)) {
                     isMatch = true;
                     badgeLabel = 2;
                     timingLabel = group.auction_date ? formatDateToOrdinal(group.auction_date) : 'Soon';
+                    currentAuctionNumber = latestAuction ? (latestAuction.auction_number + 1) : 1;
+                    effectiveAuctionDate = group.auction_date;
                 }
             } else if (typeInt === 3) {
-                const pastAuctionsCount = await Auction.count({ where: { group_id: group.id } });
                 if (groupStatus === 2 || pastAuctionsCount > 0 || (groupStatus === 1 && isAuctionPast)) {
                     isMatch = true;
                     badgeLabel = 3;
-                    timingLabel = groupStatus === 2 ? 'Closed' : 'Active (Has History)';
+
+                    if (latestAuction) {
+                        const targetDateStr = latestAuction.auction_date || group.auction_date;
+                        const dateFormatted = targetDateStr ? formatDateToOrdinal(targetDateStr) : '';
+                        currentAuctionNumber = latestAuction.auction_number;
+                        effectiveAuctionDate = targetDateStr;
+                        timingLabel = dateFormatted ? `${dateFormatted} - Auction #${currentAuctionNumber}` : `Auction #${currentAuctionNumber}`;
+                    } else {
+                        const targetDateStr = group.auction_date;
+                        const dateFormatted = targetDateStr ? formatDateToOrdinal(targetDateStr) : '';
+                        currentAuctionNumber = groupStatus === 2 ? (parseInt(group.no_of_installments, 10) || 1) : 1;
+                        effectiveAuctionDate = targetDateStr;
+                        timingLabel = dateFormatted ? `${dateFormatted} - Auction #${currentAuctionNumber}` : (groupStatus === 2 ? 'Closed' : 'Soon');
+                    }
                 }
             }
 
@@ -1087,8 +1128,12 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
                     members_count: membersCount,
                     badge_label: badgeLabel,
                     timing_label: timingLabel,
-                    auction_date: group.auction_date,
-                    is_today: isAuctionToday
+                    auction_date: effectiveAuctionDate,
+                    is_today: isAuctionToday,
+                    auction_type: resolvedAuctionType,
+                    auction_type_label: auctionTypeLabel,
+                    auction_number: currentAuctionNumber,
+                    scheme_type: schemeType
                 });
             }
         }
@@ -3165,22 +3210,29 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
             order: [['auction_number', 'ASC']]
         });
 
+        const businessDateObj = await SystemSettingsService.getBusinessDate();
+        const currentDateStr = toDateOnlyStr(businessDateObj);
+        const simulatedNow = new Date(currentDateStr);
+
         let currentMonthCount = 1;
         if (Number(group.chits_group_status) === 2) {
             currentMonthCount = parseInt(group.no_of_installments, 10) || 12;
         } else if (Number(group.chits_group_status) === 1) {
+            const totalInstallments = parseInt(group.no_of_installments, 10) || 12;
+            let auctionCount = 1;
             if (auctions && auctions.length > 0) {
-                currentMonthCount = Math.min(parseInt(group.no_of_installments, 10) || 12, auctions[auctions.length - 1].auction_number + 1);
-            } else {
-                currentMonthCount = 1;
+                const latestAuction = auctions[auctions.length - 1];
+                const lastAuctionDate = latestAuction.auction_date ? toDateOnlyStr(latestAuction.auction_date) : null;
+                if (lastAuctionDate && currentDateStr && currentDateStr > lastAuctionDate) {
+                    auctionCount = latestAuction.auction_number + 1;
+                } else {
+                    auctionCount = latestAuction.auction_number;
+                }
             }
+            currentMonthCount = Math.min(totalInstallments, Math.max(auctionCount, 1));
         } else {
             currentMonthCount = 1;
         }
-
-        const businessDateObj = await SystemSettingsService.getBusinessDate();
-        const currentDateStr = toDateOnlyStr(businessDateObj);
-        const simulatedNow = new Date(currentDateStr);
 
         if (!enrollments || enrollments.length === 0) {
             return successResponse(res, statusCodes.OK, 'Group dashboard', {
@@ -3232,7 +3284,8 @@ const getCollectionAgentGroupDashboardService = async (res, group_id, collection
 
             const instDateStr = toDateOnlyStr(inst.due_date);
             const isDue = Number(group.chits_group_status) === 2 ||
-                (instDateStr ? instDateStr <= currentDateStr : inst.installment_no <= currentMonthCount);
+                (instDateStr && instDateStr <= currentDateStr) ||
+                (inst.installment_no <= currentMonthCount);
 
             if (!isDue) return;
 
@@ -3406,6 +3459,10 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
             order: [['auction_number', 'ASC']]
         });
 
+        const businessDateObj = await SystemSettingsService.getBusinessDate();
+        const currentDateStr = toDateOnlyStr(businessDateObj);
+        const simulatedNow = new Date(currentDateStr);
+
         const groupMonthCountMap = {};
         for (const e of enrollments) {
             const grp = e.group;
@@ -3414,18 +3471,23 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
                     groupMonthCountMap[grp.id] = parseInt(grp.no_of_installments, 10) || 12;
                 } else if (Number(grp.chits_group_status) === 1) {
                     const grpAuctions = auctions.filter(a => a.group_id === grp.id);
-                    groupMonthCountMap[grp.id] = grpAuctions.length > 0
-                        ? Math.min(parseInt(grp.no_of_installments, 10) || 12, grpAuctions[grpAuctions.length - 1].auction_number + 1)
-                        : 1;
+                    const totalInst = parseInt(grp.no_of_installments, 10) || 12;
+                    let aucCount = 1;
+                    if (grpAuctions.length > 0) {
+                        const latestAuction = grpAuctions[grpAuctions.length - 1];
+                        const lastAuctionDate = latestAuction.auction_date ? toDateOnlyStr(latestAuction.auction_date) : null;
+                        if (lastAuctionDate && currentDateStr && currentDateStr > lastAuctionDate) {
+                            aucCount = latestAuction.auction_number + 1;
+                        } else {
+                            aucCount = latestAuction.auction_number;
+                        }
+                    }
+                    groupMonthCountMap[grp.id] = Math.min(totalInst, Math.max(aucCount, 1));
                 } else {
                     groupMonthCountMap[grp.id] = 1;
                 }
             }
         }
-
-        const businessDateObj = await SystemSettingsService.getBusinessDate();
-        const currentDateStr = toDateOnlyStr(businessDateObj);
-        const simulatedNow = new Date(currentDateStr);
 
         const memberMap = {};
         installments.forEach(inst => {
@@ -3436,7 +3498,8 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
             const currentMonthCount = (grp && groupMonthCountMap[grp.id]) || 1;
             const instDateStr = toDateOnlyStr(inst.due_date);
             const isDue = (grp && Number(grp.chits_group_status) === 2) ||
-                (instDateStr ? instDateStr <= currentDateStr : inst.installment_no <= currentMonthCount);
+                (instDateStr && instDateStr <= currentDateStr) ||
+                (inst.installment_no <= currentMonthCount);
 
             if (!isDue) return;
 

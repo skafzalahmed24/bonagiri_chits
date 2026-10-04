@@ -66,6 +66,16 @@ const forgotPassword = async (req, res) => {
   }
 };
 
+const resendOtp = async (req, res) => {
+  try {
+    const { user_code, type } = req.body;
+    return await adminService.resendOtpService(res, user_code, type);
+  } catch (error) {
+    console.error('Error in resendOtp:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 
 const verifyOtp = async (req, res) => {
   try {
@@ -1772,6 +1782,7 @@ module.exports = {
   loginCompany,
   refreshToken,
   forgotPassword,
+  resendOtp,
   verifyOtp,
   resetPassword,
   storeOrUpdateMember,

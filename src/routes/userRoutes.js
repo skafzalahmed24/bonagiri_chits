@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const userController = require('../controllers/userController');
+const adminController = require('../controllers/adminController');
 const fixedSchemeController = require('../controllers/fixedSchemeController');
 const validate = require('../middlewares/validate');
 const authMiddleware = require('../middlewares/authMiddleware');
@@ -96,5 +97,10 @@ router.post('/public/support', authMiddleware.authenticateDefaultToken, platform
 // Member Delete Account routes
 router.post('/member/delete-account/send-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);
 router.post('/member/delete-account/verify', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyDeleteAccountOtpSchema), platformSupportController.verifyDeleteAccountOtp);
+
+// Resend OTP routes
+router.post('/resendOTP', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
+router.post('/resend-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
+router.post('/resendOtp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
 
 module.exports = router;
