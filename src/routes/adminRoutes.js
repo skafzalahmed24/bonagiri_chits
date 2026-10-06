@@ -12,6 +12,7 @@ const suretyDenominationController = require('../controllers/suretyDenominationC
 const reportController = require('../controllers/reportController');
 const platformSupportController = require('../controllers/platformSupportController');
 const bannerController = require('../controllers/bannerController');
+const prizePaymentController = require('../controllers/prizePaymentController');
 const validate = require('../middlewares/validate');
 const MODULES = require('../utils/modules');
 
@@ -27,6 +28,7 @@ const PAYMENT_ACCOUNT_READERS = [
   MODULES.M_PAYMENT_ACCOUNTS, MODULES.T_MEMBER_RECEIPTS, MODULES.T_COLLECTION_VERIFY, ...Object.values(VOUCHER_MODULES),
   MODULES.T_SELF_TRANSFER, MODULES.T_BORROW_REPAY, MODULES.T_PAYMENTS, MODULES.T_EXPENDITURE,
   MODULES.T_DAY_REPORT, MODULES.R_BALANCE_SUMMARY, MODULES.R_CASH_BOOK, MODULES.R_BANK_BOOK, MODULES.R_DAY_BOOK,
+  MODULES.T_BID_PAYMENTS, MODULES.T_BID_ADVANCE, // paying a prize or an advance picks the account it goes out from
 ];
 // Voucher forms need the ledger-account picker; reading the list is not managing accounts.
 const LEDGER_ACCOUNT_READERS = [
@@ -417,5 +419,32 @@ router.post('/reports/notice', authMiddleware.authenticateToken, authMiddleware.
 router.post('/reports/statutory-form', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_FORM_1, MODULES.R_FORM_1B, MODULES.R_FORM_2, MODULES.R_FORM_3, MODULES.R_FORM_5, MODULES.R_FORM_6, MODULES.R_FORM_7, MODULES.R_FORM_10, MODULES.R_FORM_11, MODULES.R_ANNEXURE, MODULES.R_ACK]), reportController.getStatutoryFormContext);
 router.post('/reports/outstanding', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_GROUP_OUTSTANDING, MODULES.R_AGENT_OUTSTANDING, MODULES.R_AREA_OUTSTANDING, MODULES.R_ROUTE_OUTSTANDING, MODULES.R_PS_OUTSTANDING, MODULES.R_NPS_OUTSTANDING, MODULES.R_SUIT_OUTSTANDING, MODULES.R_CUSTOM_OUTSTANDING, MODULES.R_DEFAULTER_LIST, MODULES.R_AGENT_WISE_OUTSTANDING, MODULES.E_PENALTY, MODULES.E_GROUP]), reportController.getOutstandingReport);
 router.post('/reports/agent-float', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_AGENT_FLOAT, MODULES.T_COLLECTION_VERIFY]), reportController.getAgentFloatReport);
+
+const prizePaymentPermission = authMiddleware.requireAnyPermission((req) => {
+  if (req.path.includes('advance-position')) return [MODULES.T_BID_ADVANCE];
+  if (req.path.includes('position')) return [MODULES.T_BID_PAYMENTS];
+  const types = Array.isArray(req.body.payment_types) ? req.body.payment_types : (req.body.payment_type ? [req.body.payment_type] : []);
+  if (types.length > 0) {
+    const reqs = [];
+    if (types.includes(1) || types.includes(3)) reqs.push(MODULES.T_BID_PAYMENTS);
+    if (types.includes(2)) reqs.push(MODULES.T_BID_ADVANCE);
+    return reqs;
+  }
+  return [MODULES.T_BID_PAYMENTS, MODULES.T_BID_ADVANCE];
+});
+router.post('/prize-payment/ticket-search', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.ticketSearch);
+router.post('/prize-payment/position', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.getPosition);
+router.post('/prize-payment/advance-position', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.advancePosition);
+router.post('/prize-payment/store-or-update', authMiddleware.authenticateToken, prizePaymentPermission, validate(adminValidation.storeOrUpdatePrizePaymentSchema), prizePaymentController.storeOrUpdate);
+router.post('/prize-payment/get-all', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.getAll);
+router.post('/prize-payment/get-by-id', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.getById);
+router.post('/prize-payment/delete', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.deletePayment);
+router.post('/prize-payment/payable-list', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.T_BID_PAYMENTS, MODULES.T_BID_ADVANCE, MODULES.R_BID_PAYABLE_OS]), prizePaymentController.payableList);
+router.post('/prize-payment/apply-to-dues', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), prizePaymentController.applyToDues);
+router.post('/prize-payment/advance-to-dues', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), prizePaymentController.advanceToDues);
+router.post('/prize-payment/reverse-adjustment', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), prizePaymentController.reverseAdjustment);
+
+router.post('/reports/bid-payment-register', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_BID_PAYMENT), prizePaymentController.registerReport);
+router.post('/reports/prize-payable', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_BID_PAYABLE_OS), prizePaymentController.payableList);
 
 module.exports = router;

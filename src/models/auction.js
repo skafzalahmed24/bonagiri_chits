@@ -6,6 +6,7 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       Auction.belongsTo(models.ChitsGroup, { foreignKey: 'group_id', as: 'group' });
       Auction.belongsTo(models.Member, { foreignKey: 'bidder_id', as: 'bidder' });
+      Auction.hasMany(models.PrizePayment, { as: 'prize_payments', foreignKey: 'auction_id' });
     }
   }
   
@@ -37,7 +38,13 @@ module.exports = (sequelize, DataTypes) => {
     subscription_amount: DataTypes.DECIMAL(15, 2),
     dividend: DataTypes.DECIMAL(15, 2),
     net_payable: DataTypes.DECIMAL(15, 2),
-    dividend_installment_no: DataTypes.INTEGER
+    dividend_installment_no: DataTypes.INTEGER,
+    prize_adjusted_amount: DataTypes.DECIMAL(15, 2),
+    prize_advance_amount: DataTypes.DECIMAL(15, 2),
+    prize_paid_amount: DataTypes.DECIMAL(15, 2),
+    prize_net_payable: DataTypes.DECIMAL(15, 2),
+    prize_status: DataTypes.INTEGER,
+    prize_last_paid_date: DataTypes.DATEONLY
   }, {
     sequelize,
     modelName: 'Auction',

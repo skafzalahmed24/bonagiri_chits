@@ -282,6 +282,7 @@ const { calculateMemberRating } = require('../utils/ratingHelper');
 const fcmService = require('./fcmService');
 const { getGroupStartDate } = require('./adminService');
 const { getBannersForSubscriberHelper } = require('./bannerService');
+const prizePaymentService = require('./prizePaymentService');
 
 const getHomeRecordService = async (res, userPayload, reqSubscriberId = null) => {
     const subscriber_id = (userPayload && userPayload.id) ? userPayload.id : reqSubscriberId;
@@ -1133,7 +1134,15 @@ const getBidsService = async (res, userPayload, type, min = 0, max = 10) => {
                     auction_type: resolvedAuctionType,
                     auction_type_label: auctionTypeLabel,
                     auction_number: currentAuctionNumber,
-                    scheme_type: schemeType
+                    scheme_type: schemeType,
+                    // Prize figures belong to the auction this ticket won, not the group's latest auction.
+                    ...(() => {
+                        const won = grpAuctions.find(a => Number(a.ticket_number) === Number(e.group_position_number));
+                        return {
+                            prize_status: won ? (won.prize_status || 0) : null,
+                            prize_net_payable: won ? (parseFloat(won.prize_net_payable) || 0.00) : null
+                        };
+                    })()
                 });
             }
         }
@@ -1452,6 +1461,9 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 case 2: return 'UPI';
                 case 3: return 'Cheque';
                 case 4: return 'Bank Transfer';
+                case 6: return 'Advance';
+                case 7: return 'Prize';
+                case 8: return 'Bid Advance';
                 case 5: return 'Others';
                 default: return 'Online';
             }
@@ -2285,6 +2297,51 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         const groupAdvanceAmount = monthlyActivity.reduce((sum, item) => sum + (parseFloat(item.advance_payment) || 0), 0);
         const totalPaidAmountForUser = monthlyActivity.reduce((sum, item) => sum + (parseFloat(item.paid_amount) || 0), 0);
 
+        // Per ticket: the prize this ticket won (and what has been paid out of it), or, for a ticket that has
+        // not won, the bid advances taken against its future prize. Company seats have neither.
+        const { PrizePayment } = require('../models');
+        const PAYOUT_MODE_LABEL = { 1: 'Cash', 2: 'UPI', 3: 'Cheque', 4: 'Bank Transfer' };
+        const payoutRows = async (where) => (await PrizePayment.findAll({ where: { ...where, is_deleted: 0 }, order: [['payment_date', 'ASC'], ['id', 'ASC']] }))
+            .map(p => ({ date: p.payment_date, amount: Number(p.amount), type: p.payment_type, mode_label: PAYOUT_MODE_LABEL[p.payment_mode] || null, voucher_number: p.voucher_number }));
+        const prizeList = [];
+        const bidAdvanceList = [];
+        for (const enr of userEnrollments) {
+            let ticket;
+            try {
+                ticket = await prizePaymentService.loadTicket({ companyId: group.company_id, enrollmentId: enr.id, transaction: null });
+            } catch (e) { continue; } // company chit / seat
+            try {
+                const { win } = ticket;
+                if (win) {
+                    const pos = await prizePaymentService.prizePosition(win, enr, { transaction: null });
+                    prizeList.push({
+                        ticket_number: enr.group_position_number,
+                        auction_number: win.auction_number,
+                        payable: Number(win.bid_payable),
+                        adjusted: pos.adjusted,
+                        advance: pos.advance,
+                        paid: pos.paid,
+                        net_payable: pos.net,
+                        excess_advance: pos.net < 0 ? Math.abs(pos.net) : 0,
+                        status: pos.net <= 0.005 ? 2 : (pos.adjusted + pos.advance + pos.paid > 0 ? 1 : 0),
+                        last_paid_date: win.prize_last_paid_date || null,
+                        payments: await payoutRows({ auction_id: win.id, payment_type: [1, 3] })
+                    });
+                } else {
+                    const adv = await prizePaymentService.advancePosition(enr, group, { transaction: null });
+                    if (adv.total_used > 0) {
+                        bidAdvanceList.push({
+                            ticket_number: enr.group_position_number,
+                            advanced: adv.advanced,
+                            adjusted: adv.adjusted,
+                            available: adv.available,
+                            payments: await payoutRows({ enrollment_id: enr.id, payment_type: 2 })
+                        });
+                    }
+                }
+            } catch (e) { console.error('Failed to load prize detail for ticket', enr.id, e.message); }
+        }
+
         // Assemble final beautiful structured response matching all 5 screens
         const responsePayload = {
             chit_group_details: {
@@ -2321,7 +2378,9 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 total_advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
                 advance_amount_status: groupAdvanceAmount > 0,
                 next_payment_due: nextPaymentDue,
-                awaiting_confirmation: awaitingConfirmation
+                awaiting_confirmation: awaitingConfirmation,
+                prize: prizeList,
+                bid_advance: bidAdvanceList
             },
             scheme: schemeConfig ? {
                 ...schemeConfig.toJSON(),
@@ -5467,6 +5526,9 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
             else if (payment.payment_mode === 2) paymentModeStr = 'UPI';
             else if (payment.payment_mode === 3) paymentModeStr = 'Cheque';
             else if (payment.payment_mode === 4) paymentModeStr = 'Bank Transfer';
+            else if (payment.payment_mode === 6) paymentModeStr = 'From Advance';
+            else if (payment.payment_mode === 7) paymentModeStr = 'Prize Adjustment';
+            else if (payment.payment_mode === 8) paymentModeStr = 'From Bid Advance';
             else if (payment.payment_mode === 5) paymentModeStr = 'Others';
 
             let status_label = 'Confirmed';

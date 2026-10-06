@@ -19,6 +19,7 @@ const {
   ChitsInstallment,
   Enrollment,
   MemberAdvance,
+  PrizePayment,
   sequelize,
 } = require('../models');
 const { getGroupStartDate } = require('./adminService');
@@ -134,6 +135,10 @@ class ReportService {
       priorPayments += await getSum(OutgoingPayment, 'amount', { account_id: account.id, date: { [Op.lt]: date } });
       todayPayments += await getSum(OutgoingPayment, 'amount', { account_id: account.id, date: date });
 
+      // 5b. Prize Payments (Types 1 and 2)
+      priorPayments += await getSum(PrizePayment, 'amount', { account_id: account.id, payment_date: { [Op.lt]: date }, payment_type: { [Op.in]: [1, 2] }, is_deleted: 0 });
+      todayPayments += await getSum(PrizePayment, 'amount', { account_id: account.id, payment_date: date, payment_type: { [Op.in]: [1, 2] }, is_deleted: 0 });
+
       // 6. Expenditures
       priorPayments += await getSum(Expenditure, 'amount', { account_id: account.id, date: { [Op.lt]: date } });
       todayPayments += await getSum(Expenditure, 'amount', { account_id: account.id, date: date });
@@ -207,7 +212,7 @@ class ReportService {
       let currentAgentId = null;
       let currentAgentName = 'Office / Direct';
 
-      if (p.payment_mode === 6) continue;
+      if (p.payment_mode === 6 || p.payment_mode === 7 || p.payment_mode === 8) continue;
 
       if (p.collection_submission && p.collection_submission.collection_agent) {
         const agent = p.collection_submission.collection_agent;
@@ -366,6 +371,7 @@ class ReportService {
 
     // Outgoing Payments & Expenditures
     priorPayments += await getSum(OutgoingPayment, 'amount', { account_id: account.id, date: { [Op.lt]: from_date } });
+    priorPayments += await getSum(PrizePayment, 'amount', { account_id: account.id, payment_date: { [Op.lt]: from_date }, payment_type: { [Op.in]: [1, 2] }, is_deleted: 0 });
     priorPayments += await getSum(Expenditure, 'amount', { account_id: account.id, date: { [Op.lt]: from_date } });
 
     const opening_balance = parseFloat(account.opening_balance || 0) + priorReceipts - priorPayments;
@@ -424,6 +430,23 @@ class ReportService {
     // Outgoing Payments
     const ops = await OutgoingPayment.findAll({ where: { account_id: account.id, date: rangeWhere } });
     ops.forEach(o => transactions.push({ date: o.date, type: 'Payment', particular: `${o.category} ${o.narration ? '- '+o.narration : ''}`, debit: o.amount, credit: 0 }));
+
+    // Prize Payments
+    const prizePayments = await PrizePayment.findAll({
+      where: { account_id: account.id, payment_date: rangeWhere, payment_type: { [Op.in]: [1, 2] }, is_deleted: 0 },
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Enrollment, as: 'enrollment', attributes: ['group_position_number'] },
+        { model: Member, as: 'member', attributes: ['name'] }
+      ]
+    });
+    prizePayments.forEach(p => {
+      const typeLabel = p.payment_type === 1 ? 'Bid payment' : 'Bid advance';
+      const mName = p.member ? p.member.name : '';
+      const gName = p.group ? p.group.group_name : '';
+      const tNum = p.enrollment ? p.enrollment.group_position_number : '';
+      transactions.push({ date: p.payment_date, type: 'Payment', particular: `${typeLabel} – ${mName}, ${gName} / ${tNum}`, debit: p.amount, credit: 0 });
+    });
 
     // Expenditures
     const exps = await Expenditure.findAll({ where: { account_id: account.id, date: rangeWhere } });
@@ -525,6 +548,23 @@ class ReportService {
     // Outgoing Payments
     const ops = await OutgoingPayment.findAll({ where: { date: rangeWhere, account_id: inCompanyAccounts } });
     ops.forEach(o => transactions.push({ date: o.date, type: 'Payment', particular: `${o.category} ${o.narration ? '- '+o.narration : ''}`, account_name: accMap[o.account_id] || 'Account', amount: o.amount, debit_credit_flag: 'DEBIT' }));
+
+    // Prize Payments
+    const prizePaymentsDb = await PrizePayment.findAll({
+      where: { payment_date: rangeWhere, account_id: inCompanyAccounts, payment_type: { [Op.in]: [1, 2] }, is_deleted: 0 },
+      include: [
+        { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
+        { model: Enrollment, as: 'enrollment', attributes: ['group_position_number'] },
+        { model: Member, as: 'member', attributes: ['name'] }
+      ]
+    });
+    prizePaymentsDb.forEach(p => {
+      const typeLabel = p.payment_type === 1 ? 'Bid payment' : 'Bid advance';
+      const mName = p.member ? p.member.name : '';
+      const gName = p.group ? p.group.group_name : '';
+      const tNum = p.enrollment ? p.enrollment.group_position_number : '';
+      transactions.push({ date: p.payment_date, type: 'Payment', particular: `${typeLabel} – ${mName}, ${gName} / ${tNum}`, account_name: accMap[p.account_id] || 'Account', amount: p.amount, debit_credit_flag: 'DEBIT' });
+    });
 
     // Expenditures
     const exps = await Expenditure.findAll({ where: { date: rangeWhere, account_id: inCompanyAccounts } });
@@ -1137,6 +1177,8 @@ class ReportService {
         gst_percent: a.gst_number_percentage != null ? Number(a.gst_number_percentage) : null,
         gst: round2(a.gst_amount),
         net_prize_payable: round2(a.bid_payable),
+        prize_paid: round2((Number(a.prize_paid_amount) || 0) + (Number(a.prize_advance_amount) || 0) + (Number(a.prize_adjusted_amount) || 0)),
+        prize_net_payable: a.prize_net_payable == null ? null : round2(a.prize_net_payable),
         dividend_pool: round2(a.dividend_payable),
         dividend_per_subscriber: round2(a.dividend),
         subscription: round2(a.subscription_amount),
@@ -1171,7 +1213,7 @@ class ReportService {
    */
   async getCollectionRegister({ from_date, to_date, group_id, payment_mode, company_id }) {
     const round2 = (n) => parseFloat(Number(n || 0).toFixed(2));
-    const MODE = { 1: 'Cash', 2: 'UPI', 3: 'Cheque', 4: 'Bank', 5: 'Mixed', 6: 'From Advance' };
+    const MODE = { 1: 'Cash', 2: 'UPI', 3: 'Cheque', 4: 'Bank', 5: 'Mixed', 6: 'From Advance', 7: 'Prize Adjustment', 8: 'From Bid Advance' };
 
     const where = { payment_status: 1 };
     if (from_date && to_date) where.payment_date = { [Op.between]: [from_date, to_date] };
@@ -1213,11 +1255,13 @@ class ReportService {
     const rows = payments.map((p) => {
       const e = p.installment.enrollment;
       const total = (parseFloat(p.received_amount) || 0) + (parseFloat(p.penalty_paid) || 0);
-      const split = { cash: 0, upi: 0, bank: 0, cheque: 0, advance: 0, other: 0 };
+      const split = { cash: 0, upi: 0, bank: 0, cheque: 0, advance: 0, prize: 0, bid_advance: 0, other: 0 };
       const mode = Number(p.payment_mode);
       const parts = (parseFloat(p.cash_amount) || 0) + (parseFloat(p.upi_amount) || 0) + (parseFloat(p.bank_amount) || 0);
 
       if (mode === 6) split.advance = total;
+      else if (mode === 7) split.prize = total;
+      else if (mode === 8) split.bid_advance = total;
       else if (mode === 3) split.cheque = total;
       else if (parts > 0) {
         split.cash = parseFloat(p.cash_amount) || 0;
@@ -1250,6 +1294,8 @@ class ReportService {
         bank: round2(split.bank),
         cheque: round2(split.cheque),
         advance: round2(split.advance),
+        prize: round2(split.prize),
+        bid_advance: round2(split.bid_advance),
         other: round2(split.other),
         cheque_number: p.cheque_number || '',
         cheque_date: p.cheque_date || null,
@@ -1277,6 +1323,9 @@ class ReportService {
         bank: sum('bank'),
         cheque: sum('cheque'),
         advance: sum('advance'),
+        prize: sum('prize'),
+        bid_advance: sum('bid_advance'),
+        other: sum('other'),
         other: sum('other'),
         penalty: sum('penalty'),
       },

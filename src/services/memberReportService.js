@@ -86,7 +86,9 @@ const getMember360ReportService = async (res, companyId, memberIdInput) => {
       include: [
         {
           model: CustomerPayment,
-          as: 'payments'
+          as: 'payments',
+          where: { payment_status: 1 },
+          required: false
         }
       ],
       order: [['installment_no', 'ASC']]

@@ -2452,6 +2452,22 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         await transaction.rollback();
         return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
       }
+      
+      if (auctionData.bidder_id !== undefined || auctionData.ticket_number !== undefined || auctionData.bid_amount !== undefined) {
+        const hasChanges = (auctionData.bidder_id !== undefined && String(auctionData.bidder_id) !== String(auction.bidder_id)) ||
+                           (auctionData.ticket_number !== undefined && String(auctionData.ticket_number) !== String(auction.ticket_number)) ||
+                           (auctionData.bid_amount !== undefined && String(auctionData.bid_amount) !== String(auction.bid_amount));
+        if (hasChanges) {
+          const { PrizePayment, CustomerPayment } = require('../models');
+          const p1 = await PrizePayment.count({ where: { auction_id: id, is_deleted: 0 }, transaction });
+          const p2 = await CustomerPayment.count({ where: { prize_auction_id: id, payment_mode: 7, payment_status: 1 }, transaction });
+          if (p1 > 0 || p2 > 0) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'This prize has payments; delete them first.');
+          }
+        }
+      }
+
       await auction.update(auctionData, { transaction });
       auctionResult = auction;
     } else {
@@ -2536,6 +2552,11 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       } else {
         await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment ? winnerEnrollment.id : null, resolvedGroupId, transaction);
       }
+    }
+
+    if (auctionResult && auctionResult.id) {
+      const { recalcPrizeTotals } = require('./prizePaymentService');
+      await recalcPrizeTotals(auctionResult.id, transaction);
     }
 
     await transaction.commit();
@@ -2741,6 +2762,9 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       await group.update(updates, { transaction });
     }
 
+    const { recalcPrizeTotals } = require('./prizePaymentService');
+    await recalcPrizeTotals(newAuction.id, transaction);
+
     await transaction.commit();
 
     // FCM Notification Trigger
@@ -2819,9 +2843,23 @@ const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, 
       order: [['createdAt', 'DESC']]
     });
 
+    const { getGroupCompanySeats } = require('../utils/schemeHelpers');
+    const groupCache = {};
+    const formattedRows = await Promise.all(auctions.rows.map(async (a) => {
+      let seats = groupCache[a.group_id];
+      if (!seats) {
+        const g = await ChitsGroup.findByPk(a.group_id);
+        seats = await getGroupCompanySeats(a.group_id, g);
+        groupCache[a.group_id] = seats;
+      }
+      const data = a.toJSON ? a.toJSON() : a;
+      data.is_company_seat = seats.includes(Number(data.ticket_number));
+      return data;
+    }));
+
     const formattedData = {
       total_count: auctions.count,
-      rows: auctions.rows
+      rows: formattedRows
     };
 
     return successResponse(res, statusCodes.OK, 'Auctions retrieved successfully', formattedData);
@@ -2835,6 +2873,15 @@ const deleteAuctionService = async (res, id, companyId) => {
   try {
     const auction = await Auction.findOne({ where: { id, company_id: companyId } });
     if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+    
+    const { PrizePayment, CustomerPayment } = require('../models');
+    const prizePaymentsCount = await PrizePayment.count({ where: { auction_id: id, is_deleted: 0 } });
+    const cpCount = await CustomerPayment.count({ where: { prize_auction_id: id, payment_mode: 7, payment_status: 1 } });
+    
+    if (prizePaymentsCount > 0 || cpCount > 0) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Delete its bid payments first.');
+    }
+    
     await auction.destroy();
     return successResponse(res, statusCodes.OK, 'Auction deleted successfully');
   } catch (error) {
@@ -5604,7 +5651,13 @@ const getAuctionByIdService = async (res, id, companyId) => {
       ]
     });
     if (!auction) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
-    return successResponse(res, statusCodes.OK, 'Auction retrieved successfully', auction);
+    
+    const { getGroupCompanySeats } = require('../utils/schemeHelpers');
+    const seats = await getGroupCompanySeats(auction.group_id, auction.group);
+    const data = auction.toJSON ? auction.toJSON() : auction;
+    data.is_company_seat = seats.includes(Number(data.ticket_number));
+    
+    return successResponse(res, statusCodes.OK, 'Auction retrieved successfully', data);
   } catch (error) {
     console.error('Error in getAuctionByIdService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

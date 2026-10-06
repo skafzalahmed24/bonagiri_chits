@@ -1454,5 +1454,19 @@ module.exports = {
     status: Joi.number().integer().valid(0, 1).required().messages({
       'any.required': 'Status is required'
     })
+  }),
+  storeOrUpdatePrizePaymentSchema: Joi.object({
+    id: Joi.number().optional(),
+    auction_id: Joi.string().uuid().allow(null).optional(),
+    enrollment_id: Joi.number().required(),
+    payment_type: Joi.number().valid(1, 2, 3).required(),
+    payment_date: Joi.string().isoDate().required(),
+    account_id: Joi.number().allow(null).optional(),
+    payment_mode: Joi.number().valid(1, 2, 3, 4).allow(null).optional(),
+    amount: Joi.number().positive().precision(2).required(),
+    cheque_number: Joi.string().allow(null, '').optional(),
+    cheque_date: Joi.string().isoDate().allow(null, '').optional(),
+    reference_no: Joi.string().allow(null, '').optional(),
+    narration: Joi.string().allow(null, '').optional()
   })
 };

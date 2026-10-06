@@ -41,7 +41,7 @@ module.exports = (sequelize, DataTypes) => {
     payment_status: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
-      comment: '0 - no action, 1 - paid, 2 - due date'
+      comment: '0 - no action, 1 - paid, 2 - due date, 3 - reversed'
     },
     payment_date: {
       type: DataTypes.DATEONLY,
@@ -50,7 +50,7 @@ module.exports = (sequelize, DataTypes) => {
     payment_mode: {
       type: DataTypes.INTEGER,
       allowNull: true,
-      comment: '1 cash, 2 upi, 3 cheque, 4 bank, 5 others'
+      comment: '1 cash, 2 upi, 3 cheque, 4 bank, 5 others, 6 from advance, 7 prize adjustment, 8 from bid advance'
     },
     transaction_reference: {
       type: DataTypes.STRING,
@@ -105,6 +105,14 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
     member_advance_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    prize_auction_id: {
+      type: DataTypes.UUID,
+      allowNull: true
+    },
+    adjust_from_enrollment_id: {
       type: DataTypes.INTEGER,
       allowNull: true
     }
