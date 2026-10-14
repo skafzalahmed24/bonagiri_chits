@@ -572,7 +572,7 @@ const getAllHomeRecordsService = async (res, userPayload, type = 0, min = 0, max
                 group_name: group ? group.group_name : null,
                 chit_amount: singleChitAmount,
                 no_of_installments: totalMonths,
-                total_positions: totalMonths,
+                total_positions: group ? (parseInt(group.no_of_installments, 10) || totalMonths || 12) : 12,
                 auction_type: resolvedAuctionType,
                 auction_type_label: resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard'),
                 running_status_label: runningStatusLabel,
@@ -905,7 +905,7 @@ const getPendingPaymentsService = async (res, userPayload, bodySubscriberId, min
             const isWithdrawn = allAuctions.some(a =>
                 a.group_id === enr?.group_id &&
                 ((a.ticket_number != null && Number(a.ticket_number) === Number(enr?.group_position_number)) ||
-                 (a.ticket_number == null && a.bidder_id != null && Number(a.bidder_id) === Number(enr?.subscriber_id))) &&
+                    (a.ticket_number == null && a.bidder_id != null && Number(a.bidder_id) === Number(enr?.subscriber_id))) &&
                 Number(installment.installment_no) >= Number(a.auction_number)
             );
 
@@ -1297,12 +1297,19 @@ const getBidDetailsService = async (res, group_id, userPayload, bodySubscriberId
     }
 };
 
-const getChitDetailsService = async (res, userPayload, group_id, auction_type = null) => {
+const getChitDetailsService = async (res, userPayload, group_id, auction_type = null, options = {}) => {
     try {
         if (!userPayload) {
             return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
         }
         const subscriber_id = userPayload.id;
+
+        let reqAuctionType = auction_type;
+        let reqOptions = options || {};
+        if (typeof auction_type === 'object' && auction_type !== null) {
+            reqAuctionType = auction_type.auction_type;
+            reqOptions = { ...auction_type, ...reqOptions };
+        }
 
         // 1. Fetch Chit Group details
         const group = await ChitsGroup.findOne({
@@ -1317,9 +1324,9 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
 
         const resolvedAuctionType = resolveChitGroupAuctionType(group);
 
-        if (auction_type !== undefined && auction_type !== null && auction_type !== '') {
-            if (resolvedAuctionType !== Number(auction_type)) {
-                return errorResponse(res, statusCodes.NOT_FOUND, `Chit group does not match the requested auction type (${Number(auction_type) === 1 ? 'Open Auction' : 'Fixed Chit'})`);
+        if (reqAuctionType !== undefined && reqAuctionType !== null && reqAuctionType !== '') {
+            if (resolvedAuctionType !== Number(reqAuctionType)) {
+                return errorResponse(res, statusCodes.NOT_FOUND, `Chit group does not match the requested auction type (${Number(reqAuctionType) === 1 ? 'Open Auction' : 'Fixed Chit'})`);
             }
         }
 
@@ -1606,18 +1613,49 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         // Auctions won by any of this member's tickets (joint tickets included).
         const myWonAuctionIds = await auctionIdsWonBy(userEnrollments);
 
-        // Determine current month count (latest auction number)
+        // 1. Determine current month count dynamically based on start date, installment due dates, and business date
+        // E.g., Month 1 up to start due date (Nov 12), Month 2 from day after (Nov 13), Month 3 from Dec 13, etc.
+        let dateActiveMonth = 1;
+        const todayStr = currentDateStr ? String(currentDateStr).slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+        for (let m = 1; m <= totalMonthsCount; m++) {
+            let instDueDate = null;
+            const matchingInst = allUserInstallments.find(i => i.installment_no === m && i.due_date);
+            if (matchingInst && matchingInst.due_date) {
+                instDueDate = String(matchingInst.due_date).slice(0, 10);
+            } else if (startDateVal) {
+                const parts = String(startDateVal).slice(0, 10).split('-').map(Number);
+                const [y, mm, d] = parts;
+                const dueDay = parseInt(group.due_date_number_count, 10) || d || 5;
+                const idx = (mm - 1) + (m - 1);
+                const yy = y + Math.floor(idx / 12);
+                const mIdx = idx % 12;
+                const dd = Math.min(dueDay, new Date(Date.UTC(yy, mIdx + 1, 0)).getUTCDate());
+                instDueDate = `${yy}-${String(mIdx + 1).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+            }
+
+            if (instDueDate) {
+                if (todayStr <= instDueDate) {
+                    dateActiveMonth = m;
+                    break;
+                } else {
+                    dateActiveMonth = Math.min(totalMonthsCount, m + 1);
+                }
+            }
+        }
+
         let currentMonthCount = 1;
-        if (auctions && auctions.length > 0) {
-            currentMonthCount = auctions[auctions.length - 1].auction_number;
-        } else if (group.chits_group_status === 1) {
+        if (Number(group.chits_group_status) === 2) {
+            currentMonthCount = totalMonthsCount;
+        } else if (Number(group.chits_group_status) === 0) {
             currentMonthCount = 1;
         } else {
-            currentMonthCount = 0;
+            const latestAuctionNum = (auctions && auctions.length > 0) ? (auctions[auctions.length - 1].auction_number || 0) : 0;
+            currentMonthCount = Math.min(totalMonthsCount, Math.max(dateActiveMonth, latestAuctionNum, 1));
         }
-        currentMonthCount = Math.min(totalMonthsCount, Math.max(1, currentMonthCount));
 
         // Calculate Next Payment Due card details based on member's pending dues
+        // Prioritize current/upcoming installment starting from currentMonthCount, then earlier unpaid dues
         let nextPaymentDue = null;
         const sortedUserInstallments = [...allUserInstallments].sort((a, b) => {
             if (a.due_date && b.due_date && a.due_date !== b.due_date) {
@@ -1626,7 +1664,12 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             return a.installment_no - b.installment_no;
         });
 
-        for (const inst of sortedUserInstallments) {
+        const candidateInstallments = [
+            ...sortedUserInstallments.filter(i => i.installment_no >= currentMonthCount),
+            ...sortedUserInstallments.filter(i => i.installment_no < currentMonthCount)
+        ];
+
+        for (const inst of candidateInstallments) {
             const dueTicket = userEnrollments.find((e) => e.id === inst.enrollment_id);
             if (!dueTicket) continue;
 
@@ -1884,6 +1927,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             let monthPaidTotal = 0.00;
             let monthPendingTotal = 0.00;
             let monthAdvanceTotal = 0.00;
+            let monthBroadForwardTotal = 0.00;
             let monthPenaltyTotal = 0.00;
             let monthTotalAmountSum = 0.00;
 
@@ -2109,8 +2153,46 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     return Math.max(directOverpayment, submissionAdvance);
                 };
 
+                const calculateHolderBroadForward = (holder, hDueInst) => {
+                    if (!geInstallment) return 0;
+                    let broughtForwardAmt = 0;
+
+                    const hPayments = paymentsForInst.filter(p => {
+                        const payerId = p.collection_submission ? Number(p.collection_submission.member_id) : (p.payer_member_id ? Number(p.payer_member_id) : null);
+                        return !payerId || payerId === Number(holder.member_id);
+                    });
+
+                    hPayments.forEach(p => {
+                        if (p.collection_agent_amount_id && p.collection_submission) {
+                            const subId = p.collection_agent_amount_id;
+                            const subPayments = userPayments.filter(sp => String(sp.collection_agent_amount_id) === String(subId));
+                            if (subPayments.length > 1) {
+                                let minInstNo = Infinity;
+                                subPayments.forEach(sp => {
+                                    const matchedInst = allUserInstallments.find(i => String(i.id) === String(sp.chits_installment_id));
+                                    if (matchedInst && matchedInst.installment_no < minInstNo) {
+                                        minInstNo = matchedInst.installment_no;
+                                    }
+                                });
+
+                                if (geInstallment.installment_no > minInstNo) {
+                                    broughtForwardAmt += (parseFloat(p.received_amount) || 0);
+                                }
+                            }
+                        }
+
+                        if (Number(p.payment_mode) === 6 || p.member_advance_id) {
+                            broughtForwardAmt += (parseFloat(p.received_amount) || 0);
+                        }
+                    });
+
+                    return broughtForwardAmt;
+                };
+
                 const myAdvance = myDue ? calculateHolderAdvance(myDue.holder, myDue) : 0;
                 const shareAdvance = parseFloat(myAdvance.toFixed(2));
+                const myBroadForward = myDue ? calculateHolderBroadForward(myDue.holder, myDue) : 0;
+                const shareBroadForward = parseFloat(myBroadForward.toFixed(2));
 
                 // Share-proportional amounts for current member (if joint ticket)
                 const shareOriginal = parseFloat((ticketOriginal * shareRatio).toFixed(2));
@@ -2132,6 +2214,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     const hPending = hDue ? hDue.pending : (ticketPending * r);
                     const hPenalty = hDue ? hDue.penalty : (ticketPenaltyAmount * r);
                     const hAdvance = hDue ? calculateHolderAdvance(hDue.holder, hDue) : 0;
+                    const hBroadForward = hDue ? calculateHolderBroadForward(hDue.holder, hDue) : 0;
                     const hTotal = hPending + hPenalty;
                     const hCode = holderInfo.isJoint ? `${holderInfo.ticketNumber}-${h.letter}` : holderInfo.ticketNumber;
 
@@ -2150,6 +2233,10 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                         pending_amount: parseFloat(hPending.toFixed(2)),
                         advance_payment: parseFloat(hAdvance.toFixed(2)),
                         advance_amount_status: hAdvance > 0,
+                        broad_forward_payment: parseFloat(hBroadForward.toFixed(2)),
+                        broad_forward_status: hBroadForward > 0,
+                        brought_forward_payment: parseFloat(hBroadForward.toFixed(2)),
+                        brought_forward_status: hBroadForward > 0,
                         penalty_amount: parseFloat(hPenalty.toFixed(2)),
                         penalty_paid: parseFloat(hPenaltyPaid.toFixed(2)),
                         penalty_text: hPenalty > 0 ? formatPenaltyCalculationText(hPenalty, overDueDaysCount) : (hPenaltyPaid > 0 ? formatPenaltyCalculationText(hPenaltyPaid, overDueDaysCount) : null),
@@ -2159,10 +2246,13 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 });
 
                 let ticketAdvance = 0;
+                let ticketBroadForward = 0;
                 if (holderInfo.isJoint) {
                     ticketAdvance = jointBreakdown.reduce((sum, jb) => sum + (parseFloat(jb.advance_payment) || 0), 0);
+                    ticketBroadForward = jointBreakdown.reduce((sum, jb) => sum + (parseFloat(jb.broad_forward_payment) || 0), 0);
                 } else {
                     ticketAdvance = myAdvance;
+                    ticketBroadForward = myBroadForward;
                 }
 
                 monthOriginalTotal += (holderInfo.isJoint ? shareOriginal : ticketOriginal);
@@ -2171,6 +2261,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 monthPaidTotal += (holderInfo.isJoint ? sharePaid : ticketPaidAmount);
                 monthPendingTotal += (holderInfo.isJoint ? sharePending : ticketPending);
                 monthAdvanceTotal += (holderInfo.isJoint ? shareAdvance : ticketAdvance);
+                monthBroadForwardTotal = (monthBroadForwardTotal || 0) + (holderInfo.isJoint ? shareBroadForward : ticketBroadForward);
                 monthPenaltyTotal += (holderInfo.isJoint ? sharePenalty : ticketPenaltyAmount);
                 monthTotalAmountSum += (holderInfo.isJoint ? shareTotalAmount : ticketTotalAmount);
 
@@ -2214,6 +2305,10 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     pending_amount: holderInfo.isJoint ? sharePending : parseFloat(ticketPending.toFixed(2)),
                     advance_payment: holderInfo.isJoint ? shareAdvance : parseFloat(ticketAdvance.toFixed(2)),
                     advance_amount_status: (holderInfo.isJoint ? shareAdvance : ticketAdvance) > 0,
+                    broad_forward_payment: holderInfo.isJoint ? shareBroadForward : parseFloat(ticketBroadForward.toFixed(2)),
+                    broad_forward_status: (holderInfo.isJoint ? shareBroadForward : ticketBroadForward) > 0,
+                    brought_forward_payment: holderInfo.isJoint ? shareBroadForward : parseFloat(ticketBroadForward.toFixed(2)),
+                    brought_forward_status: (holderInfo.isJoint ? shareBroadForward : ticketBroadForward) > 0,
                     penalty_amount: holderInfo.isJoint ? sharePenalty : parseFloat(ticketPenaltyAmount.toFixed(2)),
                     penalty_paid: holderInfo.isJoint ? sharePenaltyPaid : parseFloat(ticketPenaltyPaid.toFixed(2)),
                     penalty_text: sharePenalty > 0 ? formatPenaltyCalculationText(sharePenalty, overDueDaysCount) : (sharePenaltyPaid > 0 ? formatPenaltyCalculationText(sharePenaltyPaid, overDueDaysCount) : ticketPenaltyText),
@@ -2271,6 +2366,10 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 pending_amount: parseFloat(monthPendingTotal.toFixed(2)),
                 advance_payment: parseFloat(monthAdvanceTotal.toFixed(2)),
                 advance_amount_status: monthAdvanceTotal > 0,
+                broad_forward_payment: parseFloat((monthBroadForwardTotal || 0).toFixed(2)),
+                broad_forward_status: (monthBroadForwardTotal || 0) > 0,
+                brought_forward_payment: parseFloat((monthBroadForwardTotal || 0).toFixed(2)),
+                brought_forward_status: (monthBroadForwardTotal || 0) > 0,
                 penalty_amount: parseFloat(monthPenaltyTotal.toFixed(2)),
                 penalty_text: monthPenaltyText,
                 total_amount: parseFloat(monthTotalAmountSum.toFixed(2)),
@@ -2286,6 +2385,12 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     total_pending: parseFloat(monthPendingTotal.toFixed(2)),
                     total_advance: parseFloat(monthAdvanceTotal.toFixed(2)),
                     advance_amount_status: monthAdvanceTotal > 0,
+                    total_broad_forward: parseFloat((monthBroadForwardTotal || 0).toFixed(2)),
+                    broad_forward_payment: parseFloat((monthBroadForwardTotal || 0).toFixed(2)),
+                    broad_forward_status: (monthBroadForwardTotal || 0) > 0,
+                    total_brought_forward: parseFloat((monthBroadForwardTotal || 0).toFixed(2)),
+                    brought_forward_payment: parseFloat((monthBroadForwardTotal || 0).toFixed(2)),
+                    brought_forward_status: (monthBroadForwardTotal || 0) > 0,
                     total_amount: parseFloat(monthTotalAmountSum.toFixed(2)),
                     total_penalty: parseFloat(monthPenaltyTotal.toFixed(2))
                 }
@@ -2295,6 +2400,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
         // Calculate true group pending, paid and advance amounts across all months
         const groupPendingAmount = monthlyActivity.reduce((sum, item) => sum + (parseFloat(item.pending_amount) || 0), 0);
         const groupAdvanceAmount = monthlyActivity.reduce((sum, item) => sum + (parseFloat(item.advance_payment) || 0), 0);
+        const groupBroadForwardAmount = monthlyActivity.reduce((sum, item) => sum + (parseFloat(item.broad_forward_payment) || 0), 0);
         const totalPaidAmountForUser = monthlyActivity.reduce((sum, item) => sum + (parseFloat(item.paid_amount) || 0), 0);
 
         // Per ticket: the prize this ticket won (and what has been paid out of it), or, for a ticket that has
@@ -2342,6 +2448,10 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
             } catch (e) { console.error('Failed to load prize detail for ticket', enr.id, e.message); }
         }
 
+        // Overall group member count based on group installments count
+        const overallGroupMembers = parseInt(group.no_of_installments, 10) || totalMonthsCount;
+        const bookedMembersCount = totalMembersCount;
+
         // Assemble final beautiful structured response matching all 5 screens
         const responsePayload = {
             chit_group_details: {
@@ -2353,11 +2463,17 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
                 advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
                 advance_amount_status: groupAdvanceAmount > 0,
+                broad_forward_payment: parseFloat(groupBroadForwardAmount.toFixed(2)),
+                broad_forward_status: groupBroadForwardAmount > 0,
+                brought_forward_payment: parseFloat(groupBroadForwardAmount.toFixed(2)),
+                brought_forward_status: groupBroadForwardAmount > 0,
                 total_months: totalMonthsCount,
                 current_month: currentMonthCount,
                 total_installments: totalMonthsCount,
-                members_count: totalMembersCount,
-                total_members: `${totalMembersCount} Members`,
+                members_count: overallGroupMembers,
+                total_members: `${overallGroupMembers} Members`,
+                booked_members_count: bookedMembersCount,
+                positions_occupied_count: bookedMembersCount,
                 auction_type: resolvedAuctionType,
                 auction_type_label: resolvedAuctionType === 1 ? 'Open Auction' : (resolvedAuctionType === 2 ? 'Fixed Chit' : 'Standard'),
                 running_status_label: group.chits_group_status === 1 ? 'Active chit' : (group.chits_group_status === 2 ? 'Completed' : 'Upcoming'),
@@ -2377,6 +2493,10 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 total_pending_amount: parseFloat(groupPendingAmount.toFixed(2)),
                 total_advance_payment: parseFloat(groupAdvanceAmount.toFixed(2)),
                 advance_amount_status: groupAdvanceAmount > 0,
+                total_broad_forward_payment: parseFloat(groupBroadForwardAmount.toFixed(2)),
+                broad_forward_status: groupBroadForwardAmount > 0,
+                total_brought_forward_payment: parseFloat(groupBroadForwardAmount.toFixed(2)),
+                brought_forward_status: groupBroadForwardAmount > 0,
                 next_payment_due: nextPaymentDue,
                 awaiting_confirmation: awaitingConfirmation,
                 prize: prizeList,
@@ -2386,7 +2506,9 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                 ...schemeConfig.toJSON(),
                 prices: typeof schemeConfig.prices === 'string' ? JSON.parse(schemeConfig.prices) : schemeConfig.prices
             } : null,
-            monthly_activity: monthlyActivity
+            monthly_activity: Boolean(reqOptions?.all_months)
+                ? monthlyActivity
+                : monthlyActivity.filter(item => item.month_count <= currentMonthCount)
         };
 
         return successResponse(res, statusCodes.OK, 'Chit details retrieved successfully', responsePayload);
@@ -5506,7 +5628,29 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
             const received = parseFloat(payment.received_amount) || 0;
             const penalty = parseFloat(payment.penalty_paid) || 0;
             const amount = received + penalty;
-            groupedData[dateKey].total_paid += amount;
+
+            // Merge multi-installment or advance payments that were made in a single payment submission
+            let groupKey = null;
+            if (payment.collection_agent_amount_id) {
+                groupKey = `sub_${payment.collection_agent_amount_id}`;
+            } else if (payment.transaction_reference) {
+                groupKey = `ref_${payment.transaction_reference}`;
+            }
+
+            if (groupKey) {
+                const existingTx = groupedData[dateKey].transactions.find(t => t._group_key === groupKey);
+                if (existingTx) {
+                    existingTx.amount = parseFloat((existingTx.amount + amount).toFixed(2));
+                    if (payment.payment_status === 0) {
+                        existingTx.status = 0;
+                        existingTx.status_label = 'Awaiting office confirmation';
+                    }
+                    groupedData[dateKey].total_paid = parseFloat((groupedData[dateKey].total_paid + amount).toFixed(2));
+                    return;
+                }
+            }
+
+            groupedData[dateKey].total_paid = parseFloat((groupedData[dateKey].total_paid + amount).toFixed(2));
 
             const group = payment.installment?.enrollment?.group;
 
@@ -5536,17 +5680,25 @@ const getMemberLedgerService = async (res, reqUser, payload) => {
             else if (payment.payment_status === 2) status_label = 'Not confirmed by office';
 
             groupedData[dateKey].transactions.push({
+                _group_key: groupKey,
                 payment_id: payment.id,
                 receipt_id: payment.receipt_number || null,
                 group_name: group ? group.group_name : 'No Group',
                 chit_id: group ? group.chit_id : null,
                 group_number: group && group.group_name ? group.group_name.split('-').pop() : '00', // Mocking group number if not exact field
                 time: timeKey,
-                amount: amount,
+                amount: parseFloat(amount.toFixed(2)),
                 payment_mode: paymentModeStr,
                 status: payment.payment_status,
                 status_label,
                 collection_agent_name: collectionAgentName
+            });
+        });
+
+        // Strip internal _group_key before building final output
+        Object.values(groupedData).forEach(day => {
+            day.transactions.forEach(t => {
+                delete t._group_key;
             });
         });
 
@@ -6204,4 +6356,5 @@ module.exports = {
     getHolderInstallmentDues,
     formatPenaltyCalculationText,
     toDateOnlyStr
+};
 };
