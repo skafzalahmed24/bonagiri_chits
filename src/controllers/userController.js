@@ -252,9 +252,20 @@ const getBusinessAgentMemberJoined = async (req, res) => {
   }
 };
 
+// Agent routes: the agent is ALWAYS the signed-in token's user (requireCollectionAgent guards the
+// route). A body `collection_agent_id` is ignored; it stays in the validators so existing app
+// builds that send it still pass. A mismatch is logged, not served.
+const ownAgentId = (req) => {
+  const sent = req.body && req.body.collection_agent_id;
+  if (sent !== undefined && sent !== null && String(sent) !== String(req.user.id)) {
+    console.warn(`[agent-routes] body collection_agent_id ${sent} ignored for token user ${req.user.id} on ${req.originalUrl}`);
+  }
+  return req.user.id;
+};
+
 const getCollectionAgentDashboard = async (req, res) => {
   try {
-    const { collection_agent_id, from_date, to_date } = req.body;
+    const { from_date, to_date } = req.body;
     return await userService.getCollectionAgentDashboardService(res, req.user.id, from_date, to_date);
   } catch (error) {
     console.error('Error in getCollectionAgentDashboard:', error);
@@ -264,8 +275,8 @@ const getCollectionAgentDashboard = async (req, res) => {
 
 const getCollectionAgentGroupDashboard = async (req, res) => {
   try {
-    const { group_id, collection_agent_id, min, max } = req.body;
-    const agentId = collection_agent_id || req.user.id;
+    const { group_id, min, max } = req.body;
+    const agentId = ownAgentId(req);
     return await userService.getCollectionAgentGroupDashboardService(res, group_id, agentId, min, max);
   } catch (error) {
     console.error('Error in getCollectionAgentGroupDashboard:', error);
@@ -275,8 +286,8 @@ const getCollectionAgentGroupDashboard = async (req, res) => {
 
 const getCollectionAgentActiveGroups = async (req, res) => {
   try {
-    const { collection_agent_id, min, max } = req.body;
-    const agentId = collection_agent_id || req.user.id;
+    const { min, max } = req.body;
+    const agentId = ownAgentId(req);
     return await userService.getCollectionAgentActiveGroupsService(res, agentId, min, max);
   } catch (error) {
     console.error('Error in getCollectionAgentActiveGroups:', error);
@@ -286,8 +297,8 @@ const getCollectionAgentActiveGroups = async (req, res) => {
 
 const getTotalPendingCollection = async (req, res) => {
   try {
-    const { collection_agent_id, min, max, from_date, to_date } = req.body;
-    const agentId = collection_agent_id || req.user.id;
+    const { min, max, from_date, to_date } = req.body;
+    const agentId = ownAgentId(req);
     return await userService.getTotalPendingCollectionService(res, agentId, min, max, from_date, to_date);
   } catch (error) {
     console.error('Error in getTotalPendingCollection:', error);
@@ -297,8 +308,8 @@ const getTotalPendingCollection = async (req, res) => {
 
 const getTodayCollection = async (req, res) => {
   try {
-    const { collection_agent_id, min, max, from_date, to_date } = req.body;
-    const agentId = collection_agent_id || req.user.id;
+    const { min, max, from_date, to_date } = req.body;
+    const agentId = ownAgentId(req);
     return await userService.getTodayCollectionService(res, agentId, min, max, from_date, to_date);
   } catch (error) {
     console.error('Error in getTodayCollection:', error);
@@ -308,8 +319,8 @@ const getTodayCollection = async (req, res) => {
 
 const getPendingMembers = async (req, res) => {
   try {
-    const { collection_agent_id, group_id, min, max } = req.body;
-    const agentId = collection_agent_id || req.user.id;
+    const { group_id, min, max } = req.body;
+    const agentId = ownAgentId(req);
     return await userService.getPendingMembersService(res, agentId, group_id, min, max);
   } catch (error) {
     console.error('Error in getPendingMembers:', error);
@@ -329,8 +340,8 @@ const getMemberDues = async (req, res) => {
 
 const getSubmissions = async (req, res) => {
   try {
-    const { collection_agent_id, type, min, max } = req.body;
-    return await userService.getSubmissionsService(res, collection_agent_id, type, min, max);
+    const { type, min, max } = req.body;
+    return await userService.getSubmissionsService(res, ownAgentId(req), type, min, max);
   } catch (error) {
     console.error('Error in getSubmissions:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -474,8 +485,8 @@ const getMembersByGroupId = async (req, res) => {
 
 const getMembersByCollectionAgentId = async (req, res) => {
   try {
-    const { collection_agent_id, search, min, max } = req.body;
-    return await userService.getMembersByCollectionAgentIdService(res, collection_agent_id, search, min, max);
+    const { search, min, max } = req.body;
+    return await userService.getMembersByCollectionAgentIdService(res, ownAgentId(req), search, min, max);
   } catch (error) {
     console.error('Error in getMembersByCollectionAgentId:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -484,7 +495,7 @@ const getMembersByCollectionAgentId = async (req, res) => {
 
 const getCustomerDetailsById = async (req, res) => {
   try {
-    return await userService.getCustomerDetailsByIdService(res, req.body);
+    return await userService.getCustomerDetailsByIdService(res, req.body, req.user);
   } catch (error) {
     console.error('Error in getCustomerDetailsById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -493,7 +504,7 @@ const getCustomerDetailsById = async (req, res) => {
 
 const getVisitHistory = async (req, res) => {
   try {
-    return await userService.getVisitHistoryService(res, req.body);
+    return await userService.getVisitHistoryService(res, req.body, req.user);
   } catch (error) {
     console.error('Error in getVisitHistory:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -502,7 +513,7 @@ const getVisitHistory = async (req, res) => {
 
 const getVisitDetailsById = async (req, res) => {
   try {
-    return await userService.getVisitDetailsByIdService(res, req.body);
+    return await userService.getVisitDetailsByIdService(res, req.body, req.user);
   } catch (error) {
     console.error('Error in getVisitDetailsById:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -511,7 +522,7 @@ const getVisitDetailsById = async (req, res) => {
 
 const storeCustomerVisit = async (req, res) => {
   try {
-    return await userService.storeCustomerVisitService(res, req.body);
+    return await userService.storeCustomerVisitService(res, req.body, req.user);
   } catch (error) {
     console.error('Error in storeCustomerVisit:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

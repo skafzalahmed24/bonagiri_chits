@@ -96,6 +96,10 @@ exports.getOutstandingReport = async (req, res) => {
       agent_id: req.body.agent_id,
       area_id: req.body.area_id,
       route_id: req.body.route_id,
+      group_status: req.body.group_status,
+      subscriber_type: req.body.subscriber_type,
+      collection_agent_id: req.body.collection_agent_id,
+      business_agent_id: req.body.business_agent_id,
       company_id: await resolveCompanyIdForAuth(req.user),
     };
     const data = await reportService.getOutstandingReport(params);
@@ -270,6 +274,24 @@ exports.getMemberOptions = async (req, res) => {
   try {
     const data = await reportService.getMemberOptions({ company_id: await resolveCompanyIdForAuth(req.user) });
     res.json({ status: true, message: 'Members retrieved', data });
+  } catch (error) {
+    res.json({ status: false, message: error.message });
+  }
+};
+
+exports.getAreaOptions = async (req, res) => {
+  try {
+    const data = await reportService.getAreaOptions({ company_id: await resolveCompanyIdForAuth(req.user) });
+    res.json({ status: true, message: 'Areas retrieved', data });
+  } catch (error) {
+    res.json({ status: false, message: error.message });
+  }
+};
+
+exports.getRouteOptions = async (req, res) => {
+  try {
+    const data = await reportService.getRouteOptions({ company_id: await resolveCompanyIdForAuth(req.user) });
+    res.json({ status: true, message: 'Routes retrieved', data });
   } catch (error) {
     res.json({ status: false, message: error.message });
   }

@@ -262,7 +262,27 @@ async function applyWinnerSchemeAdjustments(auctionData, schemeConfig, winnerEnr
   }
 }
 
-async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, groupId, transaction = null) {
+/**
+ * How much of an auction's dividend still has to be added to an enrollment's running
+ * `dividend_credit_balance`. First recording (previousDividend null/undefined): the whole per-member
+ * share. Re-saving an existing auction: only the change since the dividend that was applied before,
+ * so saving the same auction again adds 0 (SEC-7).
+ */
+function dividendBalanceIncrement({ rawDividend, divisor, previousDividend = null }) {
+  const div = divisor > 0 ? divisor : 1;
+  const now = parseFloat(rawDividend) || 0;
+  if (previousDividend === null || previousDividend === undefined) {
+    return now / div;
+  }
+  const before = parseFloat(previousDividend) || 0;
+  return (now - before) / div;
+}
+
+/**
+ * `previousDividend` (option): the dividend already stored on the auction before this save. Pass it
+ * when re-saving an existing auction; leave it out for a brand-new auction.
+ */
+async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, groupId, transaction = null, { previousDividend = null } = {}) {
   const { Enrollment, ChitsGroup, ChitsInstallment } = require('../models');
   const options = transaction ? { transaction } : {};
 
@@ -299,9 +319,13 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
   // Apply dividend to ALL members (including winner)
   for (const enrollment of allEnrollments) {
     // Track cumulative dividends for accounting/reporting
-    const currentBalance = parseFloat(enrollment.dividend_credit_balance) || 0;
-    const newBalance = currentBalance + (isNaN(dividendPerMember) ? 0 : dividendPerMember);
-    await enrollment.update({ dividend_credit_balance: newBalance }, options);
+    // Only add what is new: a re-save of the same auction must not add the dividend again (SEC-7).
+    const balanceStep = dividendBalanceIncrement({ rawDividend, divisor, previousDividend });
+    if (balanceStep !== 0 && !isNaN(balanceStep)) {
+      const currentBalance = parseFloat(enrollment.dividend_credit_balance) || 0;
+      const newBalance = Math.max(0, currentBalance + balanceStep);
+      await enrollment.update({ dividend_credit_balance: newBalance }, options);
+    }
 
     // Use THIS auction's dividend only — not the cumulative balance
     // (dividend_credit_balance is for accounting; installment uses single-month dividend)
@@ -320,7 +344,41 @@ async function applyOpenAuctionAdjustments(auctionData, winnerEnrollmentId, grou
   }
 }
 
-function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, commissionPct, memberCount, gstPercentage = 18 }) {
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+/**
+ * Bid rules for an open-auction group (shared by auction store-or-update and record-winner):
+ * 0 < bid <= chit amount, and bid >= chit x (1 - max ceiling %). Max ceiling 0 / empty = no ceiling.
+ * Returns { ok, message, minBid }.
+ */
+function validateOpenAuctionBid({ bidAmount, chitAmount, maxCeilingPct, checkCeiling = true }) {
+  const bid = Number(bidAmount);
+  const chit = parseFloat(chitAmount) || 0;
+  if (bidAmount === null || bidAmount === undefined || bidAmount === '' || !Number.isFinite(bid) || bid <= 0) {
+    return { ok: false, message: 'Bid amount must be greater than 0', minBid: null };
+  }
+  if (chit > 0 && bid > chit + 0.005) {
+    return { ok: false, message: `Bid amount cannot be more than the chit amount (₹${round2(chit)})`, minBid: null };
+  }
+  const ceiling = parseFloat(maxCeilingPct) || 0;
+  if (checkCeiling && ceiling > 0 && chit > 0) {
+    const minBid = round2(chit * (1 - ceiling / 100));
+    if (bid < minBid - 0.005) {
+      return { ok: false, message: `Bid amount cannot be lower than the maximum discount floor (₹${minBid})`, minBid };
+    }
+    return { ok: true, message: null, minBid };
+  }
+  return { ok: true, message: null, minBid: null };
+}
+
+/**
+ * capToDiscount (default true): when commission + GST would be more than the auction discount
+ * (chit - bid), they are reduced so that commission + GST = discount (GST keeps its % of the
+ * commission) and the dividend is 0. `commissionCapped` / `requestedCommission` / `requestedGst`
+ * report what happened. Pass false for the last instalment (recorded at the full chit amount,
+ * no discount by design).
+ */
+function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, commissionPct, memberCount, gstPercentage = 0, capToDiscount = true }) {
   const cAmt = parseFloat(chitAmount) || 0;
   const instCount = parseInt(installments, 10) || 1;
   const bidAmt = parseFloat(bidAmount) || 0;
@@ -328,13 +386,23 @@ function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, c
   const mCount = parseInt(memberCount, 10) || instCount || 1;
 
   const subscription = cAmt / (instCount > 0 ? instCount : 1);
-  const commission = cAmt * (commPct / 100);
+  let commission = cAmt * (commPct / 100);
   const gstPct = (gstPercentage !== undefined && gstPercentage !== null && !isNaN(parseFloat(gstPercentage)))
     ? parseFloat(gstPercentage)
-    : 18;
-  const gst = commission * (gstPct / 100);
+    : 0;
+  let gst = commission * (gstPct / 100);
   const bidDiscount = cAmt - bidAmt;
-  const totalDividend = Math.max(0, bidDiscount - commission - gst);
+  const requestedCommission = commission;
+  const requestedGst = gst;
+  let commissionCapped = false;
+  let totalDividend = Math.max(0, bidDiscount - commission - gst);
+  if (capToDiscount && commission + gst > Math.max(0, bidDiscount) + 0.005) {
+    const room = Math.max(0, bidDiscount);
+    commission = round2(room / (1 + gstPct / 100));
+    gst = round2(room - commission);
+    totalDividend = 0;
+    commissionCapped = true;
+  }
   const divisor = mCount > 0 ? mCount : 1; // all N members (Act standard)
   const dividendPerMember = totalDividend / divisor;
   const netPayable = Math.max(0, subscription - dividendPerMember);
@@ -349,16 +417,51 @@ function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, c
     dividendPerMember: isNaN(dividendPerMember) ? 0 : dividendPerMember,
     netPayable: isNaN(netPayable) ? subscription : netPayable,
     winnerReceives: isNaN(winnerReceives) ? 0 : winnerReceives,
-    gstPct
+    gstPct,
+    commissionCapped,
+    requestedCommission: isNaN(requestedCommission) ? 0 : requestedCommission,
+    requestedGst: isNaN(requestedGst) ? 0 : requestedGst
   };
 }
 
+const isBlankSent = (v) => v === undefined || v === null || v === '';
+
+// Numeric compare rounded to 2 dp. Blank sent value = unchanged; non-numeric sent value = changed.
+// Stored DECIMAL values come back from Sequelize as strings ("16000.00"), so String() compares are wrong.
+function numberFieldChanged(sent, stored) {
+  if (isBlankSent(sent)) return false;
+  const a = Number(sent);
+  if (!Number.isFinite(a)) return true;
+  const b = Number(stored);
+  if (!Number.isFinite(b)) return true;
+  const r = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+  return r(a) !== r(b);
+}
+
+// Ids are compared by exact string identity (never Number()/parseInt(), L2). Blank sent = unchanged.
+function idFieldChanged(sent, stored) {
+  if (isBlankSent(sent)) return false;
+  return String(sent).trim() !== String(stored === null || stored === undefined ? '' : stored).trim();
+}
+
+// True when an auction edit changes the bidder, ticket or bid amount (the fields a prize payment is tied to).
+function auctionPrizeKeyFieldsChanged(input, stored) {
+  return idFieldChanged(input.bidder_id, stored.bidder_id) ||
+    numberFieldChanged(input.ticket_number, stored.ticket_number) ||
+    numberFieldChanged(input.bid_amount, stored.bid_amount);
+}
+
 module.exports = {
+  numberFieldChanged,
+  idFieldChanged,
+  auctionPrizeKeyFieldsChanged,
   getSchemeWinningAmount,
   getSchemeOriginalAmount,
   applyWinnerSchemeAdjustments,
   applyOpenAuctionAdjustments,
   calculateOpenAuctionFinancials,
+  validateOpenAuctionBid,
+  dividendBalanceIncrement,
   openCompanyMonth,
   getGroupCompanySeats,
   extractCompanySeats,

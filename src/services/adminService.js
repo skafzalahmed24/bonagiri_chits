@@ -5,12 +5,14 @@ const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
 const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, EnrollmentJointHolder, SelfTransfer, BorrowRepay, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
-const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials, nextOpenAuctionNumber, isFinalOpenMonth, dividendTargetMonth, lastInstalmentDate, getGroupCompanySeats, extractCompanySeats } = require('../utils/schemeHelpers');
+const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials, validateOpenAuctionBid, nextOpenAuctionNumber, isFinalOpenMonth, dividendTargetMonth, lastInstalmentDate, getGroupCompanySeats, extractCompanySeats, auctionPrizeKeyFieldsChanged } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 const SystemSettingsService = require('./systemSettingsService');
 const twilioService = require('./twilioService');
 const fcmService = require('./fcmService');
 const { calculateMemberRating } = require('../utils/ratingHelper');
+const { MoneyRuleError, assertAdmin, assertReason, actorName, enforceLock, todayIST } = require('../utils/moneyControls');
+const chargeService = require('./chargeService');
 const { deleteUploadedFile } = require('../utils/fileHelper');
 const { dailyPenaltyFor, penaltyPercentFor, toDateStr, daysBetween, addDays } = require('../utils/penalty');
 const { memberTicketsInGroup, ticketWin, holderMembersOf } = require('../utils/jointHolders');
@@ -717,10 +719,11 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
 
       ...(company_id && company_id !== '' ? { company_id } : {}),
       ...(introduced_as && introduced_as !== '' ? { introduced_as: { [Op.contains]: [introduced_as] } } : {}),
+      // E2E-045 (2026-10-14): search is case-insensitive ("three" finds "Three").
       [Op.or]: [
-        { name: { [Op.like]: `%${search || ''}%` } },
-        { member_id: { [Op.like]: `%${search || ''}%` } },
-        { mobile_number: { [Op.like]: `%${search || ''}%` } }
+        { name: { [Op.iLike]: `%${search || ''}%` } },
+        { member_id: { [Op.iLike]: `%${search || ''}%` } },
+        { mobile_number: { [Op.iLike]: `%${search || ''}%` } }
       ]
     };
 
@@ -1122,9 +1125,37 @@ const createInstallmentsForGroup = async (group_id, options = {}) => {
   }
 };
 
+// E2E-050 (2026-10-14): ids from a URL can be anything ("not-a-uuid", "99999999999999999999").
+// Postgres throws on a wrong-format UUID / integer, which ended as a 500. Checked as text only:
+// ids are never coerced with Number()/parseInt() (L2).
+const UUID_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const INT_ID_FORMAT = /^[1-9]\d{0,9}$/; // INTEGER column: positive, at most 10 digits (range checked below)
+const isMalformedId = (id, kind) => {
+  if (id === undefined || id === null) return true;
+  const text = String(id).trim();
+  if (kind === 'uuid') return !UUID_FORMAT.test(text);
+  return !INT_ID_FORMAT.test(text) || (text.length === 10 && text > '2147483647');
+};
+
 const storeOrUpdateChitsGroupService = async (res, data = {}) => {
   try {
     const { id, chits_group_status, ...chitsGroupData } = data; // ignore client status
+
+    // The caller's company comes from the token (set by the controller); fail closed without it.
+    const callerCompanyId = chitsGroupData.company_id;
+    if (!callerCompanyId) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Company could not be determined for this account');
+    }
+
+    // A fixed-scheme template newly attached to the group must belong to the same company
+    // (an unchanged template on an existing group is not re-checked, see below).
+    const templateBelongsToCaller = async () => {
+      const template = await FixedSchemeChitsConfiguration.findOne({
+        where: { id: chitsGroupData.scheme_configuration_id, company_id: callerCompanyId },
+        attributes: ['id']
+      });
+      return !!template;
+    };
 
     if (chitsGroupData.commencement_date !== undefined) {
       chitsGroupData.chit_start_date = chitsGroupData.commencement_date;
@@ -1140,8 +1171,15 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
     );
 
     if (id) {
-      const chitsGroup = await ChitsGroup.findByPk(id);
+      // Scoped by the caller's company: a group of another company is "not found" (404, not 403).
+      const chitsGroup = await ChitsGroup.findOne({ where: { id, company_id: callerCompanyId } });
       if (!chitsGroup) return errorResponse(res, statusCodes.NOT_FOUND, 'Chits group not found');
+      chitsGroupData.company_id = chitsGroup.company_id; // an update never moves a group to another company
+      if (chitsGroupData.scheme_configuration_id &&
+          String(chitsGroupData.scheme_configuration_id) !== String(chitsGroup.scheme_configuration_id) &&
+          !(await templateBelongsToCaller())) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Chit configuration not found');
+      }
       const derivedEnd = deriveEndDate(chitsGroup);
       if (derivedEnd) chitsGroupData.chit_end_date = derivedEnd;
 
@@ -1194,6 +1232,9 @@ const storeOrUpdateChitsGroupService = async (res, data = {}) => {
       groupJson.company_seats = await getGroupCompanySeats(chitsGroup.id, chitsGroup);
       return successResponse(res, statusCodes.OK, 'Chits group updated successfully', groupJson);
     } else {
+      if (chitsGroupData.scheme_configuration_id && !(await templateBelongsToCaller())) {
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Chit configuration not found');
+      }
       console.log('Creating new ChitsGroup with data:', chitsGroupData);
       const derivedEnd = deriveEndDate();
       if (derivedEnd) chitsGroupData.chit_end_date = derivedEnd;
@@ -1844,6 +1885,8 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
         });
 
         await createInstallmentsForEnrollment(loadedEnrollment, group, { transaction: t });
+        // The enrollment fee becomes a due on the ticket (not for company seats).
+        await chargeService.addEnrollmentFee({ enrollment: newEnrollment, group, subscriber, transaction: t });
 
         return { newEnrollment, group };
       });
@@ -1929,7 +1972,8 @@ const getAllEnrollmentDetailsService = async (res, company_id, min, max, search,
         { model: Area, as: 'area', attributes: ['area_name'] },
         { model: City, as: 'nominee_city', attributes: ['city_name'] }
       ],
-      order: [['createdAt', 'DESC']]
+      // id tie-breaker: rows created in the same instant must not shuffle between pages.
+      order: [['createdAt', 'DESC'], ['id', 'DESC']]
     });
 
     // Compute stats for current filter
@@ -2096,19 +2140,33 @@ const deleteUpcomingChitService = async (res, id, companyId) => {
   }
 };
 
-const updateFavoritesService = async (res, user_id, type, is_favorites_input) => {
+// E2E-041 (2026-10-14): the account whose favorites change is taken from the TOKEN, never from
+// the body. Before, `user_id` + `type` from the body chose the row (any token could change any
+// company's or member's favorites) and a staff token always got "User not found".
+// `user_id` and `type` are still accepted by the validator for backward compatibility (mobile app)
+// but are ignored for identity.
+const updateFavoritesService = async (res, userToken, is_favorites_input) => {
   try {
-    let user;
-    const typeNum = Number(type);
+    let user = null;
+    const role = userToken && userToken.role;
+    const tokenId = userToken && userToken.id;
+    if (!tokenId) return errorResponse(res, statusCodes.FORBIDDEN, 'Your account could not be identified. Please log in again.');
 
-    if (typeNum === 1) {
-      user = await Company.findOne({ where: { id: user_id, is_deleted_status: 0 } });
-    } else if (typeNum === 2) {
-      if (!isNaN(user_id) && !user_id.toString().includes('-')) {
-        user = await Member.findOne({ where: { id: parseInt(user_id, 10), is_deleted_status: 0 } });
-      } else {
-        return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid ID format for Member type. Member IDs are Integers.');
+    if (role === 'company') {
+      user = await Company.findOne({ where: { id: tokenId, is_deleted_status: 0 } });
+    } else if (role === 'member') {
+      user = await Member.findOne({ where: { id: tokenId, is_deleted_status: 0 } });
+    } else if (role === 'staff') {
+      // Staff favorites need a `staff_users.is_favorites` column (schema change, db-architect).
+      // Until it exists, answer with a clear message instead of "User not found".
+      if (!StaffUser.rawAttributes || !StaffUser.rawAttributes.is_favorites) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Favorites are not available for staff accounts yet.');
       }
+      const staffCompanyId = await resolveCompanyIdForAuth(userToken);
+      if (!staffCompanyId) return errorResponse(res, statusCodes.FORBIDDEN, 'Company could not be determined for this account');
+      user = await StaffUser.findOne({ where: { id: tokenId, company_id: staffCompanyId, is_deleted_status: 0 } });
+    } else {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Favorites are not available for this account.');
     }
 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
@@ -2369,11 +2427,45 @@ const deleteSuitFileInformationService = async (res, id, companyId) => {
   }
 };
 
+/** Text for the `warning` field when commission (+GST) was cut down to the auction discount, else null. */
+const buildCommissionCapWarning = (financials) => {
+  if (!financials || !financials.commissionCapped) return null;
+  const fmt = (n) => (Math.round((Number(n) + Number.EPSILON) * 100) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const requested = (financials.requestedCommission || 0) + (financials.requestedGst || 0);
+  const discount = Math.max(0, financials.bidDiscount || 0);
+  return `Commission and GST (Rs ${fmt(requested)}) were more than the auction discount (Rs ${fmt(discount)}), so they were capped at Rs ${fmt(discount)}: commission Rs ${fmt(financials.commission)} and GST Rs ${fmt(financials.gst)}. No dividend is paid for this auction.`;
+};
+
+/**
+ * Plain-language message for a unique-constraint violation on `auctions`, or null if the error is
+ * something else. Postgres reports the constraint name on `error.parent.constraint`; Sequelize's
+ * `errors[0].path` holds the COLUMN name, so the old `path === '<constraint>'` check never matched
+ * and the second of two simultaneous creates ended in a 500 (E2E-021).
+ */
+const auctionUniqueConflictMessage = (error) => {
+  if (!error || error.name !== 'SequelizeUniqueConstraintError') return null;
+  const constraint = (error.parent && error.parent.constraint) || (error.original && error.original.constraint) || '';
+  const paths = (error.errors || []).map((e) => e && e.path);
+  if (constraint === 'auctions_group_bidder_unique' || paths.includes('auctions_group_bidder_unique') ||
+      (paths.includes('group_id') && paths.includes('bidder_id'))) {
+    return 'This member has already won an auction in this group. Refresh the list to see it.';
+  }
+  if (constraint === 'auctions_group_auction_number_unique' || paths.includes('auctions_group_auction_number_unique') ||
+      (paths.includes('group_id') && paths.includes('auction_number'))) {
+    return 'An auction is already recorded for this month in this group. Refresh the list to see it.';
+  }
+  return null;
+};
+
 const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
   if (!userToken || userToken.role !== 'company') {
     return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can store or update auctions');
   }
-  const safeCompanyId = userToken.id;
+  // The company always comes from the token, never from the body; fail closed without it (L13).
+  const safeCompanyId = await resolveCompanyIdForAuth(userToken);
+  if (!safeCompanyId) {
+    return errorResponse(res, statusCodes.FORBIDDEN, 'Company could not be determined for this account');
+  }
   const transaction = await sequelize.transaction();
   try {
     const { id, ...inputData } = data;
@@ -2388,15 +2480,40 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
     delete inputData.dividend;
     delete inputData.net_payable;
 
-    let auctionData = { ...inputData };
+    let auctionData = { ...inputData, company_id: safeCompanyId };
     let auctionResult = null;
     let isNew = false;
+    let capWarning = null;
 
-    const targetGroupId = auctionData.group_id || (id ? (await Auction.findByPk(id)).group_id : null);
-    const groupForMath = targetGroupId ? await ChitsGroup.findOne({
+    // Edit: the auction must belong to the caller's company (through its chit group; old rows may
+    // have no company_id of their own). Out of company = not found (404, not 403).
+    let existingAuction = null;
+    if (id) {
+      existingAuction = await Auction.findOne({ where: { id }, transaction });
+      const ownGroup = existingAuction
+        ? await ChitsGroup.findOne({ where: { id: existingAuction.group_id, company_id: safeCompanyId }, attributes: ['id'], transaction })
+        : null;
+      if (!existingAuction || !ownGroup) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
+      }
+    }
+
+    // The group an auction is saved in must belong to the caller's company, otherwise nothing is
+    // written (before: a missing group only skipped the maths and the save went through).
+    const targetGroupId = auctionData.group_id || (existingAuction ? existingAuction.group_id : null);
+    if (!targetGroupId) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'group_id is required');
+    }
+    const groupForMath = await ChitsGroup.findOne({
       where: { id: targetGroupId, company_id: safeCompanyId },
       transaction
-    }) : null;
+    });
+    if (!groupForMath) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Chit group not found');
+    }
 
     const companySeats = await getGroupCompanySeats(targetGroupId, groupForMath, transaction);
 
@@ -2415,16 +2532,85 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       auctionData.dividend_installment_no = dividendTargetMonth(openAuctionNumber, groupForMath, companySeats);
     }
 
-    if (groupForMath && !groupForMath.scheme_configuration_id && auctionData.bid_amount) {
+    // Bidder / ticket must be an enrolled ticket of this (company's) group when they are new or changed.
+    {
+      const bidderSent = auctionData.bidder_id !== undefined && auctionData.bidder_id !== null;
+      const ticketSent = auctionData.ticket_number !== undefined && auctionData.ticket_number !== null;
+      const bidderChanged = !existingAuction ||
+        (bidderSent && String(auctionData.bidder_id) !== String(existingAuction.bidder_id)) ||
+        (ticketSent && String(auctionData.ticket_number) !== String(existingAuction.ticket_number)) ||
+        String(groupForMath.id) !== String(existingAuction.group_id);
+      const bidderToCheck = bidderSent ? auctionData.bidder_id : (existingAuction ? existingAuction.bidder_id : null);
+      if (bidderChanged && bidderToCheck !== null && bidderToCheck !== undefined) {
+        const bidderTicketsInGroup = await memberTicketsInGroup(groupForMath.id, bidderToCheck, { transaction });
+        if (!bidderTicketsInGroup.length) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Bidder is not enrolled in this group');
+        }
+        if (ticketSent && !bidderTicketsInGroup.some((t) => Number(t.group_position_number) === Number(auctionData.ticket_number))) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Ticket number does not belong to this bidder in this group');
+        }
+      }
+    }
+
+    // Open-auction bid rules, same function as record-winner: 0 < bid <= chit amount and bid >= the
+    // group's Max Ceiling floor (ceiling 0 / empty = no ceiling). The ceiling floor is checked for a
+    // new auction or when the bid changes, so an old auction can still be edited for other fields.
+    const bidSent = auctionData.bid_amount !== undefined && auctionData.bid_amount !== null && auctionData.bid_amount !== '';
+    const effectiveAuctionNumber = existingAuction ? existingAuction.auction_number : openAuctionNumber;
+    const isFinalMonth = isFinalOpenMonth(effectiveAuctionNumber, groupForMath);
+    if (!groupForMath.scheme_configuration_id) {
+      if (!bidSent && !existingAuction) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'bid_amount is required for Open Auction groups');
+      }
+      if (bidSent) {
+        const bidChanged = !existingAuction || Number(auctionData.bid_amount) !== Number(existingAuction.bid_amount);
+        const bidCheck = validateOpenAuctionBid({
+          bidAmount: auctionData.bid_amount,
+          chitAmount: groupForMath.chit_amount,
+          maxCeilingPct: groupForMath.max_ceiling_in,
+          checkCeiling: bidChanged && !isFinalMonth
+        });
+        if (!bidCheck.ok) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, bidCheck.message);
+        }
+      }
+    }
+
+    // B2: a prize with payments cannot change bidder / ticket / bid. Compared as numbers (2 dp) on what the
+    // client sent, BEFORE the pricing block below overwrites auctionData fields. Blank = unchanged.
+    if (id && existingAuction && auctionPrizeKeyFieldsChanged(auctionData, existingAuction)) {
+      const { PrizePayment, CustomerPayment } = require('../models');
+      const p1 = await PrizePayment.count({ where: { auction_id: id, is_deleted: 0 }, transaction });
+      const p2 = await CustomerPayment.count({ where: { prize_auction_id: id, payment_mode: 7, payment_status: 1 }, transaction });
+      if (p1 > 0 || p2 > 0) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'This prize has payments; delete them first.');
+      }
+    }
+
+    if (groupForMath && !groupForMath.scheme_configuration_id && bidSent) {
       const bid_amount = parseFloat(auctionData.bid_amount);
       const chitAmount = parseFloat(groupForMath.chit_amount) || 0;
       const installments = parseInt(groupForMath.no_of_installments, 10) || 1;
       const companyCommissionPct = parseFloat(groupForMath.company_commission) || 0;
 
       const totalEnrollments = await Enrollment.count({ where: { group_id: targetGroupId, delete_status: 0 }, transaction });
-      const gstPercentage = auctionData.gst_number_percentage !== undefined && auctionData.gst_number_percentage !== null && auctionData.gst_number_percentage !== ''
-        ? parseFloat(auctionData.gst_number_percentage)
-        : (groupForMath.gst_percentage !== undefined && groupForMath.gst_percentage !== null ? parseFloat(groupForMath.gst_percentage) : 18);
+      // GST omitted: new auction -> 0; editing an existing auction -> keep its stored GST
+      // (NULL -> 18, what legacy rows were priced with). A sent value (incl. 0) is always honoured.
+      // Owner decision 2026-10-13. chits_group has no gst_percentage column.
+      let gstPercentage;
+      if (auctionData.gst_number_percentage !== undefined && auctionData.gst_number_percentage !== null && auctionData.gst_number_percentage !== '') {
+        gstPercentage = parseFloat(auctionData.gst_number_percentage);
+      } else if (id) {
+        const storedGst = existingAuction ? existingAuction.gst_number_percentage : null;
+        gstPercentage = (storedGst === null || storedGst === undefined || storedGst === '') ? 18 : parseFloat(storedGst);
+      } else {
+        gstPercentage = 0;
+      }
 
       const financials = calculateOpenAuctionFinancials({
         chitAmount,
@@ -2432,7 +2618,8 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         bidAmount: bid_amount,
         commissionPct: companyCommissionPct,
         memberCount: totalEnrollments || installments,
-        gstPercentage
+        gstPercentage,
+        capToDiscount: !isFinalMonth // the last instalment is recorded at the full chit amount: no discount by design
       });
 
       auctionData.gst_number_percentage = financials.gstPct;
@@ -2444,30 +2631,15 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       auctionData.dividend = financials.totalDividend;
       auctionData.bid_payable = financials.winnerReceives;
       auctionData.net_payable = financials.netPayable;
+      capWarning = buildCommissionCapWarning(financials);
     }
 
-    if (id) {
-      const auction = await Auction.findByPk(id, { transaction });
-      if (!auction) {
-        await transaction.rollback();
-        return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
-      }
-      
-      if (auctionData.bidder_id !== undefined || auctionData.ticket_number !== undefined || auctionData.bid_amount !== undefined) {
-        const hasChanges = (auctionData.bidder_id !== undefined && String(auctionData.bidder_id) !== String(auction.bidder_id)) ||
-                           (auctionData.ticket_number !== undefined && String(auctionData.ticket_number) !== String(auction.ticket_number)) ||
-                           (auctionData.bid_amount !== undefined && String(auctionData.bid_amount) !== String(auction.bid_amount));
-        if (hasChanges) {
-          const { PrizePayment, CustomerPayment } = require('../models');
-          const p1 = await PrizePayment.count({ where: { auction_id: id, is_deleted: 0 }, transaction });
-          const p2 = await CustomerPayment.count({ where: { prize_auction_id: id, payment_mode: 7, payment_status: 1 }, transaction });
-          if (p1 > 0 || p2 > 0) {
-            await transaction.rollback();
-            return errorResponse(res, statusCodes.BAD_REQUEST, 'This prize has payments; delete them first.');
-          }
-        }
-      }
+    // Dividend already applied to the members' running balance by earlier saves of this auction (SEC-7).
+    const previousDividend = existingAuction ? (parseFloat(existingAuction.dividend) || 0) : null;
 
+    if (id) {
+      const auction = existingAuction;
+      
       await auction.update(auctionData, { transaction });
       auctionResult = auction;
     } else {
@@ -2510,8 +2682,12 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         }
 
         if (auctionData.enrollment_id) {
-          const winEnrollment = await Enrollment.findByPk(auctionData.enrollment_id, { transaction });
-          if (winEnrollment && companySeats.includes(Number(winEnrollment.group_position_number))) {
+          const winEnrollment = await Enrollment.findOne({ where: { id: auctionData.enrollment_id, group_id: groupForMath.id, company_id: safeCompanyId }, transaction });
+          if (!winEnrollment) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
+          }
+          if (companySeats.includes(Number(winEnrollment.group_position_number))) {
             await transaction.rollback();
             return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
           }
@@ -2526,14 +2702,14 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
     if (auctionData.next_auction_date && auctionData.group_id) {
       await ChitsGroup.update(
         { auction_date: auctionData.next_auction_date },
-        { where: { id: auctionData.group_id }, transaction }
+        { where: { id: auctionData.group_id, company_id: safeCompanyId }, transaction }
       );
     }
 
     const resolvedGroupId = auctionData.group_id || (auctionResult && auctionResult.group_id);
     const resolvedBidderId = auctionData.bidder_id || (auctionResult && auctionResult.bidder_id);
     if (resolvedGroupId) {
-      const group = await ChitsGroup.findByPk(resolvedGroupId, { transaction });
+      const group = await ChitsGroup.findOne({ where: { id: resolvedGroupId, company_id: safeCompanyId }, transaction });
       const schemeConfig = group?.scheme_configuration_id
         ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
         : null;
@@ -2550,7 +2726,7 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
           await applyWinnerSchemeAdjustments(effectiveAuctionData, schemeConfig, winnerEnrollment.id, transaction);
         }
       } else {
-        await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment ? winnerEnrollment.id : null, resolvedGroupId, transaction);
+        await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment ? winnerEnrollment.id : null, resolvedGroupId, transaction, { previousDividend });
       }
     }
 
@@ -2560,19 +2736,26 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
     }
 
     await transaction.commit();
-    return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, `Auction ${isNew ? 'created' : 'updated'} successfully`, auctionResult);
+    const savedMessage = `Auction ${isNew ? 'created' : 'updated'} successfully`;
+    if (capWarning) {
+      // `warning` is an extra field: callers that ignore it behave as before.
+      const savedJson = auctionResult && auctionResult.toJSON ? auctionResult.toJSON() : auctionResult;
+      return res.status(isNew ? statusCodes.CREATED : statusCodes.OK).json({
+        status: 1,
+        message: savedMessage,
+        data: { ...savedJson, warning: capWarning },
+        warning: capWarning
+      });
+    }
+    return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, savedMessage, auctionResult);
   } catch (error) {
     await transaction.rollback();
 
-    // B6: Catch DB unique constraint errors
-    if (error.name === 'SequelizeUniqueConstraintError') {
-      const errItem = error.errors && error.errors[0];
-      if (errItem && errItem.path === 'auctions_group_bidder_unique') {
-        return errorResponse(res, statusCodes.BAD_REQUEST, 'This member has already won an auction in this group');
-      }
-      if (errItem && errItem.path === 'auctions_group_auction_number_unique') {
-        return errorResponse(res, statusCodes.BAD_REQUEST, 'This auction number has already been recorded for this group');
-      }
+    // B6 / E2E-021: a DB unique-constraint hit (e.g. a double-click sends two creates at once and
+    // the second one loses the race) is a clean 409 with a plain message, never a 500.
+    const conflictMessage = auctionUniqueConflictMessage(error);
+    if (conflictMessage) {
+      return errorResponse(res, statusCodes.CONFLICT, conflictMessage);
     }
 
     console.error('Error in storeOrUpdateAuctionService:', error);
@@ -2584,10 +2767,14 @@ const recordWinnerService = async (res, reqBody, userToken) => {
   if (!userToken || userToken.role !== 'company') {
     return errorResponse(res, statusCodes.FORBIDDEN, 'Only company admin accounts can record auction winners');
   }
-  const safeCompanyId = userToken.id;
+  const safeCompanyId = await resolveCompanyIdForAuth(userToken);
+  if (!safeCompanyId) {
+    return errorResponse(res, statusCodes.FORBIDDEN, 'Company could not be determined for this account');
+  }
   const transaction = await sequelize.transaction();
   try {
     const { company_id, group_id, bidder_id, auction_date, pb_bo_proxy, gst_number_percentage, due_date, next_auction_date } = reqBody;
+    let capWarning = null;
 
     const effectiveAuctionDate = auction_date || new Date().toISOString().split('T')[0];
     if (due_date && new Date(due_date) < new Date(effectiveAuctionDate)) {
@@ -2685,6 +2872,16 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       next_auction_date
     };
 
+    // GST % sent by the caller is honoured (0 and decimals included); omitted -> 0 downstream.
+    if (gst_number_percentage !== undefined && gst_number_percentage !== null && gst_number_percentage !== '') {
+      const gstSent = Number(gst_number_percentage);
+      if (!Number.isFinite(gstSent) || gstSent < 0 || gstSent > 100) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'gst_number_percentage must be a number between 0 and 100');
+      }
+      auctionData.gst_number_percentage = gstSent;
+    }
+
     if (schemeConfig) {
       const derivedWinningAmount = getSchemeWinningAmount(schemeConfig, nextAuctionNumber);
       if (derivedWinningAmount === null) {
@@ -2697,17 +2894,21 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       // The last instalment has no auction discount: its winner is recorded at the full chit amount.
       const isFinalMonth = isFinalOpenMonth(nextAuctionNumber, group);
       const bid_amount = isFinalMonth ? chitAmount : parseFloat(reqBody.bid_amount);
-      if (isNaN(bid_amount) || bid_amount <= 0) {
+      if (!isFinalMonth && (reqBody.bid_amount === undefined || reqBody.bid_amount === null || reqBody.bid_amount === '')) {
         await transaction.rollback();
         return errorResponse(res, statusCodes.BAD_REQUEST, 'bid_amount is required for Open Auction groups');
       }
-      if (!isFinalMonth) {
-        const maxDiscountPct = parseFloat(group.max_ceiling_in) || 0;
-        const minBid = chitAmount * (1 - maxDiscountPct / 100);
-        if (bid_amount < minBid) {
-          await transaction.rollback();
-          return errorResponse(res, statusCodes.BAD_REQUEST, `Bid amount cannot be lower than the maximum discount floor (₹${minBid})`);
-        }
+      // Same function as auction store-or-update: 0 < bid <= chit amount, bid >= Max Ceiling floor
+      // (ceiling 0 / empty = no ceiling).
+      const bidCheck = validateOpenAuctionBid({
+        bidAmount: bid_amount,
+        chitAmount,
+        maxCeilingPct: group.max_ceiling_in,
+        checkCeiling: !isFinalMonth
+      });
+      if (!bidCheck.ok) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, bidCheck.message);
       }
       auctionData.bid_amount = bid_amount;
       auctionData.dividend_installment_no = dividendTargetMonth(nextAuctionNumber, group, companySeats);
@@ -2717,7 +2918,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       const totalEnrollments = await Enrollment.count({ where: { group_id, delete_status: 0 }, transaction });
       const gstPercentage = auctionData.gst_number_percentage !== undefined && auctionData.gst_number_percentage !== null && auctionData.gst_number_percentage !== ''
         ? parseFloat(auctionData.gst_number_percentage)
-        : (group.gst_percentage !== undefined && group.gst_percentage !== null ? parseFloat(group.gst_percentage) : 18);
+        : 0; // GST omitted -> 0 (owner decision 2026-10-13); chits_group has no gst_percentage column
 
       const financials = calculateOpenAuctionFinancials({
         chitAmount,
@@ -2725,7 +2926,8 @@ const recordWinnerService = async (res, reqBody, userToken) => {
         bidAmount: bid_amount,
         commissionPct: companyCommissionPct,
         memberCount: totalEnrollments || installments,
-        gstPercentage
+        gstPercentage,
+        capToDiscount: !isFinalMonth
       });
 
       auctionData.gst_number_percentage = financials.gstPct;
@@ -2737,6 +2939,7 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       auctionData.dividend = financials.totalDividend;
       auctionData.bid_payable = financials.winnerReceives;
       auctionData.net_payable = financials.netPayable;
+      capWarning = buildCommissionCapWarning(financials);
     }
 
     // 6. Create auction row and apply adjustments
@@ -2793,19 +2996,23 @@ const recordWinnerService = async (res, reqBody, userToken) => {
       console.error('Error sending auction pushes:', pushErr);
     }
 
+    if (capWarning) {
+      return res.status(statusCodes.CREATED).json({
+        status: 1,
+        message: 'Auction recorded successfully',
+        data: { ...newAuction.toJSON(), auction_number: nextAuctionNumber, warning: capWarning },
+        warning: capWarning
+      });
+    }
     return successResponse(res, statusCodes.CREATED, 'Auction recorded successfully', { ...newAuction.toJSON(), auction_number: nextAuctionNumber });
   } catch (error) {
     await transaction.rollback();
 
-    // B6: Catch DB unique constraint errors
-    if (error.name === 'SequelizeUniqueConstraintError') {
-      const errItem = error.errors && error.errors[0];
-      if (errItem && errItem.path === 'auctions_group_bidder_unique') {
-        return errorResponse(res, statusCodes.BAD_REQUEST, 'This member has already won an auction in this group');
-      }
-      if (errItem && errItem.path === 'auctions_group_auction_number_unique') {
-        return errorResponse(res, statusCodes.BAD_REQUEST, 'This auction number has already been recorded for this group');
-      }
+    // B6 / E2E-021: a DB unique-constraint hit (e.g. a double-click sends two creates at once and
+    // the second one loses the race) is a clean 409 with a plain message, never a 500.
+    const conflictMessage = auctionUniqueConflictMessage(error);
+    if (conflictMessage) {
+      return errorResponse(res, statusCodes.CONFLICT, conflictMessage);
     }
 
     console.error('Error in recordWinnerService:', error);
@@ -4086,6 +4293,8 @@ const getAllSelfChitDetailsService = async (res, company_id, min, max) => {
 
 const getSelfChitByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'Self chit not found');
     const selfChit = await SelfChit.findOne({
       where: { id, company_id: companyId, is_deleted_status: 0 },
       include: [
@@ -4304,40 +4513,49 @@ const deleteConfigureBusinessAgentCommissionService = async (res, id, companyId)
   }
 };
 
-const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}, companyId = null) => {
+const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}, companyId = null, user = null) => {
+  const transaction = await sequelize.transaction();
   try {
-    const { id, ...historyData } = data;
+    const { id, account_id, payment_mode, paid_date, override_reason, ...historyData } = data;
+    // Staff may record a payout; changing one is for the company admin (docs/MONEY_FLOW_BATCH2_3.md).
+    if (id) assertAdmin(user, 'edit a commission payout');
 
-    const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findByPk(id))?.configure_business_agent_id : null);
-    if (!configId) return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration ID is required');
+    const configId = historyData.configure_business_agent_id || (id ? (await HistoryBusinessAgent.findByPk(id, { transaction }))?.configure_business_agent_id : null);
+    if (!configId) { await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, 'Configuration ID is required'); }
 
     const config = await ConfigureBusinessAgentCommission.findOne({
       where: {
         id: configId,
         is_deleted_status: 0,
         ...(companyId ? { company_id: companyId } : {})
-      }
+      },
+      transaction
     });
-    if (!config) return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found');
+    if (!config) { await transaction.rollback(); return errorResponse(res, statusCodes.NOT_FOUND, 'Configuration not found'); }
+    
+    const effectiveCompanyId = companyId || config.company_id;
 
+    if (!account_id) { await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, 'Paid From account is required'); }
+    if (!paid_date) { await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, 'Paid Date is required'); }
+    if (!payment_mode) { await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, 'Payment Mode is required'); }
+
+    const expectedType = payment_mode === 1 ? 'CASH' : payment_mode === 2 ? 'UPI' : 'BANK';
     const totalCommission = parseFloat(config.commission_amount) || 0;
 
     let previousTotal = await HistoryBusinessAgent.sum('paid_amount', {
-      where: { configure_business_agent_id: configId, is_deleted_status: 0 }
+      where: { configure_business_agent_id: configId, is_deleted_status: 0 },
+      transaction
     }) || 0;
     previousTotal = parseFloat(previousTotal);
 
     if (id) {
       const history = await HistoryBusinessAgent.findOne({
-        where: {
-          id,
-          configure_business_agent_id: configId,
-          is_deleted_status: 0
-        }
+        where: { id, configure_business_agent_id: configId, is_deleted_status: 0 },
+        transaction
       });
-      if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
+      if (!history) { await transaction.rollback(); return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found'); }
+      await enforceLock({ companyId: effectiveCompanyId, user, entity: 'commission_payout', entityId: history.id, action: 'edit', dates: [history.paid_date, paid_date], overrideReason: override_reason, transaction });
 
-      // Do NOT allow update to change configure_business_agent_id
       delete historyData.configure_business_agent_id;
 
       const oldAmount = parseFloat(history.paid_amount) || 0;
@@ -4345,34 +4563,80 @@ const storeOrUpdateHistoryBusinessAgentService = async (res, data = {}, companyI
       const newTotal = previousTotal - oldAmount + newAmount;
 
       if (newTotal > totalCommission) {
-        return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
+        await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
       }
 
-      await history.update(historyData);
+      const touchedAccountIds = Array.from(new Set([account_id, (history.account_id || null)])).filter(Boolean).sort((a, b) => a - b);
+      const accountsList = await PaymentAccount.findAll({
+        where: { id: touchedAccountIds, company_id: effectiveCompanyId },
+        transaction, lock: true
+      });
+      const accountsMap = {};
+      accountsList.forEach(a => accountsMap[a.id] = a);
+
+      const targetNewAccount = accountsMap[account_id];
+      if (!targetNewAccount) { await transaction.rollback(); return errorResponse(res, statusCodes.NOT_FOUND, 'Payment account not found or does not belong to this company'); }
+      if (targetNewAccount.account_type !== expectedType) { await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, `Account must be of type ${expectedType}`); }
+      if (!targetNewAccount.is_active) { await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, 'Selected payment account is inactive'); }
+
+      if (history.account_id && accountsMap[history.account_id]) {
+        accountsMap[history.account_id].current_balance = Number(accountsMap[history.account_id].current_balance) + oldAmount;
+      }
+
+      targetNewAccount.current_balance = Number(targetNewAccount.current_balance) - newAmount;
+      if (targetNewAccount.current_balance < 0) {
+        await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, 'Insufficient balance in payment account');
+      }
+
+      for (const acc of Object.values(accountsMap)) {
+        await acc.save({ transaction });
+      }
+
+      await history.update({ ...historyData, account_id, payment_mode, paid_date }, { transaction });
 
       const newStatus = newTotal >= totalCommission ? 3 : (newTotal > 0 ? 2 : 1);
-      await config.update({ status: newStatus });
+      await config.update({ status: newStatus }, { transaction });
 
+      await transaction.commit();
       return successResponse(res, statusCodes.OK, 'History record updated successfully', history);
     } else {
+      await enforceLock({ companyId: effectiveCompanyId, user, entity: 'commission_payout', action: 'create', dates: [paid_date], overrideReason: override_reason, transaction });
       const newAmount = parseFloat(historyData.paid_amount) || 0;
       const newTotal = previousTotal + newAmount;
 
       if (newTotal > totalCommission) {
-        return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
+        await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, `Paid amount exceeds the total commission limit of ${totalCommission}`);
       }
+
+      const targetNewAccount = await PaymentAccount.findOne({
+        where: { id: account_id, company_id: effectiveCompanyId },
+        transaction, lock: true
+      });
+      if (!targetNewAccount) { await transaction.rollback(); return errorResponse(res, statusCodes.NOT_FOUND, 'Payment account not found or does not belong to this company'); }
+      if (targetNewAccount.account_type !== expectedType) { await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, `Account must be of type ${expectedType}`); }
+      if (!targetNewAccount.is_active) { await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, 'Selected payment account is inactive'); }
+
+      targetNewAccount.current_balance = Number(targetNewAccount.current_balance) - newAmount;
+      if (targetNewAccount.current_balance < 0) {
+        await transaction.rollback(); return errorResponse(res, statusCodes.BAD_REQUEST, 'Insufficient balance in payment account');
+      }
+      await targetNewAccount.save({ transaction });
 
       const newHistory = await HistoryBusinessAgent.create({
         ...historyData,
+        account_id, payment_mode, paid_date,
         configure_business_agent_id: configId
-      });
+      }, { transaction });
 
       const newStatus = newTotal >= totalCommission ? 3 : (newTotal > 0 ? 2 : 1);
-      await config.update({ status: newStatus });
+      await config.update({ status: newStatus }, { transaction });
 
+      await transaction.commit();
       return successResponse(res, statusCodes.CREATED, 'History record created successfully', newHistory);
     }
   } catch (error) {
+    await transaction.rollback();
+    if (error instanceof MoneyRuleError) return res.status(statusCodes.BAD_REQUEST).json({ status: 0, message: error.message, code: error.code });
     console.error('Error in storeOrUpdateHistoryBusinessAgentService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
@@ -4440,8 +4704,12 @@ const getHistoryBusinessAgentByIdService = async (res, id, companyId) => {
   }
 };
 
-const deleteHistoryBusinessAgentService = async (res, id, companyId) => {
+// Cancelling a payout puts the money back in its account; the row stays with who, when and why.
+const deleteHistoryBusinessAgentService = async (res, id, companyId, user = null, reason = null, override_reason = null) => {
+  const transaction = await sequelize.transaction();
   try {
+    assertAdmin(user, 'cancel a commission payout');
+    const why = assertReason(reason, 'a reason for cancelling');
     const history = await HistoryBusinessAgent.findOne({
       where: { id, is_deleted_status: 0 },
       include: [
@@ -4453,12 +4721,46 @@ const deleteHistoryBusinessAgentService = async (res, id, companyId) => {
           },
           required: !!companyId
         }
-      ]
+      ],
+      transaction
     });
-    if (!history) return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found');
-    await history.update({ is_deleted_status: 1 });
-    return successResponse(res, statusCodes.OK, 'History record deleted successfully');
+    if (!history) { await transaction.rollback(); return errorResponse(res, statusCodes.NOT_FOUND, 'History record not found'); }
+    await enforceLock({ companyId: companyId || history.configure_business_agent?.company_id, user, entity: 'commission_payout', entityId: history.id, action: 'cancel', dates: [history.paid_date || history.createdAt], overrideReason: override_reason, transaction });
+
+    if (history.account_id) {
+      const account = await PaymentAccount.findOne({
+        where: { id: history.account_id },
+        transaction, lock: true
+      });
+      if (account) {
+        account.current_balance = Number(account.current_balance) + Number(history.paid_amount || 0);
+        await account.save({ transaction });
+      }
+    }
+
+    await history.update({ is_deleted_status: 1, cancelled_at: new Date(), cancelled_by_name: await actorName(user), cancel_reason: why }, { transaction });
+
+    const configId = history.configure_business_agent_id;
+    const config = await ConfigureBusinessAgentCommission.findOne({
+      where: { id: configId },
+      transaction
+    });
+    if (config) {
+      let previousTotal = await HistoryBusinessAgent.sum('paid_amount', {
+        where: { configure_business_agent_id: configId, is_deleted_status: 0 },
+        transaction
+      }) || 0;
+      previousTotal = parseFloat(previousTotal);
+      const totalCommission = parseFloat(config.commission_amount) || 0;
+      const newStatus = previousTotal >= totalCommission ? 3 : (previousTotal > 0 ? 2 : 1);
+      await config.update({ status: newStatus }, { transaction });
+    }
+
+    await transaction.commit();
+    return successResponse(res, statusCodes.OK, 'Payout cancelled');
   } catch (error) {
+    await transaction.rollback();
+    if (error instanceof MoneyRuleError) return res.status(statusCodes.BAD_REQUEST).json({ status: 0, message: error.message, code: error.code });
     console.error('Error in deleteHistoryBusinessAgentService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
@@ -5077,33 +5379,24 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
     }, { transaction });
 
     if (status === 2) {
-      let targetAccount = null;
-      if (submission.payment_type === 1) {
-        targetAccount = await PaymentAccount.findOne({
-          where: { company_id: companyId, account_type: 'CASH', is_active: true },
-          order: [['id', 'ASC']],
-          transaction,
-          lock: true
-        });
-      } else {
-        if (!account_id) {
-          await transaction.rollback();
-          return errorResponse(res, statusCodes.BAD_REQUEST, 'Payment account is required for this payment type');
-        }
-        targetAccount = await PaymentAccount.findOne({
-          where: { id: account_id, company_id: companyId, is_active: true },
-          transaction,
-          lock: true
-        });
-        if (!targetAccount) {
-          await transaction.rollback();
-          return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid payment account');
-        }
-        const expectedType = submission.payment_type === 2 ? 'UPI' : 'BANK';
-        if (targetAccount.account_type !== expectedType) {
-          await transaction.rollback();
-          return errorResponse(res, statusCodes.BAD_REQUEST, `Selected account must be of type ${expectedType}`);
-        }
+      // The verifier picks the account the money went into, cash included: never a default.
+      if (!account_id) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Payment account is required to verify a collection');
+      }
+      const targetAccount = await PaymentAccount.findOne({
+        where: { id: account_id, company_id: companyId, is_active: true },
+        transaction,
+        lock: true
+      });
+      if (!targetAccount) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid payment account');
+      }
+      const expectedType = submission.payment_type === 1 ? 'CASH' : submission.payment_type === 2 ? 'UPI' : 'BANK';
+      if (targetAccount.account_type !== expectedType) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, `Selected account must be of type ${expectedType}`);
       }
 
       if (!targetAccount) {
@@ -5135,6 +5428,7 @@ const updateCollectionSubmissionStatusService = async (res, id, status, account_
         };
         if (targetAccount.account_type === 'CASH') {
           splitUpdate.cash_amount = rowTotal;
+          splitUpdate.cash_account_id = targetAccount.id;
         } else if (targetAccount.account_type === 'UPI') {
           splitUpdate.upi_amount = rowTotal;
           splitUpdate.upi_account_id = targetAccount.id;
@@ -5222,15 +5516,34 @@ const storeDirectPaymentService = async (res, user, data) => {
   const transaction = await sequelize.transaction();
   try {
     const {
-      chits_installment_id, received_amount, penalty_paid, payment_date,
+      chits_installment_id: requestedInstallmentId, enrollment_id: requestedEnrollmentId, charges,
+      received_amount, penalty_paid, payment_date,
       payment_mode, transaction_reference,
-      cash_amount, upi_amount, upi_account_id, bank_amount, bank_account_id,
-      cheque_number, cheque_date, narration
+      cash_amount, cash_account_id, upi_amount, upi_account_id, bank_amount, bank_account_id,
+      cheque_number, cheque_date, narration, override_reason
     } = data;
 
-    if (!chits_installment_id || received_amount === undefined) {
+    // Charges (enrollment fee, notice, cheque return…) ride on the same receipt. A receipt for
+    // charges only names the ticket instead of an instalment (docs/MONEY_FLOW_BATCH2_3.md §3.1).
+    const wantsCharges = Array.isArray(charges) && charges.some((c) => Number(c.amount) > 0);
+    const chargesClaimed = wantsCharges ? Math.round(charges.reduce((sum, c) => sum + (Number(c.amount) || 0), 0) * 100) / 100 : 0;
+    let chits_installment_id = requestedInstallmentId;
+    if ((!chits_installment_id && !(requestedEnrollmentId && wantsCharges)) || received_amount === undefined) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Missing required payment fields');
+    }
+    if (!chits_installment_id) {
+      if ((parseFloat(received_amount) || 0) > 0 || (parseFloat(penalty_paid) || 0) > 0) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Choose the instalment to pay an instalment amount or penalty');
+      }
+      // A charges-only receipt is filed under the ticket's first instalment, paying ₹0 of it.
+      const first = await ChitsInstallment.findOne({ where: { enrollment_id: requestedEnrollmentId }, order: [['installment_no', 'ASC']], transaction });
+      if (!first) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.NOT_FOUND, 'Ticket has no instalments');
+      }
+      chits_installment_id = first.id;
     }
 
     const cash = parseFloat(cash_amount) || 0;
@@ -5239,11 +5552,16 @@ const storeDirectPaymentService = async (res, user, data) => {
     // received_amount is the instalment part only; penalty_paid rides on top. The
     // money that actually arrived is both, so that is what the split must cover and
     // what the accounts are credited with — the same rule agent verification uses.
-    const totalCollected = (parseFloat(received_amount) || 0) + (parseFloat(penalty_paid) || 0);
+    const totalCollected = (parseFloat(received_amount) || 0) + (parseFloat(penalty_paid) || 0) + chargesClaimed;
 
     if (totalCollected > 0 && Math.abs(cash + upi + bank - totalCollected) > 0.01) {
       await transaction.rollback();
-      return errorResponse(res, statusCodes.BAD_REQUEST, 'Sum of cash, upi, and bank amounts must equal the instalment amount plus penalty');
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Sum of cash, upi, and bank amounts must equal the instalment amount plus penalty and charges');
+    }
+
+    if (cash > 0 && !cash_account_id) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Cash account is required when Cash amount is greater than 0');
     }
 
     if (upi > 0 && !upi_account_id) {
@@ -5263,30 +5581,38 @@ const storeDirectPaymentService = async (res, user, data) => {
     }
 
     // Verify installment belongs to the caller's company
-    const installmentInfo = await ChitsInstallment.findByPk(chits_installment_id, {
-      include: [{
-        model: Enrollment,
-        as: 'enrollment',
-        include: [{
-          model: ChitsGroup,
-          as: 'group',
-          attributes: ['company_id']
-        }]
-      }]
-    });
-
-    if (!installmentInfo || !installmentInfo.enrollment || !installmentInfo.enrollment.group) {
+    const installmentInfo = await ChitsInstallment.findByPk(chits_installment_id, { transaction, lock: true });
+    if (!installmentInfo) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.NOT_FOUND, 'Installment not found');
     }
-
-    if (installmentInfo.enrollment.group.company_id !== companyId) {
+    const enrollment = await Enrollment.findByPk(installmentInfo.enrollment_id, { transaction });
+    if (!enrollment) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found for this installment');
+    }
+    const group = await ChitsGroup.findByPk(enrollment.group_id, { transaction, attributes: ['company_id'] });
+    if (!group) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.NOT_FOUND, 'Group not found for this enrollment');
+    }
+    if (group.company_id !== companyId) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized access to this installment');
     }
+    // Attach enrollment for further logic
+    installmentInfo.enrollment = enrollment;
+    installmentInfo.enrollment.group = group;
+    if (requestedEnrollmentId && Number(requestedEnrollmentId) !== Number(enrollment.id)) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'The instalment is not on this ticket');
+    }
+
+    // The charges must be this ticket's, still due, and no more than what is due on each.
+    const lockedCharges = await chargeService.lockChargesForReceipt({ companyId, enrollment_id: enrollment.id, charges, transaction });
 
     const { getInstallmentBalance } = require('./installmentBalanceHelper');
-    const paidSoFar = await getInstallmentBalance(chits_installment_id);
+    const paidSoFar = await getInstallmentBalance(chits_installment_id, transaction);
     const dueAmount = Math.max(0, parseFloat(installmentInfo.payable_amount || 0) - paidSoFar);
 
     const receivedAmountFloat = parseFloat(received_amount) || 0;
@@ -5298,17 +5624,35 @@ const storeDirectPaymentService = async (res, user, data) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, `Payment exceeds the due amount. Maximum allowed is ${dueAmount}`);
     }
 
+    // A back-dated receipt beyond Transaction Lock Days needs the admin and a reason.
+    await enforceLock({ companyId, user, entity: 'receipt', action: 'create', dates: [payment_date || todayIST()], overrideReason: override_reason, transaction });
+
+    // Every rupee goes to an account someone picked: this company's, the right kind, active.
+    // Locked now so the balance update below works on the row that was checked.
+    const accountsToCredit = [];
+    for (const [amount, accountId, type, label] of [
+      [cash, cash_account_id, 'CASH', 'Cash'],
+      [upi, upi_account_id, 'UPI', 'UPI'],
+      [bank, bank_account_id, 'BANK', 'Bank'],
+    ]) {
+      if (amount <= 0) continue;
+      const account = await PaymentAccount.findOne({ where: { id: accountId, company_id: companyId }, transaction, lock: true });
+      const problem = !account ? `${label} account not found`
+        : account.account_type !== type ? `${label} account must be a ${type} account`
+        : !account.is_active ? `${label} account "${account.name}" is inactive`
+        : null;
+      if (problem) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, problem);
+      }
+      accountsToCredit.push({ account, amount });
+    }
+
     // Generate gapless receipt number
     const newReceiptNumber = await require('../utils/receiptGenerator').generateReceiptNumber(companyId, transaction);
 
-    let recorded_by_name = 'Unknown';
-    if (user.role === 'company') {
-      const company = await Company.findByPk(user.id);
-      if (company) recorded_by_name = company.company_name;
-    } else {
-      const staff = await StaffUser.findByPk(user.id);
-      if (staff) recorded_by_name = staff.name;
-    }
+    // Company name for the admin, first + last name for staff (staff have no single name field).
+    const recorded_by_name = (await actorName(user)) || 'Unknown';
 
     let final_payment_mode = parseInt(payment_mode);
     if (!final_payment_mode) {
@@ -5331,49 +5675,22 @@ const storeDirectPaymentService = async (res, user, data) => {
       recorded_by_id: user.role === 'company' ? user.id : String(user.id),
       recorded_by_role: user.role,
       recorded_by_name,
+      charges_amount: lockedCharges.total,
       cash_amount: cash,
+      cash_account_id: cash > 0 ? cash_account_id : null,
       upi_amount: upi,
-      upi_account_id: upi_account_id || null,
+      upi_account_id: upi > 0 ? upi_account_id : null,
       bank_amount: bank,
-      bank_account_id: bank_account_id || null,
+      bank_account_id: bank > 0 ? bank_account_id : null,
       cheque_number: cheque_number || null,
       cheque_date: cheque_date || null,
       narration: narration || null
     }, { transaction });
+    await chargeService.applyChargesToReceipt({ receiptId: newPayment.id, locked: lockedCharges.rows, transaction });
 
-    // Update balances of the referenced payment accounts
-    if (upi > 0 && upi_account_id) {
-      const upiAccount = await PaymentAccount.findByPk(upi_account_id, { transaction, lock: true });
-      if (upiAccount) {
-        await upiAccount.update({
-          current_balance: Number(upiAccount.current_balance) + upi
-        }, { transaction });
-      }
-    }
-
-    if (bank > 0 && bank_account_id) {
-      const bankAccount = await PaymentAccount.findByPk(bank_account_id, { transaction, lock: true });
-      if (bankAccount) {
-        await bankAccount.update({
-          current_balance: Number(bankAccount.current_balance) + bank
-        }, { transaction });
-      }
-    }
-
-    if (cash > 0) {
-      // Find cash account to update
-      // Must match reportService's cash attribution: lowest-id active CASH account.
-      const cashAccount = await PaymentAccount.findOne({
-        where: { company_id: companyId, account_type: 'CASH', is_active: true },
-        order: [['id', 'ASC']],
-        transaction,
-        lock: true
-      });
-      if (cashAccount) {
-        await cashAccount.update({
-          current_balance: Number(cashAccount.current_balance) + cash
-        }, { transaction });
-      }
+    // Credit exactly the accounts checked above.
+    for (const { account, amount } of accountsToCredit) {
+      await account.update({ current_balance: Number(account.current_balance) + amount }, { transaction });
     }
 
     await transaction.commit();
@@ -5395,6 +5712,7 @@ const storeDirectPaymentService = async (res, user, data) => {
     return successResponse(res, statusCodes.CREATED, 'Direct payment recorded successfully', newPayment);
   } catch (error) {
     if (transaction) await transaction.rollback();
+    if (error instanceof MoneyRuleError) return res.status(statusCodes.BAD_REQUEST).json({ status: 0, message: error.message, code: error.code });
     console.error('Error in storeDirectPaymentService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
@@ -5403,6 +5721,8 @@ const storeDirectPaymentService = async (res, user, data) => {
 
 const getCompanyByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
     const company = await Company.findByPk(id);
     if (!company) {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Company not found');
@@ -5422,6 +5742,8 @@ const getCompanyByIdService = async (res, id, companyId) => {
 
 const getMemberByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'int')) return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
     const where = { id, is_deleted_status: 0 };
     if (companyId) {
       where.company_id = companyId;
@@ -5502,6 +5824,8 @@ const getMemberByIdService = async (res, id, companyId) => {
 
 const getRouteByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'int')) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
     const route = await Route.findOne({ where: { id, company_id: companyId } });
     if (!route) return errorResponse(res, statusCodes.NOT_FOUND, 'Route not found');
     return successResponse(res, statusCodes.OK, 'Route retrieved successfully', route);
@@ -5513,6 +5837,8 @@ const getRouteByIdService = async (res, id, companyId) => {
 
 const getAreaByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'int')) return errorResponse(res, statusCodes.NOT_FOUND, 'Area not found');
     const area = await Area.findOne({
       where: { id, company_id: companyId },
       include: [{ model: Route, as: 'route' }]
@@ -5527,6 +5853,8 @@ const getAreaByIdService = async (res, id, companyId) => {
 
 const getChitsGroupByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'ChitsGroup not found');
     const where = { id };
     if (companyId && companyId !== '') where.company_id = companyId;
     const group = await ChitsGroup.findOne({ where });
@@ -5567,6 +5895,8 @@ const getStateByIdService = async (res, id, companyId) => {
 
 const getDistrictByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'District not found');
     const district = await District.findOne({
       where: { id, company_id: companyId },
       include: [{ model: State }]
@@ -5581,6 +5911,8 @@ const getDistrictByIdService = async (res, id, companyId) => {
 
 const getCityByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'City not found');
     const city = await City.findOne({
       where: { id, company_id: companyId },
       include: [{ model: District }]
@@ -5595,6 +5927,8 @@ const getCityByIdService = async (res, id, companyId) => {
 
 const getEnrollmentByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'int')) return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
     const enrollment = await Enrollment.findOne({
       where: { id, company_id: companyId },
       include: [
@@ -5615,6 +5949,8 @@ const getEnrollmentByIdService = async (res, id, companyId) => {
 
 const getUpcomingChitByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'UpcomingChit not found');
     const upcomingChit = await UpcomingChit.findOne({ where: { id, company_id: companyId } });
     if (!upcomingChit) return errorResponse(res, statusCodes.NOT_FOUND, 'UpcomingChit not found');
     return successResponse(res, statusCodes.OK, 'UpcomingChit retrieved successfully', upcomingChit);
@@ -5626,6 +5962,8 @@ const getUpcomingChitByIdService = async (res, id, companyId) => {
 
 const getSuitFileInformationByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'SuitFileInformation not found');
     const info = await SuitFileInformation.findOne({
       where: { id, company_id: companyId },
       include: [
@@ -5643,6 +5981,8 @@ const getSuitFileInformationByIdService = async (res, id, companyId) => {
 
 const getAuctionByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
     const auction = await Auction.findOne({
       where: { id, company_id: companyId },
       include: [
@@ -6014,6 +6354,7 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         const includeList = [];
         if (PaymentAccount && typeof PaymentAccount.findAll === 'function') {
           includeList.push(
+            { model: PaymentAccount, as: 'cash_account', attributes: ['name'] },
             { model: PaymentAccount, as: 'upi_account', attributes: ['name'] },
             { model: PaymentAccount, as: 'bank_account', attributes: ['name'] }
           );
@@ -6103,6 +6444,7 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         group_name: groupNames || 'No Group',
         amount,
         cash_amount: sub.payment_type === 1 ? amount : null,
+        cash_account: accountNames(sub.id, 'cash_account'),
         upi_amount: sub.payment_type === 2 ? amount : null,
         upi_account: accountNames(sub.id, 'upi_account'),
         bank_amount: [3, 4, 5].includes(sub.payment_type) || sub.bank_details ? amount : null,
@@ -6440,6 +6782,8 @@ const getAllStaffService = async (res, companyId, min, max, search) => {
 
 const getStaffByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'Staff user not found');
     const staff = await StaffUser.findOne({
       where: { id, company_id: companyId, is_deleted_status: 0 },
       attributes: { exclude: ['password', 'otp'] },
@@ -6534,6 +6878,8 @@ const getAllRoleService = async (res, companyId, min, max, search) => {
 
 const getRoleByIdService = async (res, id, companyId) => {
   try {
+    // E2E-050: a malformed id is "not found" (404), not a database error (500).
+    if (isMalformedId(id, 'uuid')) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
     const role = await Role.findOne({ where: { id, company_id: companyId, status: 1 } });
     if (!role) return errorResponse(res, statusCodes.NOT_FOUND, 'Role not found');
     return successResponse(res, statusCodes.OK, 'Role retrieved successfully', role);
@@ -7334,8 +7680,24 @@ const sendManualNotificationService = async (res, userPayload, data) => {
   }
 };
 
-const getMemberDocumentsAdminService = async (res, group_id, member_id) => {
+// Company scope for member KYC documents (SEC-2). member_documents has no company_id, so both
+// the group and the member must belong to the caller's company (company_id comes from the token,
+// never the body). Returns null when allowed, otherwise the response to send.
+const refuseIfMemberDocumentOutOfCompany = async (res, userPayload, group_id, member_id) => {
+  const companyId = await resolveCompanyIdForAuth(userPayload);
+  if (!companyId) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+  const [group, member] = await Promise.all([
+    ChitsGroup.findOne({ where: { id: group_id, company_id: companyId }, attributes: ['id'] }),
+    Member.findOne({ where: { id: member_id, company_id: companyId }, attributes: ['id'] })
+  ]);
+  if (!group || !member) return errorResponse(res, statusCodes.NOT_FOUND, 'Member or group not found');
+  return null;
+};
+
+const getMemberDocumentsAdminService = async (res, group_id, member_id, userPayload) => {
   try {
+    const refused = await refuseIfMemberDocumentOutOfCompany(res, userPayload, group_id, member_id);
+    if (refused) return refused;
     const docRecord = await MemberDocument.findOne({
       where: { group_id, member_id }
     });
@@ -7434,9 +7796,12 @@ const uploadMemberDocumentService = async (res, reqBody, userPayload) => {
   }
 };
 
-const verifyMemberDocumentService = async (res, payload) => {
+const verifyMemberDocumentService = async (res, payload, userPayload) => {
   try {
     const { group_id, member_id, document_type, status, rejection_reason } = payload;
+
+    const refused = await refuseIfMemberDocumentOutOfCompany(res, userPayload, group_id, member_id);
+    if (refused) return refused;
 
     const docRecord = await MemberDocument.findOne({
       where: { group_id, member_id }
@@ -7503,9 +7868,10 @@ const getAllAuditLogsService = async (res, user_id, action_type, min, max, searc
 
 const getAllReceiptsService = async (res, companyId, filters = {}) => {
   try {
-    const { min = 0, max = 20, source, group_id, member_id, payment_mode, date_from, date_to, search, collection_agent_id } = filters;
+    const { min = 0, max = 20, source, group_id, member_id, payment_mode, date_from, date_to, search, collection_agent_id, status } = filters;
 
-    const where = { payment_status: 1 };
+    // Active = verified (1); Cancelled = reversed (3) receipts, which keep their numbers.
+    const where = { payment_status: status === 'cancelled' ? 3 : status === 'all' ? { [Op.in]: [1, 3] } : 1 };
     if (payment_mode) where.payment_mode = payment_mode;
     if (date_from || date_to) {
       where.payment_date = {};
@@ -7557,6 +7923,7 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
           ...(collection_agent_id && { where: { collection_agent_id } }),
           include: [{ model: Member, as: 'collection_agent', attributes: ['id', 'name'] }]
         },
+        { model: PaymentAccount, as: 'cash_account', attributes: ['id', 'name'] },
         { model: PaymentAccount, as: 'upi_account', attributes: ['id', 'name'] },
         { model: PaymentAccount, as: 'bank_account', attributes: ['id', 'name'] }
       ],
@@ -7576,6 +7943,12 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
         payment_date: p.payment_date,
         payment_mode: p.payment_mode,
         cash_amount: p.cash_amount || 0,
+        cash_account: p.cash_account?.name || null,
+        payment_status: p.payment_status,
+        is_cancelled: p.payment_status === 3,
+        reversed_at: p.reversed_at || null,
+        reversed_by_name: p.reversed_by_name || null,
+        reverse_reason: p.reverse_reason || null,
         upi_amount: p.upi_amount || 0,
         upi_account: p.upi_account?.name || null,
         bank_amount: p.bank_amount || 0,
@@ -7587,7 +7960,8 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
         transaction_reference: p.transaction_reference,
         received_amount: recAmt,
         penalty_paid: penAmt,
-        total_paid: (recAmt + penAmt).toFixed(2),
+        charges_amount: parseFloat(p.charges_amount || 0),
+        total_paid: (recAmt + penAmt + parseFloat(p.charges_amount || 0)).toFixed(2),
         member_name: p.installment?.enrollment?.subscriber?.name || null,
         member_code: p.installment?.enrollment?.subscriber?.member_id || null,
         phone_number: p.installment?.enrollment?.subscriber?.mobile_number || null,

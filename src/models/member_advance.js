@@ -55,7 +55,10 @@ module.exports = (sequelize, DataTypes) => {
     narration: {
       type: DataTypes.STRING,
       allowNull: true
-    }
+    },
+    // Advances taken at the office counter get a receipt number (docs/MONEY_FLOW_BATCH2_3.md §3.4).
+    receipt_number: { type: DataTypes.STRING, allowNull: true },
+    created_by_name: { type: DataTypes.STRING, allowNull: true }
   }, {
     sequelize,
     modelName: 'MemberAdvance',

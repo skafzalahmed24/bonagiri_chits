@@ -245,9 +245,13 @@ const storeOrUpdateChitsGroup = async (req, res) => {
   try {
     const data = { ...req.body };
 
-    if (req.user && req.user.role === 'company' && req.user.id) {
-      data.company_id = req.user.id;
+    // company_id always comes from the token (company admin AND staff), never from the body.
+    // Fail closed when it cannot be resolved (L13).
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    if (!companyId) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Company could not be determined for this account');
     }
+    data.company_id = companyId;
     return await adminService.storeOrUpdateChitsGroupService(res, data);
   } catch (error) {
     console.error('Error in storeOrUpdateChitsGroup:', error);
@@ -539,8 +543,9 @@ const deleteUpcomingChit = async (req, res) => {
 
 const updateFavorites = async (req, res) => {
   try {
-    const { user_id, type, is_favorites } = req.body || {};
-    return await adminService.updateFavoritesService(res, user_id, type, is_favorites);
+    // Identity comes from the token (E2E-041); body user_id/type are ignored.
+    const { is_favorites } = req.body || {};
+    return await adminService.updateFavoritesService(res, req.user, is_favorites);
   } catch (error) {
     console.error('Error in updateFavorites:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1291,7 +1296,7 @@ const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
   try {
     const data = { ...req.body };
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-    return await adminService.storeOrUpdateHistoryBusinessAgentService(res, data, companyId);
+    return await adminService.storeOrUpdateHistoryBusinessAgentService(res, data, companyId, req.user);
   } catch (error) {
     console.error('Error in storeOrUpdateHistoryBusinessAgent:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1322,9 +1327,9 @@ const getHistoryBusinessAgentById = async (req, res) => {
 
 const deleteHistoryBusinessAgent = async (req, res) => {
   try {
-    const { id } = req.body || {};
+    const { id, reason, override_reason } = req.body || {};
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
-      return await adminService.deleteHistoryBusinessAgentService(res, id, companyId);
+    return await adminService.deleteHistoryBusinessAgentService(res, id, companyId, req.user, reason, override_reason);
   } catch (error) {
     console.error('Error in deleteHistoryBusinessAgent:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1558,7 +1563,7 @@ const storeDirectPayment = async (req, res) => {
 const getMemberDocumentsAdmin = async (req, res) => {
   try {
     const { group_id, member_id } = req.body;
-    return await adminService.getMemberDocumentsAdminService(res, group_id, member_id);
+    return await adminService.getMemberDocumentsAdminService(res, group_id, member_id, req.user);
   } catch (error) {
     console.error('Error in getMemberDocumentsAdmin:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1567,7 +1572,7 @@ const getMemberDocumentsAdmin = async (req, res) => {
 
 const verifyMemberDocument = async (req, res) => {
   try {
-    return await adminService.verifyMemberDocumentService(res, { ...req.body, verifiedBy: req.user?.id });
+    return await adminService.verifyMemberDocumentService(res, { ...req.body, verifiedBy: req.user?.id }, req.user);
   } catch (error) {
     console.error('Error in verifyMemberDocument:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

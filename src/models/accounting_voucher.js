@@ -1,5 +1,6 @@
 'use strict';
 const { Model } = require('sequelize');
+const { cancelFields, cancelScopes } = require('../utils/cancellable');
 
 module.exports = (sequelize, DataTypes) => {
   class AccountingVoucher extends Model {
@@ -9,6 +10,8 @@ module.exports = (sequelize, DataTypes) => {
       }
       if (models.PaymentAccount) {
         AccountingVoucher.belongsTo(models.PaymentAccount, { foreignKey: 'account_id', as: 'payment_account' });
+        // Bank Deposit of office cash: the Cash account the money came out of.
+        AccountingVoucher.belongsTo(models.PaymentAccount, { foreignKey: 'source_account_id', as: 'source_account' });
       }
       if (models.AccountingVoucherLine) {
         AccountingVoucher.hasMany(models.AccountingVoucherLine, { foreignKey: 'voucher_id', as: 'lines', onDelete: 'CASCADE' });
@@ -50,9 +53,15 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DECIMAL(15, 2),
       allowNull: false,
       defaultValue: 0
-    }
+    },
+    source_account_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    ...cancelFields(DataTypes),
   }, {
     sequelize,
+    ...cancelScopes,
     modelName: 'AccountingVoucher',
     tableName: 'accounting_vouchers',
     underscored: true,

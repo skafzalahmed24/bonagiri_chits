@@ -1,8 +1,9 @@
 const { CustomerPayment } = require('../models');
 
-const getInstallmentBalance = async (installmentId) => {
+const getInstallmentBalance = async (installmentId, transaction = null) => {
   const paidRows = await CustomerPayment.findAll({
     where: { chits_installment_id: installmentId, payment_status: 1 },
+    transaction
   });
   const paidSoFar = paidRows.reduce((sum, p) => sum + parseFloat(p.received_amount || 0), 0);
   return paidSoFar;

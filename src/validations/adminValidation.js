@@ -1,7 +1,16 @@
 const Joi = require('joi');
 
+// E2E-016 (2026-10-14): place names (district, city, route, area) are trimmed and at most 100
+// characters. Triage assumption D2 - pending owner confirmation of the 100 limit.
+const placeName = (label) => Joi.string().trim().max(100).required().messages({
+  'any.required': `${label} is required`,
+  'string.empty': `${label} cannot be empty`,
+  'string.base': `${label} must be text`,
+  'string.max': `${label} can be at most 100 characters`
+});
+
 const loginAdminSchema = Joi.object({
-  email: Joi.string().email().required().messages({
+  email: Joi.string().email({ tlds: { allow: false } }).required().messages({
     'string.email': 'Please provide a valid email',
     'any.required': 'Email is required',
     'string.empty': 'Email cannot be empty'
@@ -34,7 +43,7 @@ const companyValidator = Joi.object({
   pan_number: Joi.string().allow('', null).optional(),
   sac_code: Joi.string().allow('', null).optional(),
   rect_print_format: Joi.number().integer().optional(),
-  company_email: Joi.string().email().required().messages({
+  company_email: Joi.string().email({ tlds: { allow: false } }).required().messages({
     'string.email': 'Please provide a valid email',
     'any.required': 'Email is required',
     'string.empty': 'Email cannot be empty'
@@ -202,7 +211,7 @@ const memberValidator = Joi.object({
       'string.empty': 'Country code cannot be empty'
     })
   }),
-  email: Joi.string().email().allow('', null).optional(),
+  email: Joi.string().email({ tlds: { allow: false } }).allow('', null).optional(),
   gst_number: Joi.string().allow('', null).optional(),
   marital_status: Joi.number().integer().allow('', null).optional(),
   married_date: Joi.date().iso().allow('', null).optional(),
@@ -288,10 +297,7 @@ const routeValidator = Joi.object({
     'any.required': 'City ID is required',
     'string.uuid': 'Invalid City ID format'
   }),
-  route_name: Joi.string().required().messages({
-    'any.required': 'Route name is required',
-    'string.empty': 'Route name cannot be empty'
-  })
+  route_name: placeName('Route name')
 });
 
 const getAllRouteSchema = Joi.object({
@@ -319,10 +325,7 @@ const areaValidator = Joi.object({
     'any.required': 'Route ID is required',
     'number.base': 'Invalid Route ID format'
   }),
-  area_name: Joi.string().required().messages({
-    'any.required': 'Area name is required',
-    'string.empty': 'Area name cannot be empty'
-  })
+  area_name: placeName('Area name')
 });
 
 const getAllAreaSchema = Joi.object({
@@ -349,17 +352,38 @@ const chitsGroupValidator = Joi.object({
   group_name: Joi.string().allow('', null).optional(),
   chit_category_id: Joi.number().integer().allow(null).optional(),
   scheme_configuration_id: Joi.string().uuid().allow(null).optional(),
-  chit_series_term: Joi.number().integer().required().messages({
-    'any.required': 'Chit series term is required'
+  chit_series_term: Joi.number().integer().min(1).required().messages({
+    'any.required': 'Chit series term is required',
+    'number.min': 'Chit series term must be at least 1'
   }),
-  auction_type: Joi.number().integer().required().messages({
-    'any.required': 'Auction type is required'
+  auction_type: Joi.number().integer().min(1).required().messages({
+    'any.required': 'Auction type is required',
+    'number.min': 'Please select an auction type'
   }),
-  chit_amount: Joi.number().precision(2).allow(null).optional().messages({
-    'any.required': 'Chit amount is required'
+  // E2E-020 (2026-10-14): a chit amount must be above 0 and a group needs at least 1 instalment.
+  // Required on create (the DB columns are NOT NULL), optional on update but never null.
+  // Max: chit amount = DECIMAL(15,2) column limit; instalments 1000 is a technical sanity bound
+  // (one schedule row per instalment per ticket), not a business rule.
+  chit_amount: Joi.number().precision(2).greater(0).max(9999999999999.99).when('id', {
+    is: Joi.exist().not(null),
+    then: Joi.optional(),
+    otherwise: Joi.required()
+  }).messages({
+    'any.required': 'Chit amount is required',
+    'number.base': 'Chit amount must be a number',
+    'number.greater': 'Chit amount must be more than 0',
+    'number.max': 'Chit amount is too large'
   }),
-  no_of_installments: Joi.number().integer().allow(null).optional().messages({
-    'any.required': 'Number of installments is required'
+  no_of_installments: Joi.number().integer().min(1).max(1000).when('id', {
+    is: Joi.exist().not(null),
+    then: Joi.optional(),
+    otherwise: Joi.required()
+  }).messages({
+    'any.required': 'Number of installments is required',
+    'number.base': 'Number of installments must be a whole number',
+    'number.integer': 'Number of installments must be a whole number',
+    'number.min': 'Number of installments must be at least 1',
+    'number.max': 'Number of installments cannot be more than 1000'
   }),
   chit_agreement_number: Joi.string().allow('', null).optional(),
   pso_date: Joi.date().iso().allow('', null).optional(),
@@ -374,20 +398,41 @@ const chitsGroupValidator = Joi.object({
     })
   }),
   term_date: Joi.date().iso().allow('', null).optional(),
-  enrollment_fee: Joi.number().precision(2).allow(null).optional(),
-  company_chit_number: Joi.number().integer().allow(null).optional(),
-  no_auction_installment: Joi.number().integer().allow(null).optional(),
-  company_commission: Joi.number().precision(2).max(5).allow(null).optional().messages({
-    'number.max': 'Commission cannot exceed 5% by statutory cap'
+  enrollment_fee: Joi.number().precision(2).min(0).max(9999999999999.99).allow(null).optional().messages({
+    'number.min': 'Enrollment fee cannot be negative'
   }),
-  max_ceiling_in: Joi.number().precision(2).allow(null).optional(),
+  company_chit_number: Joi.number().integer().min(1).max(1000).allow(null).optional().messages({
+    'number.min': 'Company chit number must be at least 1',
+    'number.max': 'Company chit number cannot be more than 1000'
+  }),
+  no_auction_installment: Joi.number().integer().min(0).max(1000).allow(null).optional().messages({
+    'number.min': 'No-auction instalments cannot be negative'
+  }),
+  // Owner decision 2026-10-13: commission accepts 0 to 99 % (the 5% statutory cap is not wanted).
+  company_commission: Joi.number().precision(2).min(0).max(99).allow(null).optional().messages({
+    'number.min': 'Commission cannot be negative',
+    'number.max': 'Commission cannot exceed 99%'
+  }),
+  // Maximum bid ceiling in % of the chit amount (R-8 / L24): 0 to 100.
+  max_ceiling_in: Joi.number().precision(2).min(0).max(100).allow(null).optional().messages({
+    'number.min': 'Maximum ceiling % cannot be negative',
+    'number.max': 'Maximum ceiling % cannot exceed 100'
+  }),
   // Penalty rates: % of the overdue instalment per day (0–100).
   penality_for_nps: Joi.number().min(0).max(100).precision(2).allow(null).optional(),
   penality_for_ps: Joi.number().min(0).max(100).precision(2).allow(null).optional(),
-  auctions_per_month: Joi.number().integer().allow(null).optional(),
-  installment_amount: Joi.number().precision(2).allow(null).optional(),
+  auctions_per_month: Joi.number().integer().min(0).max(31).allow(null).optional().messages({
+    'number.min': 'Auctions per month cannot be negative',
+    'number.max': 'Auctions per month cannot be more than 31'
+  }),
+  installment_amount: Joi.number().precision(2).min(0).max(9999999999999.99).allow(null).optional().messages({
+    'number.min': 'Instalment amount cannot be negative'
+  }),
   auction_date: Joi.date().iso().allow('', null).optional(),
-  days: Joi.number().integer().allow(null).optional(),
+  days: Joi.number().integer().min(0).max(366).allow(null).optional().messages({
+    'number.min': 'Days cannot be negative',
+    'number.max': 'Days cannot be more than 366'
+  }),
   bi_monthly_extra_input: Joi.string().allow('', null).optional(),
   auction_from: Joi.string().regex(/^([01]\d|2[0-3]):([0-5]\d)(:([0-5]\d))?$/).allow('', null).optional(),
   auction_to: Joi.string().regex(/^([01]\d|2[0-3]):([0-5]\d)(:([0-5]\d))?$/).allow('', null).optional(),
@@ -395,23 +440,38 @@ const chitsGroupValidator = Joi.object({
   send_sms_to_all_customers: Joi.number().integer().valid(0, 1).optional(),
   fdr_number: Joi.string().allow('', null).optional(),
   fdr_type: Joi.number().integer().optional(),
-  fdr_amount: Joi.number().precision(2).allow(null).optional(),
+  fdr_amount: Joi.number().precision(2).min(0).max(9999999999999.99).allow(null).optional().messages({
+    'number.min': 'FDR amount cannot be negative'
+  }),
   fdr_date: Joi.date().iso().allow('', null).optional(),
-  no_of_months: Joi.number().integer().allow(null).optional(),
+  no_of_months: Joi.number().integer().min(0).max(1200).allow(null).optional().messages({
+    'number.min': 'Number of months cannot be negative'
+  }),
   maturity_date: Joi.date().iso().allow('', null).optional(),
-  roi_per_year: Joi.number().precision(2).allow(null).optional(),
-  fdr_mat_amt: Joi.number().precision(2).allow(null).optional(),
+  roi_per_year: Joi.number().precision(2).min(0).max(100).allow(null).optional().messages({
+    'number.min': 'Interest rate cannot be negative',
+    'number.max': 'Interest rate cannot exceed 100%'
+  }),
+  fdr_mat_amt: Joi.number().precision(2).min(0).max(9999999999999.99).allow(null).optional().messages({
+    'number.min': 'FDR maturity amount cannot be negative'
+  }),
   bank_name: Joi.string().allow('', null).optional(),
   bank_branch: Joi.string().allow('', null).optional(),
   asset_description: Joi.string().allow('', null).optional(),
-  asset_value: Joi.number().precision(2).allow(null).optional(),
+  asset_value: Joi.number().precision(2).min(0).max(9999999999999.99).allow(null).optional().messages({
+    'number.min': 'Asset value cannot be negative'
+  }),
   company_id: Joi.string().uuid().allow('', null).optional(),
   running_status: Joi.number().integer().allow(null).optional(),
   self_chits_as_company_months: Joi.boolean().allow(null).optional(),
   chits_group_status: Joi.number().integer().allow(null).optional(),
   chit_start_date: Joi.date().iso().allow('', null).optional(),
   chit_end_date: Joi.date().iso().allow('', null).optional(),
-  due_date_number_count: Joi.number().integer().allow(null).optional()
+  // Day of the month the instalment falls due (1-31; short months are clamped by schemeHelpers).
+  due_date_number_count: Joi.number().integer().min(1).max(31).allow(null).optional().messages({
+    'number.min': 'Due day must be between 1 and 31',
+    'number.max': 'Due day must be between 1 and 31'
+  })
 });
 
 const getAllChitsGroupSchema = Joi.object({
@@ -479,7 +539,7 @@ const storeOrUpdateContactUsSchema = Joi.object({
   }),
   address: Joi.string().allow('', null).optional(),
   phone_numbers: Joi.array().items(Joi.string()).allow(null).optional(),
-  emails: Joi.array().items(Joi.string().email().messages({
+  emails: Joi.array().items(Joi.string().email({ tlds: { allow: false } }).messages({
     'string.email': 'Each email must be a valid email address'
   })).allow(null).optional(),
   website_link: Joi.string().allow('', null).optional(),
@@ -618,9 +678,7 @@ module.exports = {
   }),
   districtValidator: Joi.object({
     id: Joi.string().uuid().optional(),
-    district_name: Joi.string().required().messages({
-      'any.required': 'District name is required'
-    }),
+    district_name: placeName('District name'),
     country_id: Joi.number().integer().required().messages({
       'any.required': 'Country ID is required'
     }),
@@ -636,10 +694,13 @@ module.exports = {
   }),
   cityValidator: Joi.object({
     id: Joi.string().uuid().optional(),
-    city_name: Joi.string().required().messages({
-      'any.required': 'City name is required'
+    city_name: placeName('City name'),
+    // E2E-014 (2026-10-14): an Indian PIN code is exactly 6 digits (triage assumption D2, pending
+    // owner confirmation). Still optional: blank / null is accepted as before.
+    pin_code: Joi.string().trim().pattern(/^\d{6}$/).allow('', null).optional().messages({
+      'string.pattern.base': 'PIN code must be exactly 6 digits',
+      'string.base': 'PIN code must be exactly 6 digits'
     }),
-    pin_code: Joi.string().allow('', null).optional(),
     country_id: Joi.number().integer().required().messages({
       'any.required': 'Country ID is required'
     }),
@@ -757,12 +818,35 @@ module.exports = {
       'any.required': 'Company ID is required',
       'string.uuid': 'Invalid Company ID format'
     }),
-    group_name: Joi.string().allow('', null).optional(),
-    chit_date: Joi.date().iso().allow('', null).optional(),
-    status: Joi.number().integer().allow(null).optional(),
-    chit_amount: Joi.number().allow('', null).optional(),
-    no_of_installments: Joi.number().integer().allow('', null).optional(),
-    remarks: Joi.string().allow('', null).optional()
+    // E2E-047 (2026-10-14): group name, chit date, chit amount (> 0) and instalments (>= 1) are
+    // required; blank values are rejected. Max chit amount = DECIMAL(10,2) column limit.
+    group_name: Joi.string().trim().max(100).required().messages({
+      'any.required': 'Group name is required',
+      'string.empty': 'Group name is required',
+      'string.max': 'Group name can be at most 100 characters'
+    }),
+    chit_date: Joi.date().iso().empty('').required().messages({
+      'any.required': 'Chit date is required',
+      'date.base': 'Chit date must be a valid date',
+      'date.format': 'Chit date must be a valid date'
+    }),
+    status: Joi.number().integer().min(0).allow(null).optional(),
+    chit_amount: Joi.number().precision(2).empty('').greater(0).max(99999999.99).required().messages({
+      'any.required': 'Chit amount is required',
+      'number.base': 'Chit amount must be a number',
+      'number.greater': 'Chit amount must be more than 0',
+      'number.max': 'Chit amount cannot be more than 9,99,99,999.99'
+    }),
+    no_of_installments: Joi.number().integer().empty('').min(1).max(1000).required().messages({
+      'any.required': 'Number of installments is required',
+      'number.base': 'Number of installments must be a whole number',
+      'number.integer': 'Number of installments must be a whole number',
+      'number.min': 'Number of installments must be at least 1',
+      'number.max': 'Number of installments cannot be more than 1000'
+    }),
+    remarks: Joi.string().max(255).allow('', null).optional().messages({
+      'string.max': 'Remarks can be at most 255 characters'
+    })
   }).unknown(true),
   getAllUpcomingChitSchema: Joi.object({
     company_id: Joi.string().uuid().allow('', null).optional(),
@@ -779,8 +863,9 @@ module.exports = {
     })
   }),
   updateFavoritesSchema: Joi.object({
-    user_id: Joi.string().required(),
-    type: Joi.number().integer().valid(1, 2).required(),
+    // E2E-041: still accepted (web + mobile send them) but the account comes from the token.
+    user_id: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
+    type: Joi.number().integer().valid(1, 2, 3).optional(),
     is_favorites: Joi.alternatives().try(
       Joi.array().items(Joi.alternatives().try(Joi.number(), Joi.string())),
       Joi.number(),
@@ -807,11 +892,25 @@ module.exports = {
     suit_cause: Joi.string().allow('', null).optional(),
     suit_no: Joi.string().allow('', null).optional(),
     suit_file_date: Joi.date().iso().allow('', null).optional(),
-    principle_amount: Joi.number().precision(2).allow(null).optional(),
-    cost_of_legal_amount: Joi.number().precision(2).allow(null).optional(),
-    inc_charges: Joi.number().precision(2).allow(null).optional(),
-    interest_amount: Joi.number().precision(2).allow(null).optional(),
-    claim_amount: Joi.number().precision(2).allow(null).optional(),
+    // E2E-048 (2026-10-14): principal must be more than 0 when given; the other amounts cannot be
+    // negative. Max = DECIMAL(15,2) column limit.
+    principle_amount: Joi.number().precision(2).greater(0).max(9999999999999.99).allow(null).optional().messages({
+      'number.base': 'Principal amount must be a number',
+      'number.greater': 'Principal amount must be more than 0',
+      'number.max': 'Principal amount is too large'
+    }),
+    cost_of_legal_amount: Joi.number().precision(2).min(0).max(9999999999999.99).allow(null).optional().messages({
+      'number.min': 'Legal cost cannot be negative'
+    }),
+    inc_charges: Joi.number().precision(2).min(0).max(9999999999999.99).allow(null).optional().messages({
+      'number.min': 'Charges cannot be negative'
+    }),
+    interest_amount: Joi.number().precision(2).min(0).max(9999999999999.99).allow(null).optional().messages({
+      'number.min': 'Interest amount cannot be negative'
+    }),
+    claim_amount: Joi.number().precision(2).min(0).max(9999999999999.99).allow(null).optional().messages({
+      'number.min': 'Claim amount cannot be negative'
+    }),
     legal_notice_date: Joi.date().iso().allow('', null).optional()
   }),
   getAllSuitFileInformationSchema: Joi.object({
@@ -837,7 +936,10 @@ module.exports = {
     due_date: Joi.date().iso().allow('', null).optional(),
     next_auction_date: Joi.date().iso().allow('', null).optional(),
     bid_amount: Joi.number().precision(2).allow(null).optional(),
-    gst_number_percentage: Joi.number().precision(2).allow(null).optional(),
+    gst_number_percentage: Joi.number().precision(2).min(0).max(100).allow(null).optional().messages({
+      'number.min': 'GST % cannot be negative',
+      'number.max': 'GST % cannot exceed 100',
+    }),
     pb_bo_proxy: Joi.string().allow('', null).optional(),
     minutes_filing_date: Joi.date().iso().allow('', null).optional(),
     installments: Joi.number().integer().allow(null).optional(),
@@ -929,7 +1031,13 @@ module.exports = {
     id: Joi.number().integer().optional(),
     name: Joi.string().required(),
     group_under_id: Joi.number().integer().allow(null).optional(),
-    account_order: Joi.number().integer().allow(null).optional(),
+    // E2E-038 (2026-10-14): display order is 0 or more.
+    account_order: Joi.number().integer().min(0).max(9999).allow(null).optional().messages({
+      'number.base': 'Display order must be a whole number',
+      'number.integer': 'Display order must be a whole number',
+      'number.min': 'Display order cannot be negative',
+      'number.max': 'Display order cannot be more than 9999'
+    }),
     type: Joi.number().integer().optional()
   }),
   deleteGroupUnderStaticListSchema: Joi.object({
@@ -946,7 +1054,7 @@ module.exports = {
     address_line_three: Joi.string().allow('', null).optional(),
     pin_code: Joi.string().allow('', null).optional(),
     mobile: Joi.string().allow('', null).optional(),
-    email: Joi.string().email().allow('', null).optional(),
+    email: Joi.string().email({ tlds: { allow: false } }).allow('', null).optional(),
     hsn_code: Joi.string().allow('', null).optional(),
     tin_number: Joi.string().allow('', null).optional(),
     mfl_number: Joi.string().allow('', null).optional(),
@@ -976,7 +1084,7 @@ module.exports = {
       address_line_three: Joi.string().allow('', null).optional(),
       pin_code: Joi.string().allow('', null).optional(),
       mobile: Joi.string().allow('', null).optional(),
-      email: Joi.string().email().allow('', null).optional(),
+      email: Joi.string().email({ tlds: { allow: false } }).allow('', null).optional(),
       hsn_code: Joi.string().allow('', null).optional(),
       tin_number: Joi.string().allow('', null).optional(),
       mfl_number: Joi.string().allow('', null).optional(),
@@ -1027,7 +1135,13 @@ module.exports = {
     configure_business_agent_id: Joi.string().uuid().required(),
     description: Joi.string().allow('', null).optional(),
     upload_document: Joi.string().allow('', null).optional(),
-    paid_amount: Joi.number().precision(2).required()
+    paid_amount: Joi.number().precision(2).required(),
+    // The payout leaves this account: 1 Cash, 2 UPI, 3 Bank (the service checks the account's type).
+    account_id: Joi.number().integer().required(),
+    payment_mode: Joi.number().integer().valid(1, 2, 3).required(),
+    // Kept as a 'YYYY-MM-DD' string: Joi.date() would turn it into a Date and risk an IST day shift.
+    paid_date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required(),
+    override_reason: Joi.string().allow('', null).optional()
   }),
   getAllHistoryBusinessAgentSchema: Joi.object({
     configure_business_agent_id: Joi.string().uuid().required(),
@@ -1035,7 +1149,9 @@ module.exports = {
     max: Joi.number().integer().min(1).optional()
   }),
   deleteHistoryBusinessAgentSchema: Joi.object({
-    id: Joi.string().uuid().required()
+    id: Joi.string().uuid().required(),
+    reason: Joi.string().allow('', null).optional(),
+    override_reason: Joi.string().allow('', null).optional()
   }),
   getBusinessAgentCommissionSummarySchema: Joi.object({
     company_id: Joi.string().uuid().allow('', null).optional(),
@@ -1132,7 +1248,7 @@ module.exports = {
     
     chit_value: Joi.when('scheme_type', { is: 63, then: Joi.alternatives().try(Joi.number(), Joi.string()).required(), otherwise: Joi.any().optional() }),
     adding_percentage: Joi.when('scheme_type', { is: 63, then: Joi.alternatives().try(Joi.number(), Joi.string()).required(), otherwise: Joi.any().optional() }),
-    company_percentage: Joi.when('scheme_type', { is: 63, then: Joi.alternatives().try(Joi.number(), Joi.string()).required(), otherwise: Joi.any().optional() }),
+    company_percentage: Joi.when('scheme_type', { is: 63, then: Joi.number().precision(2).min(0).max(99).required().messages({ 'number.min': 'Company percentage cannot be negative', 'number.max': 'Company percentage cannot exceed 99%' }), otherwise: Joi.any().optional() }),
     installment: Joi.any().optional(),
     company_chit: Joi.any().optional(),
 
@@ -1244,13 +1360,21 @@ module.exports = {
     data_payload: Joi.object().optional(),
   }),
   storeDirectPaymentSchema: Joi.object({
-    chits_installment_id: Joi.string().uuid().required(),
+    // A charges-only receipt names the ticket (enrollment_id) instead of an instalment.
+    chits_installment_id: Joi.string().uuid().optional(),
+    enrollment_id: Joi.number().integer().optional(),
+    charges: Joi.array().items(Joi.object({
+      ticket_charge_id: Joi.number().integer().required(),
+      amount: Joi.number().min(0).required(),
+    })).optional(),
     received_amount: Joi.number().min(0).required(),
     penalty_paid: Joi.number().min(0).optional(),
     payment_date: Joi.date().iso().optional(),
     payment_mode: Joi.number().integer().optional(),
     transaction_reference: Joi.string().allow('', null).optional(),
     cash_amount: Joi.number().min(0).optional(),
+    cash_account_id: Joi.number().integer().allow(null).optional(),
+    override_reason: Joi.string().allow('', null).optional(),
     upi_amount: Joi.number().min(0).optional(),
     upi_account_id: Joi.number().integer().allow(null).optional(),
     bank_amount: Joi.number().min(0).optional(),
@@ -1291,7 +1415,8 @@ module.exports = {
     payment_mode: Joi.number().integer().optional(),
     date_from: Joi.date().iso().optional(),
     date_to: Joi.date().iso().optional(),
-    search: Joi.string().allow('', null).optional()
+    search: Joi.string().allow('', null).optional(),
+    status: Joi.string().valid('active', 'cancelled', 'all').optional()
   }),
   updateBusinessDateSchema: Joi.object({
     business_date: Joi.date().iso().required(),
@@ -1376,7 +1501,7 @@ module.exports = {
     id: Joi.number().integer().optional(),
     address: Joi.string().allow('', null).optional(),
     phone_numbers: Joi.array().items(Joi.string().allow('', null)).allow(null).optional(),
-    emails: Joi.array().items(Joi.string().email().allow('', null)).allow(null).optional(),
+    emails: Joi.array().items(Joi.string().email({ tlds: { allow: false } }).allow('', null)).allow(null).optional(),
     website_link: Joi.string().allow('', null).optional(),
     social_media_links: Joi.object().unknown(true).allow(null).optional()
   }),
@@ -1467,6 +1592,7 @@ module.exports = {
     cheque_number: Joi.string().allow(null, '').optional(),
     cheque_date: Joi.string().isoDate().allow(null, '').optional(),
     reference_no: Joi.string().allow(null, '').optional(),
-    narration: Joi.string().allow(null, '').optional()
+    narration: Joi.string().allow(null, '').optional(),
+    override_reason: Joi.string().allow('', null).optional()
   })
 };

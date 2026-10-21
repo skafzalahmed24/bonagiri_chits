@@ -13,6 +13,8 @@ const reportController = require('../controllers/reportController');
 const platformSupportController = require('../controllers/platformSupportController');
 const bannerController = require('../controllers/bannerController');
 const prizePaymentController = require('../controllers/prizePaymentController');
+const receiptController = require('../controllers/receiptController');
+const moneyExtrasController = require('../controllers/moneyExtrasController');
 const validate = require('../middlewares/validate');
 const MODULES = require('../utils/modules');
 
@@ -240,6 +242,7 @@ router.post('/history-business-agent/store-or-update', authMiddleware.authentica
 router.post('/history-business-agent/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getAllHistoryBusinessAgentSchema), adminController.getAllHistoryBusinessAgents);
 router.post('/history-business-agent/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getByIdSchema), adminController.getHistoryBusinessAgentById);
 router.post('/history-business-agent/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.deleteHistoryBusinessAgentSchema), adminController.deleteHistoryBusinessAgent);
+router.post('/history-business-agent/cancel', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.deleteHistoryBusinessAgentSchema), adminController.deleteHistoryBusinessAgent);
 
 // business-agent summary route
 router.post('/configure-business-agent-commission/summary-by-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getBusinessAgentCommissionSummarySchema), adminController.getBusinessAgentCommissionSummary);
@@ -251,11 +254,24 @@ router.post('/collection-agent/submissions/update-status', authMiddleware.authen
 router.post('/collection-agent/submissions/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermissionOrUserRole(MODULES.T_COLLECTION_VERIFY, 'member'), validate(adminValidation.getAllCollectionSubmissionsSchema), adminController.getAllCollectionSubmissions);
 
 // member documents
-router.post('/member/documents/list', authMiddleware.authenticateToken, validate(adminValidation.getMemberDocumentsAdminSchema), adminController.getMemberDocumentsAdmin);
-router.post('/member/documents/verify', authMiddleware.authenticateToken, validate(adminValidation.verifyMemberDocumentSchema), adminController.verifyMemberDocument);
+router.post('/member/documents/list', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getMemberDocumentsAdminSchema), adminController.getMemberDocumentsAdmin);
+router.post('/member/documents/verify', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.verifyMemberDocumentSchema), adminController.verifyMemberDocument);
 
 // admin direct payment route
 router.post('/customer-payment/store-direct', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_MEMBER_RECEIPTS), validate(adminValidation.storeDirectPaymentSchema), adminController.storeDirectPayment);
+// Cancel a wrong receipt: company admin only, with a reason (the service enforces both).
+router.post('/customer-payment/cancel', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.T_ALL_RECEIPTS, MODULES.T_MEMBER_RECEIPTS]), receiptController.cancelReceipt);
+// Charges on a ticket, penalty waivers, cheque returns and counter advances (docs/MONEY_FLOW_BATCH2_3.md §3).
+const RECEIPT_DESK = [MODULES.T_MEMBER_RECEIPTS, MODULES.T_ALL_RECEIPTS];
+const NOTICE_MODULES = [MODULES.R_PRL, MODULES.R_PRLG, MODULES.R_UCPL, MODULES.R_MRCL, MODULES.R_FORMAN_NOTICE, MODULES.R_LEGAL_NOTICE, MODULES.R_ADVOCATE_NOTICE, MODULES.R_INTIMATION, MODULES.R_DP_NOTICE, MODULES.R_NO_DUE];
+router.post('/ticket-charges/get', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([...RECEIPT_DESK, MODULES.M_ENROLLMENTS]), moneyExtrasController.listCharges);
+router.post('/ticket-charges/add', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(RECEIPT_DESK), moneyExtrasController.addCharge);
+router.post('/ticket-charges/waive', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(RECEIPT_DESK), moneyExtrasController.waiveCharge);
+router.post('/ticket-charges/post-notice', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(NOTICE_MODULES), moneyExtrasController.postNoticeCharges);
+router.post('/installment/waive-penalty', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(RECEIPT_DESK), moneyExtrasController.waivePenalty);
+router.post('/customer-payment/cheque-returned', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(RECEIPT_DESK), moneyExtrasController.chequeReturned);
+router.post('/member-advance/take', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(RECEIPT_DESK), moneyExtrasController.takeAdvance);
+router.post('/member-advance/refund', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(RECEIPT_DESK), moneyExtrasController.refundAdvance);
 router.post('/customer-payment/get-all-receipts', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_ALL_RECEIPTS), validate(adminValidation.getAllReceiptsSchema), adminController.getAllReceipts);
 
 // member advances
@@ -290,6 +306,7 @@ router.post('/role/delete', authMiddleware.authenticateToken, authMiddleware.req
 // Payment Accounts specific routes
 router.post('/payment-account/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_PAYMENT_ACCOUNTS), paymentAccountController.storeOrUpdatePaymentAccount);
 router.post('/payment-account/get-all', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(PAYMENT_ACCOUNT_READERS), paymentAccountController.getAllPaymentAccounts);
+router.post('/payment-account/reconcile', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(PAYMENT_ACCOUNT_READERS), paymentAccountController.reconcilePaymentAccount);
 router.post('/payment-account/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_PAYMENT_ACCOUNTS), paymentAccountController.deletePaymentAccount);
 
 // dashboard, financials & leaderboards routes
@@ -358,6 +375,7 @@ router.post('/accounting-voucher/get-all', authMiddleware.authenticateToken, vou
 router.post('/accounting-voucher/get-by-id', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.getById);
 router.post('/accounting-voucher/store-or-update', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.storeOrUpdate);
 router.post('/accounting-voucher/delete', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.deleteVoucher);
+router.post('/accounting-voucher/cancel', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.deleteVoucher);
 router.post('/accounting-voucher/get-account-balance', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.getAccountBalance);
 
 // Self Transfer Routes
@@ -365,24 +383,28 @@ router.post('/self-transfer/get-all', authMiddleware.authenticateToken, authMidd
 router.post('/self-transfer/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SELF_TRANSFER), selfTransferController.getById);
 router.post('/self-transfer/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SELF_TRANSFER), selfTransferController.storeOrUpdate);
 router.post('/self-transfer/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SELF_TRANSFER), selfTransferController.deleteTransfer);
+router.post('/self-transfer/cancel', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SELF_TRANSFER), selfTransferController.deleteTransfer);
 
 // Borrow/Repay Routes
 router.post('/borrow-repay/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_BORROW_REPAY), borrowRepayController.getAll);
 router.post('/borrow-repay/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_BORROW_REPAY), borrowRepayController.getById);
 router.post('/borrow-repay/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_BORROW_REPAY), borrowRepayController.storeOrUpdate);
 router.post('/borrow-repay/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_BORROW_REPAY), borrowRepayController.deleteEntry);
+router.post('/borrow-repay/cancel', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_BORROW_REPAY), borrowRepayController.deleteEntry);
 
 // Outgoing Payments Routes
 router.post('/outgoing-payment/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_PAYMENTS), outgoingPaymentController.getAll);
 router.post('/outgoing-payment/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_PAYMENTS), outgoingPaymentController.getById);
 router.post('/outgoing-payment/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_PAYMENTS), outgoingPaymentController.storeOrUpdate);
 router.post('/outgoing-payment/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_PAYMENTS), outgoingPaymentController.deletePayment);
+router.post('/outgoing-payment/cancel', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_PAYMENTS), outgoingPaymentController.deletePayment);
 
 // Expenditure Routes
 router.post('/expenditure/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_EXPENDITURE), expenditureController.getAll);
 router.post('/expenditure/get-by-id', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_EXPENDITURE), expenditureController.getById);
 router.post('/expenditure/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_EXPENDITURE), expenditureController.storeOrUpdate);
 router.post('/expenditure/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_EXPENDITURE), expenditureController.deleteExpenditure);
+router.post('/expenditure/cancel', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_EXPENDITURE), expenditureController.deleteExpenditure);
 
 // Reports Routes
 router.post('/reports/day-report', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_DAY_REPORT), reportController.getDayReport);
@@ -405,6 +427,8 @@ router.post('/denomination/store-or-update', authMiddleware.authenticateToken, a
 // Picker lookups (names and ids only) for any office user; portal members are refused.
 router.post('/options/chit-groups', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getGroupOptions);
 router.post('/options/members', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getMemberOptions);
+router.post('/options/areas', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getAreaOptions);
+router.post('/options/routes', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getRouteOptions);
 router.post('/reports/fdr-statement', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_FDR_RELEASE, MODULES.E_GROUP]), reportController.getFdrStatement);
 router.post('/reports/agent-targets', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_AGENT_TARGETS), reportController.getAgentTargetReport);
 router.post('/reports/advance-register', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_ADV_ADJUSTMENTS), reportController.getAdvanceRegister);

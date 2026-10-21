@@ -1,5 +1,6 @@
 'use strict';
 const { Model } = require('sequelize');
+const { cancelFields, cancelScopes } = require('../utils/cancellable');
 
 module.exports = (sequelize, DataTypes) => {
   class OutgoingPayment extends Model {
@@ -52,10 +53,12 @@ module.exports = (sequelize, DataTypes) => {
       company_id: {
         type: DataTypes.UUID,
         allowNull: true
-      }
+      },
+      ...cancelFields(DataTypes),
     },
     {
       sequelize,
+      ...cancelScopes,
       modelName: 'OutgoingPayment',
       tableName: 'outgoing_payments',
       timestamps: true,

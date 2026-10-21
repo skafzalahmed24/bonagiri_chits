@@ -10,6 +10,8 @@ module.exports = (sequelize, DataTypes) => {
       if (models.PaymentAccount) {
         CustomerPayment.belongsTo(models.PaymentAccount, { foreignKey: 'upi_account_id', as: 'upi_account' });
         CustomerPayment.belongsTo(models.PaymentAccount, { foreignKey: 'bank_account_id', as: 'bank_account' });
+        CustomerPayment.belongsTo(models.PaymentAccount, { foreignKey: 'cash_account_id', as: 'cash_account' });
+        if (models.ReceiptChargeLine) CustomerPayment.hasMany(models.ReceiptChargeLine, { foreignKey: 'customer_payment_id', as: 'charge_lines' });
       }
       if (models.MemberAdvance) {
         CustomerPayment.belongsTo(models.MemberAdvance, { foreignKey: 'member_advance_id', as: 'member_advance' });
@@ -80,6 +82,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DECIMAL(15, 2),
       defaultValue: 0.00
     },
+    cash_account_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
     upi_account_id: {
       type: DataTypes.INTEGER,
       allowNull: true
@@ -115,7 +121,13 @@ module.exports = (sequelize, DataTypes) => {
     adjust_from_enrollment_id: {
       type: DataTypes.INTEGER,
       allowNull: true
-    }
+    },
+    // A cancelled (reversed, payment_status 3) receipt keeps its number plus who, when and why.
+    reversed_at: { type: DataTypes.DATE, allowNull: true },
+    reversed_by_name: { type: DataTypes.STRING, allowNull: true },
+    reverse_reason: { type: DataTypes.TEXT, allowNull: true },
+    // Charges paid on this receipt (enrollment fee, notice, cheque return…); the cash/UPI/bank split covers them too.
+    charges_amount: { type: DataTypes.DECIMAL(15, 2), allowNull: false, defaultValue: 0 }
   }, {
     sequelize,
     modelName: 'CustomerPayment',

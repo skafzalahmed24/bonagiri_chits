@@ -3631,10 +3631,50 @@ const getPendingMembersService = async (res, collection_agent_id, group_id, min,
     }
 };
 
+/**
+ * Gate for the agent's member-level routes (customer details, visits): the signed-in agent must
+ * collect for a live ticket this member holds (main or joint), in the agent's company. Throws
+ * HttpError 401/403/404; the 404 is the same whether or not the member exists elsewhere.
+ */
+const requireAgentMember = async (userPayload, member_id) => {
+    const { agentOf, HttpError } = require('./agentSuretyService');
+    if (!userPayload || !userPayload.id) throw new HttpError(401, 'Unauthorized access');
+    const agent = await agentOf(userPayload);
+    if (!agent.company_id) throw new HttpError(403, 'Insufficient permissions');
+    const ticket = await Enrollment.findOne({
+        where: {
+            ...(await ticketHolderWhere(member_id)),
+            collection_agent_id: agent.id,
+            company_id: agent.company_id,
+            delete_status: 0
+        },
+        attributes: ['id']
+    });
+    if (!ticket) throw new HttpError(404, 'Member not found in your collections');
+    return agent;
+};
+
+/** Turns an HttpError from the agent gates into the standard error response; rethrows anything else. */
+const agentGateResponse = (res, err) => {
+    const { HttpError } = require('./agentSuretyService');
+    if (err instanceof HttpError) return errorResponse(res, err.status, err.message);
+    throw err;
+};
+
 const getMemberDuesService = async (res, member_id, userPayload, groupId = null) => {
     try {
-        if (userPayload) {
-            if (userPayload.role === 'member') {
+        if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+        {
+            if (userPayload.role === 'company' || userPayload.role === 'staff') {
+                // Office users: only members of their own company (same rule as the member ledger).
+                const target = await Member.findByPk(member_id, { attributes: ['id', 'company_id'] });
+                const compId = userPayload.role === 'staff' ? userPayload.company_id : userPayload.id;
+                if (!target || !compId || String(target.company_id) !== String(compId)) {
+                    return errorResponse(res, 403, 'You are not authorized to view this member\'s dues');
+                }
+            } else if (userPayload.role !== 'member') {
+                return errorResponse(res, 403, 'You are not authorized to view this member\'s dues');
+            } else if (userPayload.role === 'member') {
                 if (String(userPayload.id) !== String(member_id)) {
                     // If accessing someone else's dues, verify they are a collection agent assigned to this member
                     const authWhere = {
@@ -3965,11 +4005,23 @@ const getSubmissionsService = async (res, collection_agent_id, type, min, max) =
 };
 
 const submitCollectionPaymentService = async (res, payload, userPayload) => {
+    // The collecting agent is the token's user; body.collection_agent_id is ignored (kept in the
+    // validator so existing app builds still pass). Fail closed before any write.
+    if (!userPayload || !userPayload.id) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    const agentSuretyService = require('./agentSuretyService');
+    let agent;
+    try {
+        agent = await agentSuretyService.agentOf(userPayload);
+    } catch (err) {
+        return agentGateResponse(res, err);
+    }
+    if (!agent.company_id) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+
     const transaction = await sequelize.transaction();
     try {
         const { member_id, payment_type, amount, cash, transaction_id, cheque_number, bank_details, other_details } = payload;
 
-        const collection_agent_id = userPayload ? userPayload.id : payload.collection_agent_id;
+        const collection_agent_id = agent.id;
 
         const businessDateObj = await SystemSettingsService.getBusinessDate();
         let currentDateStr;
@@ -3983,6 +4035,37 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
         }
         const simulatedNow = new Date(currentDateStr);
         const paymentDateVal = payload.paid_date || currentDateStr;
+
+        // Clearance Logic
+        // Only the chits this agent services: money an agent collects must never pay
+        // an installment on a chit assigned to another agent, or the collection is
+        // credited to that agent in every report.
+        const enrollments = await Enrollment.findAll({
+            where: {
+                ...(await ticketHolderWhere(member_id)),
+                delete_status: 0,
+                collection_agent_id,
+                company_id: agent.company_id
+            },
+            include: [
+                { model: ChitsGroup, as: 'group' },
+                { model: Member, as: 'subscriber' },
+                {
+                    model: EnrollmentJointHolder,
+                    as: 'joint_holders',
+                    required: false,
+                    where: { removed_on: null },
+                    include: [{ model: Member, as: 'member' }]
+                }
+            ]
+        });
+
+        // The member must be on this agent's tickets (same company). Checked BEFORE the submission
+        // row is written, so a refused call leaves no pending money row and no notification.
+        if (!enrollments.length) {
+            await transaction.rollback();
+            return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found in your collections');
+        }
 
         // Create CollectionAgentAmount (status 0: Pending)
         const submission = await CollectionAgentAmount.create({
@@ -3998,29 +4081,6 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
             paid_date: paymentDateVal,
             status: 0
         }, { transaction });
-
-        // Clearance Logic
-        // Only the chits this agent services: money an agent collects must never pay
-        // an installment on a chit assigned to another agent, or the collection is
-        // credited to that agent in every report.
-        const enrollments = await Enrollment.findAll({
-            where: {
-                ...(await ticketHolderWhere(member_id)),
-                delete_status: 0,
-                collection_agent_id
-            },
-            include: [
-                { model: ChitsGroup, as: 'group' },
-                { model: Member, as: 'subscriber' },
-                {
-                    model: EnrollmentJointHolder,
-                    as: 'joint_holders',
-                    required: false,
-                    where: { removed_on: null },
-                    include: [{ model: Member, as: 'member' }]
-                }
-            ]
-        });
 
         const enrollmentIds = enrollments.map(e => e.id);
         const installments = await ChitsInstallment.findAll({
@@ -4127,11 +4187,8 @@ const submitCollectionPaymentService = async (res, payload, userPayload) => {
         // Dispatch notifications to Member & Admin (non-blocking)
         try {
             const member = await Member.findByPk(member_id);
-            let agentName = 'Collection Agent';
-            if (collection_agent_id) {
-                const agentUser = await StaffUser.findByPk(collection_agent_id) || await Member.findByPk(collection_agent_id);
-                if (agentUser) agentName = agentUser.name || agentUser.first_name || 'Collection Agent';
-            }
+            // The agent is a Member (token user); StaffUser ids are a different table and could collide.
+            const agentName = agent.name || 'Collection Agent';
             if (member) {
                 // 1. Member Notification
                 await fcmService.sendPushToMember(
@@ -4493,6 +4550,15 @@ const getMemberDocumentsService = async (res, userPayload, group_id, member_id) 
     try {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
+        // O1: only a collection agent who collects for this member's ticket in this group (same company).
+        const agentSuretyService = require('./agentSuretyService');
+        try {
+            await agentSuretyService.requireAgentTickets(userPayload, { group_id, member_id });
+        } catch (err) {
+            if (err instanceof agentSuretyService.HttpError) return errorResponse(res, err.status, err.message);
+            throw err;
+        }
+
         const result = await memberDocumentsView(group_id, member_id);
 
         // Optional sureties on the member's ticket(s) this agent collects for (empty otherwise).
@@ -4508,12 +4574,25 @@ const getMemberDocumentsService = async (res, userPayload, group_id, member_id) 
 
 const getDocumentSubmissionsService = async (res, userPayload, body) => {
     try {
-        const { collection_agent_id, min, max } = body;
+        // O1: the agent is the token's user; body.collection_agent_id is ignored (it stays in the
+        // validator only so existing app builds keep working). Tickets are limited to the agent's company.
+        const { min, max } = body;
         const limit = parseInt(max, 10) || 50;
         const offset = parseInt(min, 10) || 0;
 
+        if (!userPayload || !userPayload.id) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+        const agentSuretyService = require('./agentSuretyService');
+        let agent;
+        try {
+            agent = await agentSuretyService.agentOf(userPayload);
+        } catch (err) {
+            if (err instanceof agentSuretyService.HttpError) return errorResponse(res, err.status, err.message);
+            throw err;
+        }
+        if (!agent.company_id) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+
         const enrollments = await Enrollment.findAll({
-            where: { collection_agent_id, delete_status: 0 },
+            where: { collection_agent_id: agent.id, company_id: agent.company_id, delete_status: 0 },
             include: [
                 { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id'] },
                 { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name'] }
@@ -4612,6 +4691,15 @@ const uploadMemberDocumentService = async (res, body, userPayload) => {
         if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
 
         const { group_id, member_id, document_type, status = 1, document_url: body_doc_url } = body;
+
+        // O1: only a collection agent who collects for this member's ticket in this group (same company).
+        const agentSuretyService = require('./agentSuretyService');
+        try {
+            await agentSuretyService.requireAgentTickets(userPayload, { group_id, member_id });
+        } catch (err) {
+            if (err instanceof agentSuretyService.HttpError) return errorResponse(res, err.status, err.message);
+            throw err;
+        }
 
         let document_url = body_doc_url || null;
 
@@ -4948,7 +5036,11 @@ const getMembersByGroupIdService = async (res, reqUser, group_id, search, min, m
         if (reqUser.role === 'staff' && group.company_id !== reqUser.company_id) {
             return errorResponse(res, statusCodes.FORBIDDEN, 'Access denied to this group');
         }
-        if (isCollectionAgent(reqUser)) {
+        if (reqUser.role !== 'company' && reqUser.role !== 'staff') {
+            // Not office: only a collection agent assigned to this group. Plain member tokens are refused.
+            if (reqUser.role !== 'member' || !isCollectionAgent(reqUser)) {
+                return errorResponse(res, statusCodes.FORBIDDEN, 'Unauthorized role');
+            }
             const count = await Enrollment.count({ where: { group_id, collection_agent_id: reqUser.id, delete_status: 0 } });
             if (count === 0) return errorResponse(res, statusCodes.FORBIDDEN, 'Not assigned to this group');
         }
@@ -5123,9 +5215,10 @@ const getMembersByCollectionAgentIdService = async (res, collection_agent_id, se
     }
 };
 
-const getCustomerDetailsByIdService = async (res, payload) => {
+const getCustomerDetailsByIdService = async (res, payload, userPayload) => {
     try {
         const { member_id } = payload;
+        try { await requireAgentMember(userPayload, member_id); } catch (err) { return agentGateResponse(res, err); }
 
         const member = await Member.findByPk(member_id, {
             attributes: ['id', 'name', 'member_id', 'mobile_number', 'upload_image', 'gender']
@@ -5222,9 +5315,10 @@ const getCustomerDetailsByIdService = async (res, payload) => {
     }
 };
 
-const getVisitHistoryService = async (res, payload) => {
+const getVisitHistoryService = async (res, payload, userPayload) => {
     try {
         const { member_id, min, max } = payload;
+        try { await requireAgentMember(userPayload, member_id); } catch (err) { return agentGateResponse(res, err); }
         const limit = parseInt(max, 10) || 10;
         const offset = parseInt(min, 10) || 0;
 
@@ -5293,7 +5387,7 @@ const getVisitHistoryService = async (res, payload) => {
     }
 };
 
-const getVisitDetailsByIdService = async (res, payload) => {
+const getVisitDetailsByIdService = async (res, payload, userPayload) => {
     try {
         const { visit_id } = payload;
 
@@ -5307,6 +5401,12 @@ const getVisitDetailsByIdService = async (res, payload) => {
 
         if (!visit) {
             return errorResponse(res, statusCodes.NOT_FOUND, 'Visit not found');
+        }
+        // The visit's member must be on this agent's tickets (same company); same 404 as a missing visit.
+        try { await requireAgentMember(userPayload, visit.member_id); } catch (err) {
+            const { HttpError } = require('./agentSuretyService');
+            if (err instanceof HttpError && err.status === 404) return errorResponse(res, statusCodes.NOT_FOUND, 'Visit not found');
+            return agentGateResponse(res, err);
         }
 
         const formatDateTime = (dateStr) => {
@@ -5342,19 +5442,18 @@ const getVisitDetailsByIdService = async (res, payload) => {
     }
 };
 
-const storeCustomerVisitService = async (res, payload) => {
+const storeCustomerVisitService = async (res, payload, userPayload) => {
     try {
-        const { member_id, collection_agent_id, visitor_type, upload_proof, remarks, customer_vistor_status } = payload;
+        // The visiting agent is the token's user; body.collection_agent_id is ignored (kept in the
+        // validator so existing app builds still pass). The member must be on the agent's tickets.
+        const { member_id, visitor_type, upload_proof, remarks, customer_vistor_status } = payload;
+        let agent;
+        try { agent = await requireAgentMember(userPayload, member_id); } catch (err) { return agentGateResponse(res, err); }
+        const collection_agent_id = agent.id;
 
-        // Verify member and collection agent exist
         const member = await Member.findByPk(member_id);
         if (!member) {
             return errorResponse(res, statusCodes.BAD_REQUEST, 'Member not found');
-        }
-
-        const agent = await Member.findByPk(collection_agent_id);
-        if (!agent) {
-            return errorResponse(res, statusCodes.BAD_REQUEST, 'Collection Agent not found');
         }
 
         const newVisit = await CustomerVisit.create({

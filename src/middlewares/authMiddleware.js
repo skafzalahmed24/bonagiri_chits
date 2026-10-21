@@ -1,6 +1,7 @@
 const { errorResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 const { verifyAccessToken } = require('../utils/jwtHelper');
+const { isCollectionAgent } = require('../utils/authHelpers');
 
 if (!process.env.DEFAULT_API_TOKEN) {
   console.error("FATAL ERROR: DEFAULT_API_TOKEN is not defined in the environment.");
@@ -107,7 +108,18 @@ const requireOfficeUser = (req, res, next) => {
   return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
 };
 
+// Collection agents only: a member-portal / mobile token whose introduced_as holds the
+// collection-agent type (id 18). Company, staff, superadmin and plain member tokens are refused.
+// Which members/groups the agent may touch is checked in the service (their own tickets).
+const requireCollectionAgent = (req, res, next) => {
+  if (!req.user || req.user.role !== 'member' || !isCollectionAgent(req.user)) {
+    return errorResponse(res, statusCodes.FORBIDDEN, 'This action is for collection agents only');
+  }
+  next();
+};
+
 module.exports = {
+  requireCollectionAgent,
   requireOfficeUser,
   authenticateDefaultToken,
   authenticateToken,

@@ -39,7 +39,7 @@ async function storeOrUpdate(req, res) {
     const result = await prizePaymentService.storeOrUpdate({ ...req.body, companyId, user: req.user });
     return successResponse(res, statusCodes.OK, 'Success', result);
   } catch (error) {
-    return errorResponse(res, statusCodes.BAD_REQUEST, error.message);
+    return res.status(statusCodes.BAD_REQUEST).json({ status: 0, message: error.message, code: error.code });
   }
 }
 
@@ -69,7 +69,7 @@ async function deletePayment(req, res) {
     await prizePaymentService.deletePayment({ ...req.body, companyId, user: req.user });
     return successResponse(res, statusCodes.OK, 'Deleted successfully');
   } catch (error) {
-    return errorResponse(res, statusCodes.BAD_REQUEST, error.message);
+    return res.status(statusCodes.BAD_REQUEST).json({ status: 0, message: error.message, code: error.code });
   }
 }
 

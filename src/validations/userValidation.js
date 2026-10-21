@@ -236,7 +236,7 @@ const submitCollectionPaymentSchema = Joi.object({
   collection_agent_id: Joi.number().integer().optional(),
   member_id: Joi.number().integer().required(),
   payment_type: Joi.number().integer().valid(1, 2, 3, 4, 5).required(),
-  amount: Joi.number().precision(2).required(),
+  amount: Joi.number().precision(2).positive().required(),
   cash: Joi.object().optional(),
   transaction_id: Joi.string().optional(),
   cheque_number: Joi.string().optional(),

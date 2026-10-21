@@ -8,6 +8,10 @@ const { Op } = require('sequelize');
 // ─────────────────────────────────────────────────────────────────────────────
 const storeOrUpdateFixedSchemeService = async (res, company_id, body) => {
   try {
+    // company_id comes from the token (controller); fail closed without it.
+    if (!company_id) {
+      return errorResponse(res, statusCodes.FORBIDDEN, 'Company could not be determined for this account');
+    }
     const {
       id,
       scheme_type,
@@ -46,12 +50,13 @@ const storeOrUpdateFixedSchemeService = async (res, company_id, body) => {
     let message;
 
     if (id) {
-      const existing = await FixedSchemeChitsConfiguration.findByPk(id);
+      // Scoped by the caller's company: another company's template is "not found" (404, not 403).
+      const existing = await FixedSchemeChitsConfiguration.findOne({ where: { id, company_id } });
       if (!existing) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Record not found');
       }
       await existing.update(payload);
-      record = await FixedSchemeChitsConfiguration.findByPk(id);
+      record = await FixedSchemeChitsConfiguration.findOne({ where: { id, company_id } });
       message = 'Fixed scheme chit configuration updated successfully';
     } else {
       record = await FixedSchemeChitsConfiguration.create(payload);

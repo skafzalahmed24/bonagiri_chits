@@ -1,5 +1,6 @@
 'use strict';
 const { Model } = require('sequelize');
+const { cancelFields, cancelScopes } = require('../utils/cancellable');
 
 module.exports = (sequelize, DataTypes) => {
   class SelfTransfer extends Model {
@@ -45,10 +46,12 @@ module.exports = (sequelize, DataTypes) => {
       company_id: {
         type: DataTypes.UUID,
         allowNull: true
-      }
+      },
+      ...cancelFields(DataTypes),
     },
     {
       sequelize,
+      ...cancelScopes,
       modelName: 'SelfTransfer',
       tableName: 'self_transfers',
       timestamps: true,

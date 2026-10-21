@@ -19,7 +19,10 @@ const {
   ChitsInstallment,
   Enrollment,
   MemberAdvance,
+  AdvanceRefund,
   PrizePayment,
+  HistoryBusinessAgent,
+  ConfigureBusinessAgentCommission,
   sequelize,
 } = require('../models');
 const { getGroupStartDate } = require('./adminService');
@@ -47,9 +50,7 @@ class ReportService {
       order: [['id', 'ASC']]
     });
 
-    // Find the primary CASH account (lowest ID) for CustomerPayment cash mapping
-    const cashAccount = accounts.find(a => a.account_type === 'CASH');
-    const cashAccountId = cashAccount ? cashAccount.id : null;
+    // Removed legacy cashAccount fallback logic
 
     const reportRows = [];
     const totals = {
@@ -72,26 +73,39 @@ class ReportService {
         return result || 0;
       };
 
-      // 1. Member Receipts (CustomerPayment)
+      // 1. Member Receipts (CustomerPayment): verified only; cancelled (3) and pending (0) aren't in any account.
       // UPI
       if (account.account_type === 'UPI') {
-        priorReceipts += await getSum(CustomerPayment, 'upi_amount', { upi_account_id: account.id, payment_date: { [Op.lt]: date } });
-        todayReceipts += await getSum(CustomerPayment, 'upi_amount', { upi_account_id: account.id, payment_date: date });
+        priorReceipts += await getSum(CustomerPayment, 'upi_amount', { upi_account_id: account.id, payment_date: { [Op.lt]: date }, payment_status: 1 });
+        todayReceipts += await getSum(CustomerPayment, 'upi_amount', { upi_account_id: account.id, payment_date: date, payment_status: 1 });
       }
       // Bank
       if (account.account_type === 'BANK') {
-        priorReceipts += await getSum(CustomerPayment, 'bank_amount', { bank_account_id: account.id, payment_date: { [Op.lt]: date } });
-        todayReceipts += await getSum(CustomerPayment, 'bank_amount', { bank_account_id: account.id, payment_date: date });
+        priorReceipts += await getSum(CustomerPayment, 'bank_amount', { bank_account_id: account.id, payment_date: { [Op.lt]: date }, payment_status: 1 });
+        todayReceipts += await getSum(CustomerPayment, 'bank_amount', { bank_account_id: account.id, payment_date: date, payment_status: 1 });
       }
       // Cash
-      if (account.id === cashAccountId) {
-        priorReceipts += await getSum(CustomerPayment, 'cash_amount', { payment_date: { [Op.lt]: date } }, companyPaymentInclude(company_id));
-        todayReceipts += await getSum(CustomerPayment, 'cash_amount', { payment_date: date }, companyPaymentInclude(company_id));
+      if (account.account_type === 'CASH') {
+        const cashWherePrior = {
+          payment_date: { [Op.lt]: date },
+          payment_status: 1,
+          cash_account_id: account.id
+        };
+        const cashWhereToday = {
+          payment_date: date,
+          payment_status: 1,
+          cash_account_id: account.id
+        };
+        priorReceipts += await getSum(CustomerPayment, 'cash_amount', cashWherePrior, companyPaymentInclude(company_id));
+        todayReceipts += await getSum(CustomerPayment, 'cash_amount', cashWhereToday, companyPaymentInclude(company_id));
       }
 
       // Member Advances
       priorReceipts += await getSum(MemberAdvance, 'amount', { account_id: account.id, date: { [Op.lt]: date }, company_id });
       todayReceipts += await getSum(MemberAdvance, 'amount', { account_id: account.id, date: date, company_id });
+      // Unused advance refunded at the office leaves the account it was paid from.
+      priorPayments += await getSum(AdvanceRefund, 'amount', { account_id: account.id, refund_date: { [Op.lt]: date }, company_id });
+      todayPayments += await getSum(AdvanceRefund, 'amount', { account_id: account.id, refund_date: date, company_id });
 
       // 2. Accounting Vouchers
       // We must join AccountingVoucherLine to sum the line amounts.
@@ -117,6 +131,10 @@ class ReportService {
       }) || 0;
       todayPayments += todayVoucherPayments;
 
+      // Bank Deposits of office cash leave the Cash account they came from.
+      priorPayments += await getSum(AccountingVoucher, 'total_amount', { source_account_id: account.id, voucher_type: 'BD', transaction_date: { [Op.lt]: date } });
+      todayPayments += await getSum(AccountingVoucher, 'total_amount', { source_account_id: account.id, voucher_type: 'BD', transaction_date: date });
+
       // 3. Self Transfers
       priorReceipts += await getSum(SelfTransfer, 'amount', { to_account_id: account.id, date: { [Op.lt]: date } });
       todayReceipts += await getSum(SelfTransfer, 'amount', { to_account_id: account.id, date: date });
@@ -138,6 +156,10 @@ class ReportService {
       // 5b. Prize Payments (Types 1 and 2)
       priorPayments += await getSum(PrizePayment, 'amount', { account_id: account.id, payment_date: { [Op.lt]: date }, payment_type: { [Op.in]: [1, 2] }, is_deleted: 0 });
       todayPayments += await getSum(PrizePayment, 'amount', { account_id: account.id, payment_date: date, payment_type: { [Op.in]: [1, 2] }, is_deleted: 0 });
+
+      // 5c. Agent Commissions
+      priorPayments += await getSum(HistoryBusinessAgent, 'paid_amount', { account_id: account.id, paid_date: { [Op.lt]: date }, is_deleted_status: 0 });
+      todayPayments += await getSum(HistoryBusinessAgent, 'paid_amount', { account_id: account.id, paid_date: date, is_deleted_status: 0 });
 
       // 6. Expenditures
       priorPayments += await getSum(Expenditure, 'amount', { account_id: account.id, date: { [Op.lt]: date } });
@@ -339,19 +361,20 @@ class ReportService {
 
     // CustomerPayment (Receipts)
     if (account.account_type === 'UPI') {
-      priorReceipts += await getSum(CustomerPayment, 'upi_amount', { upi_account_id: account.id, payment_date: { [Op.lt]: from_date } });
+      priorReceipts += await getSum(CustomerPayment, 'upi_amount', { upi_account_id: account.id, payment_date: { [Op.lt]: from_date }, payment_status: 1 });
     } else if (account.account_type === 'BANK') {
-      priorReceipts += await getSum(CustomerPayment, 'bank_amount', { bank_account_id: account.id, payment_date: { [Op.lt]: from_date } });
+      priorReceipts += await getSum(CustomerPayment, 'bank_amount', { bank_account_id: account.id, payment_date: { [Op.lt]: from_date }, payment_status: 1 });
     } else if (account.account_type === 'CASH') {
-      // Find the primary CASH account
-      const cashAccount = await PaymentAccount.findOne({ where: { company_id, account_type: 'CASH', is_active: true }, order: [['id', 'ASC']] });
-      if (cashAccount && cashAccount.id === account.id) {
-        priorReceipts += await getSum(CustomerPayment, 'cash_amount', { payment_date: { [Op.lt]: from_date } }, companyPaymentInclude(company_id));
-      }
+      priorReceipts += await getSum(CustomerPayment, 'cash_amount', {
+        payment_date: { [Op.lt]: from_date },
+        payment_status: 1,
+        cash_account_id: account.id
+      }, companyPaymentInclude(company_id));
     }
 
     // Member Advances (Prior)
     priorReceipts += await getSum(MemberAdvance, 'amount', { account_id: account.id, date: { [Op.lt]: from_date }, company_id });
+    priorPayments += await getSum(AdvanceRefund, 'amount', { account_id: account.id, refund_date: { [Op.lt]: from_date }, company_id });
 
     // AccountingVouchers
     priorReceipts += await AccountingVoucherLine.sum('amount', {
@@ -360,6 +383,8 @@ class ReportService {
     priorPayments += await AccountingVoucherLine.sum('amount', {
       include: [{ model: AccountingVoucher, as: 'voucher', attributes: [], required: true, where: { account_id: account.id, transaction_date: { [Op.lt]: from_date }, voucher_type: { [Op.in]: ['CP', 'BP'] } } }]
     }) || 0;
+    // Bank Deposits of office cash leave the Cash account they came from.
+    priorPayments += await getSum(AccountingVoucher, 'total_amount', { source_account_id: account.id, voucher_type: 'BD', transaction_date: { [Op.lt]: from_date } });
 
     // Self Transfers
     priorReceipts += await getSum(SelfTransfer, 'amount', { to_account_id: account.id, date: { [Op.lt]: from_date } });
@@ -372,6 +397,7 @@ class ReportService {
     // Outgoing Payments & Expenditures
     priorPayments += await getSum(OutgoingPayment, 'amount', { account_id: account.id, date: { [Op.lt]: from_date } });
     priorPayments += await getSum(PrizePayment, 'amount', { account_id: account.id, payment_date: { [Op.lt]: from_date }, payment_type: { [Op.in]: [1, 2] }, is_deleted: 0 });
+    priorPayments += await getSum(HistoryBusinessAgent, 'paid_amount', { account_id: account.id, paid_date: { [Op.lt]: from_date }, is_deleted_status: 0 });
     priorPayments += await getSum(Expenditure, 'amount', { account_id: account.id, date: { [Op.lt]: from_date } });
 
     const opening_balance = parseFloat(account.opening_balance || 0) + priorReceipts - priorPayments;
@@ -388,7 +414,14 @@ class ReportService {
       const pmts = await CustomerPayment.findAll({ where: { bank_account_id: account.id, payment_date: rangeWhere, payment_status: 1 } });
       pmts.forEach(p => { if (p.bank_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: `Receipt - Bank`, debit: 0, credit: p.bank_amount }); });
     } else if (account.account_type === 'CASH') {
-      const pmts = await CustomerPayment.findAll({ where: { payment_date: rangeWhere, payment_status: 1 }, include: companyPaymentInclude(company_id) });
+      const pmts = await CustomerPayment.findAll({
+        where: {
+          payment_date: rangeWhere,
+          payment_status: 1,
+          cash_account_id: account.id
+        },
+        include: companyPaymentInclude(company_id)
+      });
       pmts.forEach(p => { if (p.cash_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: `Receipt - Cash`, debit: 0, credit: p.cash_amount }); });
     }
 
@@ -396,7 +429,9 @@ class ReportService {
     const advs = (MemberAdvance && typeof MemberAdvance.findAll === 'function')
       ? await MemberAdvance.findAll({ where: { account_id: account.id, date: rangeWhere, company_id } })
       : [];
-    advs.forEach(a => transactions.push({ date: a.date, type: 'Advance', particular: 'Advance from Collection', debit: 0, credit: a.amount }));
+    advs.forEach(a => transactions.push({ date: a.date, type: 'Advance', particular: a.receipt_number ? `Advance at office (${a.receipt_number})` : 'Advance from Collection', debit: 0, credit: a.amount }));
+    const refunds = await AdvanceRefund.findAll({ where: { account_id: account.id, refund_date: rangeWhere, company_id } });
+    refunds.forEach(r => transactions.push({ date: r.refund_date, type: 'Advance refund', particular: r.reason, debit: r.amount, credit: 0 }));
 
     // Accounting Vouchers
     const avLines = await AccountingVoucherLine.findAll({
@@ -412,6 +447,8 @@ class ReportService {
         credit: isReceipt ? l.amount : 0
       });
     });
+    const cashDeposits = await AccountingVoucher.findAll({ where: { source_account_id: account.id, voucher_type: 'BD', transaction_date: rangeWhere } });
+    cashDeposits.forEach((v) => transactions.push({ date: v.transaction_date, type: `Voucher (${v.voucher_number})`, particular: 'Cash deposited to bank', debit: v.total_amount, credit: 0 }));
 
     // Self Transfers
     const stIn = await SelfTransfer.findAll({ where: { to_account_id: account.id, date: rangeWhere } });
@@ -446,6 +483,22 @@ class ReportService {
       const gName = p.group ? p.group.group_name : '';
       const tNum = p.enrollment ? p.enrollment.group_position_number : '';
       transactions.push({ date: p.payment_date, type: 'Payment', particular: `${typeLabel} – ${mName}, ${gName} / ${tNum}`, debit: p.amount, credit: 0 });
+    });
+
+    // Agent Commissions
+    const agentPayouts = await HistoryBusinessAgent.findAll({
+      where: { account_id: account.id, paid_date: rangeWhere, is_deleted_status: 0 },
+      include: [
+        { 
+          model: ConfigureBusinessAgentCommission, 
+          as: 'configure_business_agent',
+          include: [{ model: Member, as: 'business_agent', attributes: ['name'] }]
+        }
+      ]
+    });
+    agentPayouts.forEach(p => {
+      const agentName = p.configure_business_agent?.business_agent?.name || 'Agent';
+      transactions.push({ date: p.paid_date, type: 'Payment', particular: `Agent commission – ${agentName}`, debit: p.paid_amount, credit: 0 });
     });
 
     // Expenditures
@@ -492,7 +545,7 @@ class ReportService {
     // CustomerPayments
     const pmts = await CustomerPayment.findAll({ where: { payment_date: rangeWhere, payment_status: 1 }, include: companyPaymentInclude(company_id) });
     pmts.forEach(p => {
-      if (p.cash_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: 'Receipt - Cash', account_name: cashAccName, amount: p.cash_amount, debit_credit_flag: 'CREDIT' });
+      if (p.cash_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: 'Receipt - Cash', account_name: p.cash_account_id ? (accMap[p.cash_account_id] || cashAccName) : cashAccName, amount: p.cash_amount, debit_credit_flag: 'CREDIT' });
       if (p.upi_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: 'Receipt - UPI', account_name: accMap[p.upi_account_id] || 'UPI', amount: p.upi_amount, debit_credit_flag: 'CREDIT' });
       if (p.bank_amount > 0) transactions.push({ date: p.payment_date, type: 'Collection', particular: 'Receipt - Bank', account_name: accMap[p.bank_account_id] || 'Bank', amount: p.bank_amount, debit_credit_flag: 'CREDIT' });
     });
@@ -507,6 +560,8 @@ class ReportService {
       if (a.payment_type === 4) typeStr = 'Bank';
       transactions.push({ date: a.date, type: 'Advance', particular: `Advance - ${typeStr}`, account_name: accMap[a.account_id] || 'Account', amount: a.amount, debit_credit_flag: 'CREDIT' });
     });
+    const refunds = await AdvanceRefund.findAll({ where: { refund_date: rangeWhere, company_id } });
+    refunds.forEach(r => transactions.push({ date: r.refund_date, type: 'Advance refund', particular: r.reason, account_name: accMap[r.account_id] || 'Account', amount: r.amount, debit_credit_flag: 'DEBIT' }));
 
     // Accounting Vouchers
     const avLines = await AccountingVoucherLine.findAll({
@@ -523,6 +578,8 @@ class ReportService {
         debit_credit_flag: isReceipt ? 'CREDIT' : 'DEBIT'
       });
     });
+    const cashDeposits = await AccountingVoucher.findAll({ where: { source_account_id: inCompanyAccounts, voucher_type: 'BD', transaction_date: rangeWhere } });
+    cashDeposits.forEach((v) => transactions.push({ date: v.transaction_date, type: `Voucher (${v.voucher_number})`, particular: 'Cash deposited to bank', account_name: accMap[v.source_account_id] || 'Account', amount: v.total_amount, debit_credit_flag: 'DEBIT' }));
 
     // Self Transfers
     const sts = await SelfTransfer.findAll({ where: { date: rangeWhere, from_account_id: inCompanyAccounts } });
@@ -564,6 +621,22 @@ class ReportService {
       const gName = p.group ? p.group.group_name : '';
       const tNum = p.enrollment ? p.enrollment.group_position_number : '';
       transactions.push({ date: p.payment_date, type: 'Payment', particular: `${typeLabel} – ${mName}, ${gName} / ${tNum}`, account_name: accMap[p.account_id] || 'Account', amount: p.amount, debit_credit_flag: 'DEBIT' });
+    });
+
+    // Agent Commissions
+    const agentPayoutsDb = await HistoryBusinessAgent.findAll({
+      where: { paid_date: rangeWhere, account_id: inCompanyAccounts, is_deleted_status: 0 },
+      include: [
+        { 
+          model: ConfigureBusinessAgentCommission, 
+          as: 'configure_business_agent',
+          include: [{ model: Member, as: 'business_agent', attributes: ['name'] }]
+        }
+      ]
+    });
+    agentPayoutsDb.forEach(p => {
+      const agentName = p.configure_business_agent?.business_agent?.name || 'Agent';
+      transactions.push({ date: p.paid_date, type: 'Payment', particular: `Agent commission – ${agentName}`, account_name: accMap[p.account_id] || 'Account', amount: p.paid_amount, debit_credit_flag: 'DEBIT' });
     });
 
     // Expenditures
@@ -682,7 +755,7 @@ class ReportService {
    * the payable amount of their due installments minus what has been verified
    * against them. Buckets differ; the money never does.
    */
-  async getOutstandingReport({ as_on_date, group_by = 'group', group_id, agent_id, area_id, route_id, company_id }) {
+  async getOutstandingReport({ as_on_date, group_by = 'group', group_id, agent_id, area_id, route_id, group_status = 1, subscriber_type = 'ALL', collection_agent_id, business_agent_id, company_id }) {
     const asOn = as_on_date || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     const round2 = (n) => parseFloat(Number(n).toFixed(2));
 
@@ -692,6 +765,12 @@ class ReportService {
     if (agent_id) {
       enrollmentWhere[Op.or] = [{ collection_agent_id: agent_id }, { business_agent_id: agent_id }];
     }
+    if (collection_agent_id) enrollmentWhere.collection_agent_id = collection_agent_id;
+    if (business_agent_id) enrollmentWhere.business_agent_id = business_agent_id;
+
+    let groupStatusWhere = { chits_group_status: { [Op.in]: [0, 1] } };
+    if (String(group_status) === '2') groupStatusWhere = { chits_group_status: 2 };
+    else if (String(group_status) === '0') groupStatusWhere = {}; // Both
 
     const enrollments = await Enrollment.findAll({
       where: enrollmentWhere,
@@ -699,7 +778,7 @@ class ReportService {
         { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'mobile_number', 'group_status'] },
         { model: Member, as: 'collection_agent', attributes: ['id', 'name'], required: false },
         { model: Member, as: 'business_agent', attributes: ['id', 'name'], required: false },
-        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount'], required: false },
+        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount'], required: true, where: groupStatusWhere },
         {
           model: Area, as: 'area', attributes: ['id', 'area_name', 'route_id'], required: false,
           include: [{ model: Route, as: 'route', attributes: ['id', 'route_name'], required: false }],
@@ -707,9 +786,31 @@ class ReportService {
       ],
     });
 
+    const prizedIds = await prizedTicketIds(enrollments);
+    const suits = await SuitFileInformation.findAll({ where: { company_id }, attributes: ['group_id', 'subscriber_id'] });
+    const suitFiled = new Set(suits.map((s) => s.group_id + ':' + s.subscriber_id));
+
     const scoped = (route_id
       ? enrollments.filter((e) => e.area && String(e.area.route_id) === String(route_id))
-      : enrollments).filter((e) => !e.subscriber || e.subscriber.group_status !== 1);
+      : enrollments).filter((e) => {
+        if (!e.subscriber || e.subscriber.group_status === 1) return false;
+        
+        if (subscriber_type === 'ALL') return true;
+        
+        const key = e.group_id + ':' + e.subscriber_id;
+        const isSF = suitFiled.has(key);
+        const isPS = prizedIds.has(e.id);
+        
+        if (subscriber_type === 'SF') return isSF;
+        if (isSF) return false; // PS, NPS, PS_NPS all exclude SF
+        
+        if (subscriber_type === 'PS_NPS') return true;
+        if (subscriber_type === 'PS') return isPS;
+        if (subscriber_type === 'NPS') return !isPS;
+        
+        return true;
+      });
+
     const empty = { as_on_date: asOn, group_by, summary: { total_outstanding: 0, members_count: 0, buckets_count: 0 }, rows: [] };
     if (scoped.length === 0) return empty;
 
@@ -738,11 +839,7 @@ class ReportService {
     });
 
     // Prized = the ticket has won an auction (a joint ticket is prized whichever holder bid).
-    const prizedIds = await prizedTicketIds(enrollments);
     const holderNames = await holderNamesByEnrollment(enrollments.map((e) => e.id));
-
-    const suits = await SuitFileInformation.findAll({ where: { company_id }, attributes: ['group_id', 'subscriber_id'] });
-    const suitFiled = new Set(suits.map((s) => s.group_id + ':' + s.subscriber_id));
 
     const bucketOf = (e) => {
       const key = e.group_id + ':' + e.subscriber_id;
@@ -1767,6 +1864,24 @@ class ReportService {
       return v != null ? [Number(v)] : [];
     };
     return members.map((m) => ({ id: m.id, name: m.name, member_code: m.member_id, introduced_as: asArray(m.introduced_as) }));
+  }
+
+  async getAreaOptions({ company_id }) {
+    const areas = await Area.findAll({
+      where: { company_id, is_deleted_status: 0 },
+      attributes: ['id', 'area_name', 'route_id'],
+      order: [['area_name', 'ASC']],
+    });
+    return areas.map((a) => ({ id: a.id, name: a.area_name, route_id: a.route_id }));
+  }
+
+  async getRouteOptions({ company_id }) {
+    const routes = await Route.findAll({
+      where: { company_id, is_deleted_status: 0 },
+      attributes: ['id', 'route_name'],
+      order: [['route_name', 'ASC']],
+    });
+    return routes.map((r) => ({ id: r.id, name: r.route_name }));
   }
 }
 

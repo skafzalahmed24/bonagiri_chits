@@ -3,6 +3,26 @@ const { successResponse, errorResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 const { Op } = require('sequelize');
 
+// Cancelled entries still reference the account, so they count (unscoped).
+const hasTransactions = async (accountId) => {
+  const { CustomerPayment, MemberAdvance, PrizePayment, Expenditure, OutgoingPayment, BorrowRepay, SelfTransfer, AccountingVoucher, HistoryBusinessAgent } = require('../models');
+  const models = [
+    CustomerPayment.count({ where: { [Op.or]: [{ cash_account_id: accountId }, { upi_account_id: accountId }, { bank_account_id: accountId }] } }),
+    MemberAdvance.count({ where: { account_id: accountId } }),
+    PrizePayment.count({ where: { account_id: accountId } }),
+    Expenditure.unscoped().count({ where: { account_id: accountId } }),
+    OutgoingPayment.unscoped().count({ where: { account_id: accountId } }),
+    BorrowRepay.unscoped().count({ where: { account_id: accountId } }),
+    SelfTransfer.unscoped().count({ where: { [Op.or]: [{ from_account_id: accountId }, { to_account_id: accountId }] } }),
+    AccountingVoucher.unscoped().count({ where: { [Op.or]: [{ account_id: accountId }, { source_account_id: accountId }] } })
+  ];
+  if (HistoryBusinessAgent) {
+    models.push(HistoryBusinessAgent.count({ where: { account_id: accountId } }));
+  }
+  const counts = await Promise.all(models);
+  return counts.some(c => c > 0);
+};
+
 const storeOrUpdatePaymentAccountService = async (res, comp_id, body) => {
   try {
     const { id, name, account_type, identifier, opening_balance, is_active } = body;
@@ -15,6 +35,13 @@ const storeOrUpdatePaymentAccountService = async (res, comp_id, body) => {
       const account = await PaymentAccount.findOne({ where: { id, company_id: comp_id } });
       if (!account) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Payment account not found');
+      }
+
+      if (account.account_type !== account_type) {
+        const inUse = await hasTransactions(id);
+        if (inUse) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'An account\'s type can\'t change once it has transactions.');
+        }
       }
 
       // If opening balance changes, adjust current balance difference
@@ -114,6 +141,14 @@ const deletePaymentAccountService = async (res, comp_id, id) => {
       return errorResponse(res, statusCodes.NOT_FOUND, 'Payment account not found');
     }
 
+    if (Number(account.current_balance) !== 0) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'This account has transactions or a balance. Deactivate it instead.');
+    }
+    const inUse = await hasTransactions(id);
+    if (inUse) {
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'This account has transactions or a balance. Deactivate it instead.');
+    }
+
     // Instead of hard delete, maybe just deactivate, but spec says delete. Let's do hard delete for now.
     await account.destroy();
 
@@ -124,8 +159,40 @@ const deletePaymentAccountService = async (res, comp_id, id) => {
   }
 };
 
+const reconcilePaymentAccountsService = async (res, comp_id) => {
+  try {
+    const reportService = require('./reportService');
+    const accounts = await PaymentAccount.findAll({ where: { company_id: comp_id } });
+
+    const results = [];
+    for (const acc of accounts) {
+      const computedReport = await reportService.getAccountBookReport({
+        account_id: acc.id,
+        from_date: '9999-12-30',
+        to_date: '9999-12-31',
+        company_id: comp_id
+      });
+      const computed = computedReport.opening_balance;
+      const stored = parseFloat(acc.current_balance || 0);
+      const difference = Number((computed - stored).toFixed(2));
+      results.push({
+        account_id: acc.id,
+        name: acc.name,
+        stored,
+        computed,
+        difference
+      });
+    }
+    return successResponse(res, statusCodes.OK, 'Reconciled successfully', results);
+  } catch (error) {
+    console.error('Error in reconcilePaymentAccountsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 module.exports = {
   storeOrUpdatePaymentAccountService,
   getAllPaymentAccountsService,
-  deletePaymentAccountService
+  deletePaymentAccountService,
+  reconcilePaymentAccountsService
 };

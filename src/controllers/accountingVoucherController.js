@@ -43,23 +43,27 @@ const storeOrUpdate = async (req, res) => {
   } catch (error) {
     res.json({
       status: false,
-      message: error.message || 'Failed to save voucher'
+      message: error.message || 'Failed to save voucher',
+      code: error.code
     });
   }
 };
 
+// Vouchers are cancelled, never erased; /delete is kept for older screens and cancels too.
 const deleteVoucher = async (req, res) => {
   try {
-    await accountingVoucherService.deleteVoucher(req.body.id, req.user);
+    const { id, reason, override_reason } = req.body;
+    await accountingVoucherService.cancelVoucher({ id, user: req.user, reason, override_reason });
     res.json({
       status: true,
-      message: 'Voucher deleted successfully',
+      message: 'Voucher cancelled',
       data: null
     });
   } catch (error) {
     res.json({
       status: false,
-      message: error.message || 'Failed to delete voucher'
+      message: error.message || 'Failed to cancel voucher',
+      code: error.code
     });
   }
 };

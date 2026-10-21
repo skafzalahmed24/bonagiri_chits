@@ -330,6 +330,17 @@ async function saveAll(userPayload, { group_id, member_id, documents = [], suret
   };
 }
 
+/**
+ * Gate for the agent's member-document routes: the member must hold a live ticket in this group
+ * that the calling agent collects for, in the agent's company. Throws HttpError 401/404 otherwise.
+ */
+async function requireAgentTickets(userPayload, { group_id, member_id }) {
+  const agent = await agentOf(userPayload);
+  const tickets = await memberTickets(agent, group_id, member_id);
+  if (!tickets.length) throw new HttpError(404, 'Member not found in your collections for this group');
+  return { agent, tickets };
+}
+
 /** The sureties block for the documents list API; empty when the member isn't in the agent's collections. */
 async function suretiesBlock(userPayload, { group_id, member_id }) {
   try {
@@ -341,6 +352,6 @@ async function suretiesBlock(userPayload, { group_id, member_id }) {
 }
 
 module.exports = {
-  listForMember, saveAll, suretiesBlock,
+  listForMember, saveAll, suretiesBlock, requireAgentTickets, agentOf,
   HttpError, MAX_SURETIES_PER_TICKET, RELATIONS,
 };

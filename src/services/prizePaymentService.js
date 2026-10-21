@@ -1,4 +1,5 @@
 const { PrizePayment, Auction, Enrollment, Member, PaymentAccount, ChitsGroup, CustomerPayment, Surety, Sequelize } = require('../models');
+const { enforceLock } = require('../utils/moneyControls');
 const db = require('../models');
 const fcmService = require('./fcmService');
 const { ticketWin, holderNamesByEnrollment, holderMembersOf } = require('../utils/jointHolders');
@@ -390,7 +391,7 @@ async function advancePositionEndpoint({ companyId, enrollmentId, groupId, ticke
   };
 }
 
-async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollment_id, payment_date, account_id, payment_mode, amount, cheque_number, cheque_date, reference_no, narration, user }) {
+async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollment_id, payment_date, account_id, payment_mode, amount, cheque_number, cheque_date, reference_no, narration, user, override_reason }) {
   // Staff need the module for this kind of payment: Bid Payments (types 1, 3) or Bid Advance (type 2).
   if (user && user.role === 'staff') {
     const needed = payment_type === 2 ? 'T_BID_ADVANCE' : 'T_BID_PAYMENTS';
@@ -408,6 +409,11 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
       oldPayment = await PrizePayment.findOne({ where: { id, company_id: companyId, is_deleted: 0 }, transaction });
       if (!oldPayment || oldPayment.enrollment_id !== enrollment.id) throw new Error('Not found.');
       if (oldPayment.payment_type !== payment_type) throw new Error('Payment type cannot be changed.');
+    }
+    // Transaction Lock Days (docs/MONEY_FLOW_BATCH2_3.md §2.3). Opening paid records prizes paid
+    // before the app, so it is old-dated by nature and exempt.
+    if (payment_type !== 3) {
+      await enforceLock({ companyId, user, entity: 'prize_payment', entityId: id || null, action: id ? 'edit' : 'create', dates: [oldPayment?.payment_date, payment_date], overrideReason: override_reason, transaction });
     }
 
     if (payment_type === 1 || payment_type === 3) {
@@ -780,13 +786,16 @@ async function getById({ companyId, id }) {
   return p;
 }
 
-async function deletePayment({ companyId, id, reason, user }) {
+async function deletePayment({ companyId, id, reason, user, override_reason }) {
   if (user.role !== 'company') throw new Error('Only the company admin can do this.');
   if (!reason || reason.length < 3) throw new Error('Delete reason must be at least 3 characters.');
 
   await db.sequelize.transaction(async (transaction) => {
     const payment = await PrizePayment.findOne({ where: { id, company_id: companyId, is_deleted: 0 }, transaction });
     if (!payment) throw new Error('Not found.');
+    if (payment.payment_type !== 3) {
+      await enforceLock({ companyId, user, entity: 'prize_payment', entityId: payment.id, action: 'cancel', dates: [payment.payment_date], overrideReason: override_reason, transaction });
+    }
 
     if (payment.payment_type === 1 || payment.payment_type === 3) {
       await Auction.findOne({ where: { id: payment.auction_id }, transaction, lock: transaction.LOCK.UPDATE });

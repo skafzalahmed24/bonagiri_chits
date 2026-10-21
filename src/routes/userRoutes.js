@@ -46,26 +46,26 @@ router.post('/business-agent/pending-commission', authMiddleware.authenticateTok
 router.post('/business-agent/member-joined', authMiddleware.authenticateToken, validate(userValidation.getBusinessAgentMemberJoinedSchema), userController.getBusinessAgentMemberJoined);
 
 // collection-agent routes (authenticated)
-router.post('/collection-agent/dashboard', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentDashboardSchema), userController.getCollectionAgentDashboard);
-router.post('/collection-agent/group-dashboard', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentGroupDashboardSchema), userController.getCollectionAgentGroupDashboard);
-router.post('/collection-agent/active-groups', authMiddleware.authenticateToken, validate(userValidation.getCollectionAgentActiveGroupsSchema), userController.getCollectionAgentActiveGroups);
-router.post('/collection-agent/total-pending-collection', authMiddleware.authenticateToken, validate(userValidation.getTotalPendingCollectionSchema), userController.getTotalPendingCollection);
-router.post('/collection-agent/today-collection', authMiddleware.authenticateToken, validate(userValidation.getTodayCollectionSchema), userController.getTodayCollection);
-router.post('/collection-agent/pending-members', authMiddleware.authenticateToken, validate(userValidation.getPendingMembersSchema), userController.getPendingMembers);
+router.post('/collection-agent/dashboard', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getCollectionAgentDashboardSchema), userController.getCollectionAgentDashboard);
+router.post('/collection-agent/group-dashboard', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getCollectionAgentGroupDashboardSchema), userController.getCollectionAgentGroupDashboard);
+router.post('/collection-agent/active-groups', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getCollectionAgentActiveGroupsSchema), userController.getCollectionAgentActiveGroups);
+router.post('/collection-agent/total-pending-collection', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getTotalPendingCollectionSchema), userController.getTotalPendingCollection);
+router.post('/collection-agent/today-collection', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getTodayCollectionSchema), userController.getTodayCollection);
+router.post('/collection-agent/pending-members', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getPendingMembersSchema), userController.getPendingMembers);
 router.post('/collection-agent/member-dues', authMiddleware.authenticateToken, validate(userValidation.getMemberDuesSchema), userController.getMemberDues);
-router.post('/collection-agent/submissions', authMiddleware.authenticateToken, validate(userValidation.getSubmissionsSchema), userController.getSubmissions);
-router.post('/collection-agent/submit-payment', authMiddleware.authenticateToken, validate(userValidation.submitCollectionPaymentSchema), userController.submitCollectionPayment);
-router.post('/collection-agent/documents/list', authMiddleware.authenticateToken, validate(userValidation.getMemberDocumentsSchema), userController.getMemberDocuments);
-router.post('/collection-agent/documents/upload', authMiddleware.authenticateToken, validate(userValidation.uploadMemberDocumentSchema), userController.uploadMemberDocument);
-router.post('/collection-agent/documents/submissions', authMiddleware.authenticateToken, validate(userValidation.getDocumentSubmissionsSchema), userController.getDocumentSubmissions);
+router.post('/collection-agent/submissions', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getSubmissionsSchema), userController.getSubmissions);
+router.post('/collection-agent/submit-payment', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.submitCollectionPaymentSchema), userController.submitCollectionPayment);
+router.post('/collection-agent/documents/list', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getMemberDocumentsSchema), userController.getMemberDocuments);
+router.post('/collection-agent/documents/upload', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.uploadMemberDocumentSchema), userController.uploadMemberDocument);
+router.post('/collection-agent/documents/submissions', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getDocumentSubmissionsSchema), userController.getDocumentSubmissions);
 router.post('/collection-agent/groups-by-agent', authMiddleware.authenticateToken, validate(userValidation.getGroupsByCollectionAgentIdSchema), userController.getGroupsByCollectionAgentId);
 router.post('/collection-agent/members-by-group', authMiddleware.authenticateToken, validate(userValidation.getMembersByGroupIdSchema), userController.getMembersByGroupId);
-router.post('/collection-agent/members', authMiddleware.authenticateToken, validate(userValidation.getMembersByCollectionAgentIdSchema), userController.getMembersByCollectionAgentId);
-router.post('/collection-agent/customer-details', authMiddleware.authenticateToken, validate(userValidation.getCustomerDetailsByIdSchema), userController.getCustomerDetailsById);
-router.post('/collection-agent/customer-detail', authMiddleware.authenticateToken, validate(userValidation.getCustomerDetailsByIdSchema), userController.getCustomerDetailsById);
-router.post('/collection-agent/visit-history', authMiddleware.authenticateToken, validate(userValidation.getVisitHistorySchema), userController.getVisitHistory);
-router.post('/collection-agent/visit-details', authMiddleware.authenticateToken, validate(userValidation.getVisitDetailsByIdSchema), userController.getVisitDetailsById);
-router.post('/collection-agent/customer-visit', authMiddleware.authenticateToken, validate(userValidation.storeCustomerVisitSchema), userController.storeCustomerVisit);
+router.post('/collection-agent/members', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getMembersByCollectionAgentIdSchema), userController.getMembersByCollectionAgentId);
+router.post('/collection-agent/customer-details', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getCustomerDetailsByIdSchema), userController.getCustomerDetailsById);
+router.post('/collection-agent/customer-detail', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getCustomerDetailsByIdSchema), userController.getCustomerDetailsById);
+router.post('/collection-agent/visit-history', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getVisitHistorySchema), userController.getVisitHistory);
+router.post('/collection-agent/visit-details', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.getVisitDetailsByIdSchema), userController.getVisitDetailsById);
+router.post('/collection-agent/customer-visit', authMiddleware.authenticateToken, authMiddleware.requireCollectionAgent, validate(userValidation.storeCustomerVisitSchema), userController.storeCustomerVisit);
 
 // gallery routes
 router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(userValidation.getAllGallerySchema), userController.getAllGallery);
