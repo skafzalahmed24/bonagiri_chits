@@ -331,7 +331,7 @@ const sendDeleteAccountOtpService = async (res, identifier, password) => {
       return errorResponse(res, statusCodes.OK, 'This account is already deactivated.');
     }
 
-    const isStatic = twilioService.isStaticOtp();
+    const isStatic = twilioService.isStaticOtp() || twilioService.isStaticUser(member.other_info_user_code) || twilioService.isStaticUser(member);
     const otp = isStatic ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes expiry
 
@@ -343,8 +343,10 @@ const sendDeleteAccountOtpService = async (res, identifier, password) => {
     const targetMobile = member.mobile_number;
     console.log(`[DELETE ACCOUNT OTP] Triggered OTP for Member ID ${member.id} (${member.other_info_user_code || member.name || 'Member'}) | Mobile: ${targetMobile || 'NO MOBILE'} | Mode: ${isStatic ? 'STATIC (123456)' : 'DYNAMIC TWILIO'}`);
 
-    if (targetMobile) {
-      await twilioService.sendOtpWithCustomSms(targetMobile, otp, member.country_code || null);
+    if (targetMobile && !isStatic) {
+      await twilioService.sendOtpWithCustomSms(targetMobile, otp, member.country_code || null, member);
+    } else if (isStatic) {
+      console.log(`[DELETE ACCOUNT OTP] Static OTP 123456 ready for Member ID ${member.id} (${member.other_info_user_code}). SMS trigger bypassed.`);
     } else {
       console.warn(`[DELETE ACCOUNT OTP] Member ID ${member.id} has no mobile number on file. SMS trigger skipped.`);
     }
@@ -372,7 +374,7 @@ const verifyDeleteAccountOtpService = async (res, identifier, otp) => {
       return errorResponse(res, statusCodes.OK, 'OTP has expired. Please request a new one.');
     }
 
-    const isStatic = twilioService.isStaticOtp();
+    const isStatic = twilioService.isStaticOtp() || twilioService.isStaticUser(member.other_info_user_code) || twilioService.isStaticUser(member);
     const inputOtp = String(otp).trim();
     const isMatch = (isStatic && inputOtp === '123456') ||
       (member.delete_account_otp && member.delete_account_otp.trim() === inputOtp);

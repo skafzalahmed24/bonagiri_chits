@@ -10,6 +10,10 @@ const SUPPORTED_COUNTRIES = [
   { id: 22, name: 'Belgium', code: 'BE', dialing_code: '+32', numeric_code: '32', currency: 'EUR', currency_symbol: '€', emoji: '🇧🇪' }
 ];
 
+// Static test User IDs (other_info_user_code / user_code) that must always bypass Twilio and use Static OTP 123456
+// Member: 856747 | Business Agent: 956855 | Collection Agent: 939923
+const STATIC_OTP_USER_CODES = ['856747', '956855', '939923'];
+
 class TwilioService {
   constructor() {
     this.accountSid = process.env.TWILIO_ACCOUNT_SID;
@@ -39,9 +43,66 @@ class TwilioService {
   }
 
   /**
-   * Check if Static OTP mode is active (STATIC_OTP_STATUS=true)
+   * Check if a specific user code or object qualifies for static test OTP mode
+   * @param {string|number|object} identifier - user code, phone, or user/member object
    */
-  isStaticOtp() {
+  isStaticUser(identifier) {
+    if (!identifier) return false;
+    const codes = STATIC_OTP_USER_CODES;
+    if (typeof identifier === 'number' || typeof identifier === 'string') {
+      const trimmed = String(identifier).trim();
+      return codes.includes(trimmed);
+    }
+    if (typeof identifier === 'object') {
+      if (identifier.other_info_user_code && codes.includes(String(identifier.other_info_user_code).trim())) return true;
+      if (identifier.user_code && codes.includes(String(identifier.user_code).trim())) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Check if phone belongs to one of the static test users
+   */
+  async isStaticPhone(phoneNumber) {
+    if (!phoneNumber) return false;
+    try {
+      const { Member, StaffUser } = require('../models');
+      const { Op } = require('sequelize');
+      const cleanDigits = String(phoneNumber).replace(/\D/g, '');
+      const last10 = cleanDigits.slice(-10);
+      if (last10.length >= 8) {
+        const numCodes = STATIC_OTP_USER_CODES.map(c => Number(c)).filter(Boolean);
+        const member = await Member.findOne({
+          where: {
+            other_info_user_code: { [Op.in]: numCodes },
+            mobile_number: { [Op.like]: `%${last10}` },
+            is_deleted_status: 0
+          },
+          attributes: ['id', 'other_info_user_code']
+        });
+        if (member) return true;
+
+        const staff = await StaffUser.findOne({
+          where: {
+            user_code: { [Op.in]: STATIC_OTP_USER_CODES },
+            mobile_number: { [Op.like]: `%${last10}` },
+            is_deleted_status: 0
+          },
+          attributes: ['id', 'user_code']
+        });
+        if (staff) return true;
+      }
+    } catch (e) {
+      // Ignore database lookup errors
+    }
+    return false;
+  }
+
+  /**
+   * Check if Static OTP mode is active (STATIC_OTP_STATUS=true OR specific static user)
+   */
+  isStaticOtp(identifier = null) {
+    if (this.isStaticUser(identifier)) return true;
     const status = String(process.env.STATIC_OTP_STATUS || '').trim().toLowerCase();
     return status === 'true' || status === '1';
   }
@@ -134,16 +195,18 @@ class TwilioService {
    * @param {string} channel - 'sms', 'whatsapp', or 'call'
    * @param {string} countryCode - Optional country code (IN, US, AE, CA, AU, BE)
    */
-  async sendVerificationOtp(phoneNumber, channel = 'sms', countryCode = null) {
+  async sendVerificationOtp(phoneNumber, channel = 'sms', countryCode = null, userCodeOrUser = null) {
     const formattedTo = this.formatToE164(phoneNumber, countryCode);
     if (!formattedTo) {
       console.warn(`[TWILIO OTP] [INVALID NUMBER] Cannot trigger OTP. Invalid phone number: "${phoneNumber}"`);
       return { success: false, message: 'Invalid phone number provided' };
     }
 
+    const isStatic = this.isStaticOtp(userCodeOrUser) || (await this.isStaticPhone(phoneNumber));
+
     // Check if Static OTP mode is active
-    if (this.isStaticOtp()) {
-      console.log(`[TWILIO OTP] [STATIC TRIGGERED] Mobile: ${formattedTo} (Country: ${countryCode || 'AUTO'}) | Static Code: 123456 | Channel: ${channel} | Live Twilio API Bypassed (STATIC_OTP_STATUS=true)`);
+    if (isStatic) {
+      console.log(`[TWILIO OTP] [STATIC TRIGGERED] Mobile: ${formattedTo} (Country: ${countryCode || 'AUTO'}) | Static Code: 123456 | Channel: ${channel} | Live Twilio API Bypassed (Static User: 856747/956855/939923 or STATIC_OTP_STATUS=true)`);
       return {
         success: true,
         is_static: true,
@@ -199,13 +262,14 @@ class TwilioService {
 
   /**
    * Verify an OTP code
-   * If STATIC_OTP_STATUS=true, verifies code against 123456.
+   * If STATIC_OTP_STATUS=true or static user, verifies code against 123456.
    * If STATIC_OTP_STATUS=false, verifies code with Twilio Verify Service.
    * @param {string} phoneNumber - Mobile number
    * @param {string} code - OTP code to check
    * @param {string} countryCode - Optional country code
+   * @param {string|number|object} userCodeOrUser - Optional user identifier
    */
-  async checkVerificationOtp(phoneNumber, code, countryCode = null) {
+  async checkVerificationOtp(phoneNumber, code, countryCode = null, userCodeOrUser = null) {
     const formattedTo = this.formatToE164(phoneNumber, countryCode);
     if (!formattedTo || !code) {
       console.warn(`[TWILIO OTP] [VERIFY SKIPPED] Phone number or OTP code missing (Phone: "${phoneNumber}", Code: "${code}")`);
@@ -213,9 +277,10 @@ class TwilioService {
     }
 
     const trimmedCode = String(code).trim();
+    const isStatic = this.isStaticOtp(userCodeOrUser) || (await this.isStaticPhone(phoneNumber));
 
     // Check Static OTP mode
-    if (this.isStaticOtp()) {
+    if (isStatic) {
       const isValid = trimmedCode === '123456';
       console.log(`[TWILIO OTP] [STATIC VERIFY] Mobile: ${formattedTo} | Code Entered: "${trimmedCode}" | Expected: "123456" | Result: ${isValid ? 'APPROVED (SUCCESS)' : 'REJECTED (INVALID)'}`);
       return {
@@ -276,16 +341,17 @@ class TwilioService {
   /**
    * Send custom SMS message using Twilio Messages API
    */
-  async sendCustomSms(phoneNumber, message, countryCode = null) {
+  async sendCustomSms(phoneNumber, message, countryCode = null, userCodeOrUser = null) {
     const formattedTo = this.formatToE164(phoneNumber, countryCode);
     if (!formattedTo) {
       console.warn(`[TWILIO SMS] [INVALID NUMBER] Cannot send SMS. Invalid phone number: "${phoneNumber}"`);
       return { success: false, message: 'Invalid phone number' };
     }
 
-    if (this.isStaticOtp() || !this.client || !this.phoneNumber) {
-      console.log(`[TWILIO SMS] [MOCK SENT] To: ${formattedTo} | Message: "${message}"`);
-      return { success: true, mock: true, to: formattedTo };
+    const isStatic = this.isStaticOtp(userCodeOrUser) || (await this.isStaticPhone(phoneNumber));
+    if (isStatic || !this.client || !this.phoneNumber) {
+      console.log(`[TWILIO SMS] [MOCK/STATIC SENT] To: ${formattedTo} | Message: "${message}"`);
+      return { success: true, mock: true, is_static: isStatic, to: formattedTo };
     }
 
     try {
@@ -323,9 +389,9 @@ class TwilioService {
   /**
    * Send custom branded SMS OTP directly
    */
-  async sendOtpWithCustomSms(phoneNumber, otp, countryCode = null) {
+  async sendOtpWithCustomSms(phoneNumber, otp, countryCode = null, userCodeOrUser = null) {
     const message = this.formatOtpMessage(otp);
-    return await this.sendCustomSms(phoneNumber, message, countryCode);
+    return await this.sendCustomSms(phoneNumber, message, countryCode, userCodeOrUser);
   }
 }
 

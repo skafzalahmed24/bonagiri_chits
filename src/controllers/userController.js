@@ -77,8 +77,8 @@ const getBidDetails = async (req, res) => {
 
 const getChitDetails = async (req, res) => {
   try {
-    const { group_id, auction_type } = req.body || {};
-    return await userService.getChitDetailsService(res, req.user, group_id, auction_type);
+    const { group_id, auction_type, all_months } = req.body || {};
+    return await userService.getChitDetailsService(res, req.user, group_id, auction_type, { all_months });
   } catch (error) {
     console.error('Error in getChitDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

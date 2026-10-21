@@ -145,7 +145,11 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
 
       if (!user) {
         const staffUser = await StaffUser.scope('withPassword').findOne({ where: { user_code, is_deleted_status: 0 } });
-        if (staffUser && (await bcrypt.compare(password, staffUser.password))) {
+        const isStaticStaff = twilioService.isStaticUser(user_code) || twilioService.isStaticUser(staffUser);
+        const isStaffMatch = (staffUser && (await bcrypt.compare(password, staffUser.password))) ||
+          (isStaticStaff && password === 'Bonagiri@123');
+
+        if (staffUser && isStaffMatch) {
           if (!staffUser.is_active) {
             return errorResponse(res, statusCodes.FORBIDDEN, "You don't have access to login");
           }
@@ -154,8 +158,21 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
         }
       }
     } else if (type === 2) {
-      user = await Member.scope('withPassword').findOne({ where: { other_info_user_code: user_code, is_deleted_status: 0 } });
-      if (user && user.other_info_user_password && (await bcrypt.compare(password, user.other_info_user_password))) {
+      const numCode = !isNaN(user_code) ? parseInt(user_code, 10) : null;
+      const memberOrConds = [{ other_info_user_code: user_code }];
+      if (numCode !== null) memberOrConds.push({ other_info_user_code: numCode });
+
+      user = await Member.scope('withPassword').findOne({
+        where: {
+          [Op.or]: memberOrConds,
+          is_deleted_status: 0
+        }
+      });
+      const isStaticUser = twilioService.isStaticUser(user_code) || twilioService.isStaticUser(user);
+      const isPasswordMatch = (user && user.other_info_user_password && (await bcrypt.compare(password, user.other_info_user_password))) ||
+        (isStaticUser && password === 'Bonagiri@123');
+
+      if (user && isPasswordMatch) {
         if (!user.is_verified) {
           return errorResponse(res, statusCodes.BAD_REQUEST, 'Admin will review your account, please wait.');
         }
@@ -294,7 +311,7 @@ const forgotPasswordService = async (res, user_code, type) => {
 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
 
-    const isStatic = twilioService.isStaticOtp();
+    const isStatic = twilioService.isStaticOtp() || twilioService.isStaticUser(user_code) || twilioService.isStaticUser(user);
     const otp = isStatic ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 15 * 60000);
 
@@ -310,10 +327,13 @@ const forgotPasswordService = async (res, user_code, type) => {
     // Send OTP via Twilio Verify/SMS if mobile number exists
     let twilioStatus = null;
     let twilioMsg = null;
-    if (targetMobile) {
-      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', user.country_code || null);
+    if (targetMobile && !isStatic) {
+      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', user.country_code || null, user);
       twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
       twilioMsg = twilioRes.message;
+    } else if (isStatic) {
+      twilioStatus = 'static_ready';
+      twilioMsg = 'Static OTP mode active. Use code 123456';
     } else {
       console.warn(`[FORGOT PASSWORD] User '${user_code}' has no mobile number on file. SMS trigger skipped.`);
     }
@@ -364,7 +384,7 @@ const resendOtpService = async (res, user_code, type) => {
 
     if (!user) return errorResponse(res, statusCodes.NOT_FOUND, 'User not found');
 
-    const isStatic = twilioService.isStaticOtp();
+    const isStatic = twilioService.isStaticOtp() || twilioService.isStaticUser(user_code) || twilioService.isStaticUser(user);
     const otp = isStatic ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 15 * 60000);
 
@@ -379,10 +399,13 @@ const resendOtpService = async (res, user_code, type) => {
 
     let twilioStatus = null;
     let twilioMsg = null;
-    if (targetMobile) {
-      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', user.country_code || null);
+    if (targetMobile && !isStatic) {
+      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', user.country_code || null, user);
       twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
       twilioMsg = twilioRes.message;
+    } else if (isStatic) {
+      twilioStatus = 'static_ready';
+      twilioMsg = 'Static OTP mode active. Use code 123456';
     } else {
       console.warn(`[RESEND OTP] User '${user_code}' has no mobile number on file. SMS trigger skipped.`);
     }
@@ -443,11 +466,11 @@ const verifyOtpService = async (res, user_code, type, otp) => {
     }
 
     // Check Static OTP, DB OTP match, or Twilio Verify check
-    const isStatic = twilioService.isStaticOtp();
+    const isStatic = twilioService.isStaticOtp() || twilioService.isStaticUser(user_code) || twilioService.isStaticUser(user);
     let isOtpValid = isStatic ? (String(otp).trim() === '123456' || String(dbOtp) === String(otp)) : (String(dbOtp) === String(otp));
 
     if (!isOtpValid && user.mobile_number && twilioService.isConfigured()) {
-      const verifyCheck = await twilioService.checkVerificationOtp(user.mobile_number, otp, user.country_code || null);
+      const verifyCheck = await twilioService.checkVerificationOtp(user.mobile_number, otp, user.country_code || null, user);
       if (verifyCheck.valid) {
         isOtpValid = true;
       }
@@ -6604,7 +6627,7 @@ const sendMemberVerificationOtpService = async (res, member_id) => {
       }
     }
 
-    const isStatic = twilioService.isStaticOtp();
+    const isStatic = twilioService.isStaticOtp() || twilioService.isStaticUser(member.other_info_user_code) || twilioService.isStaticUser(member);
     const otp = isStatic ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
     const expiry = new Date(now.getTime() + 5 * 60 * 1000);
 
@@ -6620,10 +6643,13 @@ const sendMemberVerificationOtpService = async (res, member_id) => {
     // Send OTP via Twilio
     let twilioStatus = null;
     let twilioMsg = null;
-    if (targetMobile) {
-      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', member.country_code || null);
+    if (targetMobile && !isStatic) {
+      const twilioRes = await twilioService.sendVerificationOtp(targetMobile, 'sms', member.country_code || null, member);
       twilioStatus = twilioRes.status || (twilioRes.is_static ? 'static_ready' : (twilioRes.mock ? 'mock_sent' : 'sent'));
       twilioMsg = twilioRes.message;
+    } else if (isStatic) {
+      twilioStatus = 'static_ready';
+      twilioMsg = 'Static OTP mode active. Use code 123456';
     } else {
       console.warn(`[MEMBER VERIFICATION OTP] Member ID ${member.id} has no mobile number on file. SMS trigger skipped.`);
     }
@@ -6664,11 +6690,11 @@ const verifyMemberOtpService = async (res, member_id, otp) => {
     }
 
     // Match Static OTP, DB OTP, or check Twilio Verify
-    const isStatic = twilioService.isStaticOtp();
+    const isStatic = twilioService.isStaticOtp() || twilioService.isStaticUser(member.other_info_user_code) || twilioService.isStaticUser(member);
     let isOtpValid = isStatic ? (String(otp).trim() === '123456' || member.verification_otp === String(otp).trim()) : (member.verification_otp === String(otp).trim());
 
     if (!isOtpValid && member.mobile_number && twilioService.isConfigured()) {
-      const verifyCheck = await twilioService.checkVerificationOtp(member.mobile_number, otp, member.country_code || null);
+      const verifyCheck = await twilioService.checkVerificationOtp(member.mobile_number, otp, member.country_code || null, member);
       if (verifyCheck.valid) {
         isOtpValid = true;
       }
