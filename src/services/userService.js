@@ -3126,7 +3126,7 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
         const limit = parseInt(max, 10) || 10;
         const offset = parseInt(min, 10) || 0;
 
-        const enrollments = await Enrollment.findAll({
+        const rawEnrollments = await Enrollment.findAll({
             where: {
                 collection_agent_id,
                 delete_status: 0
@@ -3135,7 +3135,7 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
                 {
                     model: Member,
                     as: 'subscriber',
-                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender']
+                    attributes: ['id', 'name', 'member_id', 'upload_image', 'mobile_number', 'gender', 'group_status']
                 },
                 {
                     model: ChitsGroup,
@@ -3146,7 +3146,14 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
             ]
         });
 
-        if (!enrollments || enrollments.length === 0) {
+        const enrollments = [];
+        for (const e of rawEnrollments) {
+            if (e.subscriber && e.subscriber.group_status === 1) continue;
+            const compSeats = await getGroupCompanySeats(e.group_id, e.group);
+            if (!compSeats.includes(Number(e.group_position_number))) enrollments.push(e);
+        }
+
+        if (enrollments.length === 0) {
             return successResponse(res, statusCodes.OK, 'Today collection retrieved successfully', {
                 today_collection: 0,
                 total_today_collection: 0,
@@ -3187,7 +3194,7 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
 
         const payments = await CustomerPayment.findAll({
             where: {
-                payment_status: 1,
+                payment_status: { [Op.in]: [0, 1] },
                 [Op.or]: [
                     {
                         payment_date: {
@@ -3294,9 +3301,11 @@ const getTodayCollectionService = async (res, collection_agent_id, min, max, fro
                     payment_date: rawDate,
                     formatted_date: formatDateDMY(rawDate),
                     payment_mode: mode,
-                    payment_mode_label: getPaymentModeLabel(mode)
+                    payment_mode_label: getPaymentModeLabel(mode),
+                    awaiting_confirmation: false
                 };
             }
+            if (Number(payment.payment_status) === 0) groupMap[group.id].membersMap[subscriber.id].awaiting_confirmation = true;
 
             groupMap[group.id].membersMap[subscriber.id].amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].amount || 0) + received).toFixed(2));
             groupMap[group.id].membersMap[subscriber.id].penalty_amount = parseFloat(((groupMap[group.id].membersMap[subscriber.id].penalty_amount || 0) + penalty).toFixed(2));
