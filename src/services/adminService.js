@@ -2288,8 +2288,17 @@ const getGroupMembersService = async (res, company_id, group_id, min, max, filte
   }
 };
 
-const getInstallmentsByGroupService = async (res, group_id, enrollment_id, member_id, min, max) => {
+const getInstallmentsByGroupService = async (res, group_id, enrollment_id, member_id, min, max, user) => {
   try {
+    // P2b1 (2026-10-25): the group must be the caller's company's, and no company means no answer (fail closed).
+    const companyId = await resolveCompanyIdForAuth(user);
+    if (!companyId) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+    const groupInfo = await ChitsGroup.findOne({
+      where: { id: group_id, company_id: companyId },
+      attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status', 'chit_start_date', 'chit_end_date', 'no_of_installments']
+    });
+    if (!groupInfo) return errorResponse(res, statusCodes.NOT_FOUND, 'Group not found');
+
     const limit = parseInt(max, 10) || 100;
     const offset = parseInt(min, 10) || 0;
 
@@ -2338,9 +2347,12 @@ const getInstallmentsByGroupService = async (res, group_id, enrollment_id, membe
       ]
     });
 
+    const { penaltyOwed } = require('./installmentBalanceHelper');
     const rows = installments.map(inst => {
       const paidSoFar = inst.payments ? inst.payments.reduce((sum, p) => sum + parseFloat(p.received_amount || 0), 0) : 0;
       const dueAmount = Math.max(0, parseFloat(inst.payable_amount || 0) - paidSoFar);
+      // Additive (P1a, 2026-10-21): penalty already paid on verified receipts, and what is still owed.
+      const penaltyPaid = inst.payments ? inst.payments.reduce((sum, p) => sum + (parseFloat(p.penalty_paid) || 0), 0) : 0;
       return {
         id: inst.id,
         enrollment_id: inst.enrollment_id,
@@ -2353,21 +2365,17 @@ const getInstallmentsByGroupService = async (res, group_id, enrollment_id, membe
         is_paid: dueAmount <= 0,
         paid_amount: paidSoFar.toFixed(2),
         due_amount: dueAmount.toFixed(2),
-        payment_date: inst.payments && inst.payments.length > 0 ? inst.payments[inst.payments.length - 1].payment_date : null
+        payment_date: inst.payments && inst.payments.length > 0 ? inst.payments[inst.payments.length - 1].payment_date : null,
+        penalty_paid: penaltyPaid.toFixed(2),
+        penalty_owed: penaltyOwed(inst.penalty_amount, penaltyPaid).toFixed(2)
       };
     });
 
-    const groupInfo = await ChitsGroup.findByPk(group_id, {
-      attributes: ['id', 'group_name', 'chit_amount', 'chits_group_status', 'chit_start_date', 'chit_end_date', 'no_of_installments']
-    });
-    let group_details = null;
-    if (groupInfo) {
-      const enrollmentsCount = await Enrollment.count({ where: { group_id, delete_status: 0 } });
-      group_details = {
-        ...groupInfo.toJSON(),
-        slot_filled_count: enrollmentsCount
-      };
-    }
+    const enrollmentsCount = await Enrollment.count({ where: { group_id, delete_status: 0 } });
+    const group_details = {
+      ...groupInfo.toJSON(),
+      slot_filled_count: enrollmentsCount
+    };
     return successResponse(res, statusCodes.OK, 'Installments retrieved successfully', { count, rows, group_details });
   } catch (error) {
     console.error('Error in getInstallmentsByGroupService:', error);
@@ -2520,6 +2528,12 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         await transaction.rollback();
         return errorResponse(res, statusCodes.NOT_FOUND, 'Auction not found');
       }
+      // 2-BE3 (D14, L25): the auction number is server-owned. The maths below already use the stored
+      // number; an edit no longer stores the client's (no 4xx; a mismatch is only logged for one release).
+      if (auctionData.auction_number !== undefined && String(auctionData.auction_number) !== String(existingAuction.auction_number)) {
+        console.warn(`[auction] ignored client auction_number ${auctionData.auction_number} on edit of auction ${id} (stored ${existingAuction.auction_number})`);
+      }
+      delete auctionData.auction_number;
     }
 
     // The group an auction is saved in must belong to the caller's company, otherwise nothing is
@@ -2721,12 +2735,21 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       isNew = true;
     }
 
-    // Automatically update the ChitsGroup's auction_date to the next_auction_date so the UI updates
+    // Automatically update the ChitsGroup's auction_date to the next_auction_date so the UI updates.
+    // 2-BUG2 (DM-22): only a NEW auction or the group's LATEST auction (highest auction_number) moves the
+    // group's date; editing an older auction keeps its own next_auction_date but leaves the group alone.
     if (auctionData.next_auction_date && auctionData.group_id) {
-      await ChitsGroup.update(
-        { auction_date: auctionData.next_auction_date },
-        { where: { id: auctionData.group_id, company_id: safeCompanyId }, transaction }
-      );
+      let moveGroupDate = isNew;
+      if (!moveGroupDate) {
+        const latestNumber = await Auction.max('auction_number', { where: { group_id: auctionData.group_id }, transaction });
+        moveGroupDate = latestNumber == null || Number(auctionResult.auction_number) >= Number(latestNumber);
+      }
+      if (moveGroupDate) {
+        await ChitsGroup.update(
+          { auction_date: auctionData.next_auction_date },
+          { where: { id: auctionData.group_id, company_id: safeCompanyId }, transaction }
+        );
+      }
     }
 
     const resolvedGroupId = auctionData.group_id || (auctionResult && auctionResult.group_id);
@@ -3043,16 +3066,34 @@ const recordWinnerService = async (res, reqBody, userToken) => {
   }
 };
 
-const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, max, search) => {
+// options (all optional, additive; 2-BE1): { date_from, date_to, sort }.
+//  - date_from / date_to: inclusive, on auction_date (yyyy-mm-dd).
+//  - sort: 'asc' = oldest first (auction date, then auction number); 'desc' = newest first.
+//    Without it the order stays createdAt DESC: the Auction Entry form reads the latest auction from it.
+const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, max, search, options = {}) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
+    const { date_from, date_to } = options || {};
+    const sortDir = options && typeof options.sort === 'string' ? options.sort.toLowerCase() : null;
 
     const where = {
       ...(company_id && company_id !== '' && { company_id }),
       ...(group_id && group_id !== '' && { group_id }),
       ...(bidder_id && bidder_id !== '' && { bidder_id })
     };
+
+    if (date_from && date_to) {
+      where.auction_date = { [Op.between]: [date_from, date_to] };
+    } else if (date_from) {
+      where.auction_date = { [Op.gte]: date_from };
+    } else if (date_to) {
+      where.auction_date = { [Op.lte]: date_to };
+    }
+
+    let order = [['createdAt', 'DESC']];
+    if (sortDir === 'asc') order = [['auction_date', 'ASC'], ['auction_number', 'ASC'], ['createdAt', 'ASC']];
+    else if (sortDir === 'desc') order = [['auction_date', 'DESC'], ['auction_number', 'DESC'], ['createdAt', 'DESC']];
 
     if (search && search.trim() !== '') {
       where[Op.or] = [
@@ -3070,22 +3111,51 @@ const getAllAuctionsService = async (res, company_id, group_id, bidder_id, min, 
         { model: ChitsGroup, as: 'group', attributes: ['group_name'] },
         { model: Member, as: 'bidder', attributes: ['name', 'member_id'] }
       ],
-      order: [['createdAt', 'DESC']]
+      order
     });
 
+    // Seats once per DISTINCT group (one group read for all, then one seats lookup per group), and
+    // the holder names of every winning ticket in one batch, so the number of queries does not grow
+    // with the number of rows (2-BE1 / AR-4). `getGroupCompanySeats` and `holderNamesByEnrollment`
+    // are shared with other code and are called unchanged.
     const { getGroupCompanySeats } = require('../utils/schemeHelpers');
-    const groupCache = {};
-    const formattedRows = await Promise.all(auctions.rows.map(async (a) => {
-      let seats = groupCache[a.group_id];
-      if (!seats) {
-        const g = await ChitsGroup.findByPk(a.group_id);
-        seats = await getGroupCompanySeats(a.group_id, g);
-        groupCache[a.group_id] = seats;
-      }
+    const { holderNamesByEnrollment } = require('../utils/jointHolders');
+    const pageRows = auctions.rows;
+    const distinctGroupIds = [...new Set(pageRows.map((a) => a.group_id).filter(Boolean))];
+    const groupRecords = distinctGroupIds.length
+      ? await ChitsGroup.findAll({ where: { id: { [Op.in]: distinctGroupIds } } })
+      : [];
+    const groupById = new Map(groupRecords.map((g) => [g.id, g]));
+    const seatsByGroup = new Map();
+    await Promise.all(distinctGroupIds.map(async (gid) => {
+      seatsByGroup.set(gid, await getGroupCompanySeats(gid, groupById.get(gid) || null));
+    }));
+    const noGroupSeats = pageRows.some((a) => !a.group_id) ? await getGroupCompanySeats(null, null) : [];
+
+    // The winning ticket of an auction is the enrollment (group, ticket number); older auctions that
+    // recorded no ticket fall back to the bidder's own name.
+    const ticketKeys = pageRows.filter((a) => a.group_id && a.ticket_number != null);
+    const ticketEnrollments = ticketKeys.length
+      ? await Enrollment.findAll({
+        where: {
+          group_id: { [Op.in]: [...new Set(ticketKeys.map((a) => a.group_id))] },
+          group_position_number: { [Op.in]: [...new Set(ticketKeys.map((a) => Number(a.ticket_number)))] },
+          delete_status: 0
+        },
+        attributes: ['id', 'group_id', 'group_position_number']
+      })
+      : [];
+    const enrollmentByTicket = new Map(ticketEnrollments.map((e) => [`${e.group_id}:${Number(e.group_position_number)}`, e.id]));
+    const namesByEnrollment = await holderNamesByEnrollment(ticketEnrollments.map((e) => e.id));
+
+    const formattedRows = pageRows.map((a) => {
+      const seats = a.group_id ? seatsByGroup.get(a.group_id) : noGroupSeats;
       const data = a.toJSON ? a.toJSON() : a;
       data.is_company_seat = seats.includes(Number(data.ticket_number));
+      const enrollmentId = a.group_id && a.ticket_number != null ? enrollmentByTicket.get(`${a.group_id}:${Number(a.ticket_number)}`) : null;
+      data.holder_names = (enrollmentId && namesByEnrollment[enrollmentId]) || (data.bidder && data.bidder.name) || null;
       return data;
-    }));
+    });
 
     const formattedData = {
       total_count: auctions.count,
@@ -5545,6 +5615,10 @@ const storeDirectPaymentService = async (res, user, data) => {
       cash_amount, cash_account_id, upi_amount, upi_account_id, bank_amount, bank_account_id,
       cheque_number, cheque_date, narration, override_reason
     } = data;
+    // SEC-P3: whole paise once, before any comparison or storage, so what is checked is what is stored.
+    const { toPaise, checkPenaltyCap, penaltyCapMessage } = require('./receiptMoneyRules');
+    const receivedAmountFloat = toPaise(received_amount);
+    const penaltyPaidFloat = toPaise(penalty_paid);
 
     // Charges (enrollment fee, notice, cheque return…) ride on the same receipt. A receipt for
     // charges only names the ticket instead of an instalment (docs/MONEY_FLOW_BATCH2_3.md §3.1).
@@ -5556,7 +5630,7 @@ const storeDirectPaymentService = async (res, user, data) => {
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Missing required payment fields');
     }
     if (!chits_installment_id) {
-      if ((parseFloat(received_amount) || 0) > 0 || (parseFloat(penalty_paid) || 0) > 0) {
+      if (receivedAmountFloat > 0 || penaltyPaidFloat > 0) {
         await transaction.rollback();
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Choose the instalment to pay an instalment amount or penalty');
       }
@@ -5575,7 +5649,13 @@ const storeDirectPaymentService = async (res, user, data) => {
     // received_amount is the instalment part only; penalty_paid rides on top. The
     // money that actually arrived is both, so that is what the split must cover and
     // what the accounts are credited with — the same rule agent verification uses.
-    const totalCollected = (parseFloat(received_amount) || 0) + (parseFloat(penalty_paid) || 0) + chargesClaimed;
+    const totalCollected = toPaise(receivedAmountFloat + penaltyPaidFloat + chargesClaimed);
+
+    // SEC-P4: a receipt must collect something (instalment, penalty or a charge).
+    if (Math.round(totalCollected * 100) === 0) {
+      await transaction.rollback();
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Enter an amount to collect');
+    }
 
     if (totalCollected > 0 && Math.abs(cash + upi + bank - totalCollected) > 0.01) {
       await transaction.rollback();
@@ -5638,13 +5718,27 @@ const storeDirectPaymentService = async (res, user, data) => {
     const paidSoFar = await getInstallmentBalance(chits_installment_id, transaction);
     const dueAmount = Math.max(0, parseFloat(installmentInfo.payable_amount || 0) - paidSoFar);
 
-    const receivedAmountFloat = parseFloat(received_amount) || 0;
-    const penaltyPaidFloat = parseFloat(penalty_paid) || 0;
-
     // The instalment part may not exceed what is still due on the instalment.
     if (receivedAmountFloat > dueAmount + 0.01) {
       await transaction.rollback();
-      return errorResponse(res, statusCodes.BAD_REQUEST, `Payment exceeds the due amount. Maximum allowed is ${dueAmount}`);
+      return errorResponse(res, statusCodes.BAD_REQUEST, `Payment exceeds the due amount. Maximum allowed is ${dueAmount.toFixed(2)}`);
+    }
+
+    // F3 (2026-10-25): the penalty part may not exceed the penalty still owed on the instalment, so a
+    // second screen cannot collect the same penalty twice. Read inside this transaction, after the
+    // instalment row was locked above, so two simultaneous saves are checked one after the other.
+    // SEC-P2 (2026-10-25): agent collections still waiting for verification (payment_status 0) count as
+    // paid here; `penaltyOwed` itself, get-by-group and the reports stay verified-only (status 1).
+    // Whole-paise comparison (receiptMoneyRules.js). A 400, never a 409 (the apps log out on 409).
+    if (penaltyPaidFloat > 0) {
+      const penaltyRows = { chits_installment_id };
+      const verifiedPaid = Number(await CustomerPayment.sum('penalty_paid', { where: { ...penaltyRows, payment_status: 1 }, transaction })) || 0;
+      const pendingPaid = Number(await CustomerPayment.sum('penalty_paid', { where: { ...penaltyRows, payment_status: 0 }, transaction })) || 0;
+      const cap = checkPenaltyCap({ penaltyAmount: installmentInfo.penalty_amount, penaltyPaid: penaltyPaidFloat, verifiedPaid, pendingPaid });
+      if (!cap.ok) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, penaltyCapMessage(penaltyPaidFloat, cap));
+      }
     }
 
     // A back-dated receipt beyond Transaction Lock Days needs the admin and a reason.
@@ -5688,8 +5782,8 @@ const storeDirectPaymentService = async (res, user, data) => {
 
     const newPayment = await CustomerPayment.create({
       chits_installment_id,
-      received_amount: parseFloat(received_amount) || 0.00,
-      penalty_paid: parseFloat(penalty_paid) || 0.00,
+      received_amount: receivedAmountFloat,
+      penalty_paid: penaltyPaidFloat,
       payment_status: 1, // Auto-verified for admin direct payments
       payment_date: payment_date || new Date().toISOString().split('T')[0],
       payment_mode: final_payment_mode,
@@ -7892,13 +7986,75 @@ const getAllAuditLogsService = async (res, user_id, action_type, min, max, searc
   }
 };
 
+// ---- get-all-receipts: Payment Mode filter and receipt series / number filters (spec 4 R4-10, R4-11) ----
+// `mode` is one of CASH, CHEQUE, UPI, RTGS_NEFT, DD, BP_ADJ, BID_ADV, ADV_RCT_ADJ, MIXED (OTHERS and SPLIT mean the same as MIXED).
+// New receipts carry `receipt_mode`; older rows (receipt_mode NULL) are read from the stored payment_mode, as the Mode column does.
+const receiptModeCondition = (mode) => {
+  if (mode === undefined || mode === null || mode === '') return null;
+  const m = String(mode).toUpperCase();
+  const legacy = (pm) => ({ receipt_mode: null, payment_mode: pm });
+  // A pre-1b cheque receipt was stored as "others" (5) with a cheque number and only a bank amount.
+  const legacyCheque = {
+    receipt_mode: null,
+    payment_mode: 5,
+    cheque_number: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] },
+    bank_amount: { [Op.gt]: 0 },
+    cash_amount: { [Op.or]: [null, 0] },
+    upi_amount: { [Op.or]: [null, 0] }
+  };
+  switch (m) {
+    case 'CASH': return { [Op.or]: [{ receipt_mode: 'CASH' }, legacy(1)] };
+    case 'UPI': return { [Op.or]: [{ receipt_mode: 'UPI' }, legacy(2)] };
+    case 'CHEQUE': return { [Op.or]: [{ receipt_mode: 'CHEQUE' }, legacy(3), legacyCheque] };
+    case 'RTGS_NEFT': return { [Op.or]: [{ receipt_mode: 'RTGS_NEFT' }, legacy(4)] };
+    case 'DD': return { receipt_mode: 'DD' };
+    case 'BP_ADJ': return { payment_mode: 7 };
+    case 'BID_ADV': return { payment_mode: 8 };
+    case 'ADV_RCT_ADJ': return { payment_mode: 6 };
+    case 'MIXED': case 'OTHERS': case 'SPLIT':
+      return {
+        [Op.or]: [
+          { receipt_mode: 'SPLIT' },
+          { [Op.and]: [{ receipt_mode: null, payment_mode: { [Op.notIn]: [1, 2, 3, 4, 6, 7, 8] } }, { [Op.not]: legacyCheque }] }
+        ]
+      };
+    default: return null;
+  }
+};
+
+// Receipt number = the digits after the LAST "/" or "-"; series = everything before that separator
+// (RCT/2026-27/000121 -> RCT/2026-27 and 121; CR-26/0006 -> CR-26 and 6). Receipts with no number never match a number range.
+const RECEIPT_NO_PATTERN = '^(.*)[/-]([0-9]+)$';
+const receiptNumberConditions = (series, from, to) => {
+  const out = [];
+  const col = '"CustomerPayment"."receipt_number"';
+  const hasSeries = series !== undefined && series !== null && String(series).trim() !== '';
+  const hasFrom = from !== undefined && from !== null && from !== '';
+  const hasTo = to !== undefined && to !== null && to !== '';
+  if (hasSeries) {
+    out.push(sequelize.literal(`lower(substring(${col} from '${RECEIPT_NO_PATTERN}')) = lower(${sequelize.escape(String(series).trim())})`));
+  }
+  const numberExpr = `(CASE WHEN ${col} ~ '${RECEIPT_NO_PATTERN}' THEN CAST(substring(${col} from '([0-9]+)$') AS numeric) END)`;
+  if (hasFrom) out.push(sequelize.literal(`${numberExpr} >= ${Number(from)}`));
+  if (hasTo) out.push(sequelize.literal(`${numberExpr} <= ${Number(to)}`));
+  return out;
+};
+
 const getAllReceiptsService = async (res, companyId, filters = {}) => {
   try {
-    const { min = 0, max = 20, source, group_id, member_id, payment_mode, date_from, date_to, search, collection_agent_id, status } = filters;
+    const { min = 0, max = 20, source, group_id, member_id, payment_mode, date_from, date_to, search, collection_agent_id, status, mode, receipt_series, receipt_from, receipt_to } = filters;
 
     // Active = verified (1); Cancelled = reversed (3) receipts, which keep their numbers.
     const where = { payment_status: status === 'cancelled' ? 3 : status === 'all' ? { [Op.in]: [1, 3] } : 1 };
     if (payment_mode) where.payment_mode = payment_mode;
+
+    // Optional, additive filters (spec 4 B6, R4-10 / R4-11). Absent = the rows and order of before.
+    const extraAnd = [];
+    const modeFilter = receiptModeCondition(mode);
+    if (modeFilter) extraAnd.push(modeFilter);
+    const numberFilters = receiptNumberConditions(receipt_series, receipt_from, receipt_to);
+    if (numberFilters.length) extraAnd.push(...numberFilters);
+    if (extraAnd.length) where[Op.and] = extraAnd;
     if (date_from || date_to) {
       where.payment_date = {};
       if (date_from) where.payment_date[Op.gte] = date_from;
@@ -8011,7 +8167,9 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
       total_penalty: '0.00',
       total_cash: '0.00',
       total_upi: '0.00',
-      total_bank: '0.00'
+      total_bank: '0.00',
+      total_charges: '0.00',
+      total_receipt_amount: '0.00'
     };
 
     try {
@@ -8023,6 +8181,7 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
           [sequelize.fn('SUM', sequelize.col('cash_amount')), 'sum_cash'],
           [sequelize.fn('SUM', sequelize.col('upi_amount')), 'sum_upi'],
           [sequelize.fn('SUM', sequelize.col('bank_amount')), 'sum_bank'],
+          [sequelize.fn('SUM', sequelize.col('charges_amount')), 'sum_charges'],
         ],
         include: [
           {
@@ -8036,13 +8195,18 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
               required: true,
               attributes: [],
               where: { company_id: companyId, ...(member_id && { subscriber_id: member_id }) },
-              ...(group_id && {
-                include: [{
-                  model: ChitsGroup,
-                  as: 'group',
-                  attributes: [],
-                  where: { id: group_id }
-                }]
+              // The search clause above reads the subscriber's and the group's name, so a search needs both joins
+              // here too (before, a search made this query fail and the totals came back as zeros).
+              ...((group_id || search) && {
+                include: [
+                  ...(search ? [{ model: Member, as: 'subscriber', attributes: [] }] : []),
+                  {
+                    model: ChitsGroup,
+                    as: 'group',
+                    attributes: [],
+                    ...(group_id && { where: { id: group_id } })
+                  }
+                ]
               })
             }]
           },
@@ -8061,6 +8225,7 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
         const row = allMatching[0];
         const sRec = parseFloat(row.sum_received || 0);
         const sPen = parseFloat(row.sum_penalty || 0);
+        const sChg = parseFloat(row.sum_charges || 0);
         summary = {
           total_receipts: count,
           total_amount: (sRec + sPen).toFixed(2),
@@ -8068,7 +8233,10 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
           total_penalty: sPen.toFixed(2),
           total_cash: (parseFloat(row.sum_cash || 0)).toFixed(2),
           total_upi: (parseFloat(row.sum_upi || 0)).toFixed(2),
-          total_bank: (parseFloat(row.sum_bank || 0)).toFixed(2)
+          total_bank: (parseFloat(row.sum_bank || 0)).toFixed(2),
+          // New (spec 4 B6, R4-9): charges alone, and what the member paid in all (received + penalty + charges).
+          total_charges: sChg.toFixed(2),
+          total_receipt_amount: (sRec + sPen + sChg).toFixed(2)
         };
       }
     } catch (sumErr) {
@@ -8407,14 +8575,23 @@ const updateCompanySetupService = async (res, data = {}, userToken) => {
   }
 };
 
-const getStatutoryReportService = async (res, reqBody) => {
+const getStatutoryReportService = async (res, reqBody, user) => {
   try {
-    const { start_date, end_date } = reqBody;
+    const { start_date, end_date, group_status = 1 } = reqBody;
+    const company_id = user?.company_id;
 
-    let whereClause = {};
+    let whereClause = { delete_status: 0 };
+    if (company_id) {
+      whereClause.company_id = company_id;
+    }
     if (start_date && end_date) {
       whereClause.createdAt = { [Op.between]: [new Date(start_date), new Date(end_date)] };
     }
+    if (String(group_status) === '1') {
+      whereClause.chits_group_status = { [Op.in]: [0, 1] }; // Running
+    } else if (String(group_status) === '2') {
+      whereClause.chits_group_status = 2; // Closed
+    } // String(group_status) === '0' means Both
 
     const groups = await ChitsGroup.findAll({
       where: whereClause,
@@ -8598,7 +8775,8 @@ const applyAdvanceService = async (res, member_advance_id, chits_installment_id,
     const paidSoFar = await getInstallmentBalance(chits_installment_id);
     const due = parseFloat(installment.payable_amount) - paidSoFar;
 
-    if (amount > due) {
+    // Whole paise: a due such as 1000 - 64.93 is 935.0699999999999 in floating point, which refused the exact 935.07 the dialog offers.
+    if (Math.round(Number(amount) * 100) > Math.round(due * 100)) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Advance application exceeds installment dues');
     }

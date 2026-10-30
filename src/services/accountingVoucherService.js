@@ -1,5 +1,5 @@
 const { AccountingVoucher, AccountingVoucherLine, PaymentAccount, AccountCreationDetail, sequelize } = require('../models');
-const { Op } = require('sequelize');
+const { Op, fn, col, literal, where: sqlWhere } = require('sequelize');
 const { resolveCompanyIdForAuth } = require('./adminService');
 const MODULES = require('../utils/modules');
 const { statusFilter, cancelStamp } = require('../utils/cancellable');
@@ -53,11 +53,24 @@ async function nextVoucherNumber(company_id, voucher_type, transaction) {
 class AccountingVoucherService {
   async getAllVouchers(params, user) {
     const company_id = await resolveCompanyIdForAuth(user);
-    const { voucher_type, from_date, to_date, search, min = 1, max = 50, status } = params;
+    const { voucher_type, from_date, to_date, search, min = 1, max = 50, status, date_basis, account_id } = params;
+
+    // Optional, additive keys (spec 4 B5). Absent / empty = exactly the old behaviour.
+    //  date_basis: 'voucher' (default, transaction_date) | 'created' | 'modified' (the day the row was created / last changed)
+    //  account_id: the voucher's own (bank / cash) account
+    const basis = date_basis === undefined || date_basis === null || date_basis === '' ? 'voucher' : String(date_basis);
+    if (!['voucher', 'created', 'modified'].includes(basis)) throw new Error("date_basis must be 'voucher', 'created' or 'modified'");
+    const hasAccount = account_id !== undefined && account_id !== null && account_id !== '';
+    if (hasAccount && !/^\d{1,9}$/.test(String(account_id))) throw new Error('account_id must be a whole number');
 
     const where = { company_id, ...statusFilter(status) };
     if (voucher_type) where.voucher_type = voucher_type;
-    if (from_date && to_date) where.transaction_date = { [Op.between]: [from_date, to_date] };
+    if (hasAccount) where.account_id = Number(account_id);
+    const dateClauses = [];
+    if (from_date && to_date) {
+      if (basis === 'voucher') where.transaction_date = { [Op.between]: [from_date, to_date] };
+      else dateClauses.push(sqlWhere(fn('DATE', col(basis === 'created' ? 'AccountingVoucher.created_at' : 'AccountingVoucher.updated_at')), { [Op.between]: [from_date, to_date] }));
+    }
     if (search) {
       where[Op.or] = [
         { voucher_number: { [Op.like]: `%${search}%` } },
@@ -65,16 +78,48 @@ class AccountingVoucherService {
       ];
     }
 
+    const finalWhere = dateClauses.length ? { [Op.and]: [where, ...dateClauses] } : where;
+
     const limit = parseInt(max, 10);
     const offset = (parseInt(min, 10) - 1) * limit;
     const { count, rows } = await AccountingVoucher.unscoped().findAndCountAll({
-      where,
+      where: finalWhere,
       limit,
       offset,
       order: [['transaction_date', 'DESC'], ['created_at', 'DESC']],
       include,
     });
-    return { total: count, rows };
+
+    // Lines summary for each row of the page (one query for all): first particulars account, number of
+    // lines, first line's cheque number / date. Additive key `lines_summary`; every old key is untouched.
+    const voucherIds = rows.map((r) => r.id);
+    const lines = voucherIds.length
+      ? await AccountingVoucherLine.findAll({
+        where: { voucher_id: { [Op.in]: voucherIds } },
+        attributes: ['id', 'voucher_id', 'cheque_number', 'cheque_date', 'created_at'],
+        include: [{ model: AccountCreationDetail, as: 'particulars_account', attributes: ['id', 'account_name'] }],
+        order: [['created_at', 'ASC'], [literal('"AccountingVoucherLine".ctid'), 'ASC']],
+      })
+      : [];
+    const byVoucher = new Map();
+    lines.forEach((l) => { if (!byVoucher.has(l.voucher_id)) byVoucher.set(l.voucher_id, []); byVoucher.get(l.voucher_id).push(l); });
+    const outRows = rows.map((r) => {
+      const ls = byVoucher.get(r.id) || [];
+      const first = ls[0] || null;
+      return {
+        ...r.toJSON(),
+        lines_summary: {
+          first_account_name: (first && first.particulars_account && first.particulars_account.account_name) || null,
+          line_count: ls.length,
+          first_cheque_number: (first && first.cheque_number) || null,
+          first_cheque_date: (first && first.cheque_date) || null,
+        },
+      };
+    });
+
+    // Total of every matching voucher (all pages), for the list's count line. Same filters as the rows.
+    const totalAmount = await AccountingVoucher.unscoped().sum('total_amount', { where: finalWhere });
+    return { total: count, rows: outRows, summary: { total_amount: Math.round((Number(totalAmount) || 0) * 100) / 100 } };
   }
 
   async getVoucherById(id, user) {

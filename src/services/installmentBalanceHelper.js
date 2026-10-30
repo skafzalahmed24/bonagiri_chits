@@ -24,7 +24,16 @@ const getInstallmentsBalancesBatch = async (installmentIds) => {
   return balances;
 };
 
+// Penalty still owed on an instalment: what it carries, less the penalty already paid on its
+// verified receipts (payment_status 1). A waiver already lowers penalty_amount itself
+// (chargeService.waivePenalty), so it is not subtracted again. Same rule as chargeService.waivePenalty.
+const penaltyOwed = (penaltyAmount, penaltyPaidSum) => {
+  const owed = Math.round(((parseFloat(penaltyAmount) || 0) - (parseFloat(penaltyPaidSum) || 0)) * 100) / 100;
+  return Math.max(0, owed);
+};
+
 module.exports = {
   getInstallmentBalance,
-  getInstallmentsBalancesBatch
+  getInstallmentsBalancesBatch,
+  penaltyOwed
 };

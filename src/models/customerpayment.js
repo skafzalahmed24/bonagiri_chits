@@ -16,6 +16,9 @@ module.exports = (sequelize, DataTypes) => {
       if (models.MemberAdvance) {
         CustomerPayment.belongsTo(models.MemberAdvance, { foreignKey: 'member_advance_id', as: 'member_advance' });
       }
+      // The collection agent an OFFICE receipt is tagged to (1b, DB-3). Not the collector: agent cash,
+      // float, commission and the leaderboard go through collection_agent_amount_id only.
+      CustomerPayment.belongsTo(models.Member, { foreignKey: 'tagged_collection_agent_id', as: 'tagged_agent' });
     }
   }
   CustomerPayment.init({
@@ -127,7 +130,18 @@ module.exports = (sequelize, DataTypes) => {
     reversed_by_name: { type: DataTypes.STRING, allowNull: true },
     reverse_reason: { type: DataTypes.TEXT, allowNull: true },
     // Charges paid on this receipt (enrollment fee, notice, cheque return…); the cash/UPI/bank split covers them too.
-    charges_amount: { type: DataTypes.DECIMAL(15, 2), allowNull: false, defaultValue: 0 }
+    charges_amount: { type: DataTypes.DECIMAL(15, 2), allowNull: false, defaultValue: 0 },
+    // ChitCare-order receipt fields (1b-DB1, migration 20261026100100). All nullable, no default; old rows read NULL.
+    // receipt_mode and cheque_clearing have DB CHECKs (values below); Joi uses the same values and lengths (DB-8).
+    receipt_mode: { type: DataTypes.STRING(12), allowNull: true }, // CASH | UPI | CHEQUE | DD | RTGS_NEFT | SPLIT
+    tr_series: { type: DataTypes.STRING(10), allowNull: true },
+    tr_number: { type: DataTypes.STRING(20), allowNull: true },
+    tr_date: { type: DataTypes.DATEONLY, allowNull: true },
+    cheque_deposit_date: { type: DataTypes.DATEONLY, allowNull: true },
+    cheque_bank_name: { type: DataTypes.STRING(100), allowNull: true },
+    cheque_place: { type: DataTypes.STRING(60), allowNull: true },
+    cheque_clearing: { type: DataTypes.STRING(10), allowNull: true }, // LOCAL | NON_LOCAL
+    tagged_collection_agent_id: { type: DataTypes.INTEGER, allowNull: true } // FK member(id), ON DELETE RESTRICT
   }, {
     sequelize,
     modelName: 'CustomerPayment',

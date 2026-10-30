@@ -37,6 +37,10 @@ const LEDGER_ACCOUNT_READERS = [
   MODULES.M_ACCOUNTS, MODULES.M_ACC_GROUPS, MODULES.M_ACC_TREE, MODULES.M_OPENING_BAL,
   ...Object.values(VOUCHER_MODULES), MODULES.R_LEDGER,
 ];
+// Who may read a chit group's instalment schedule (POST chits-installment/get-by-group). Callers (grep of src/, 2026-10-25):
+// Masters > Chit Groups grid (useGroupInstallments, M_CHITS) and the Member Receipts form (useDirectPayment, T_MEMBER_RECEIPTS).
+// T_ALL_RECEIPTS is added as the receipts reader (plan P2b2, A1). The iOS app does not call this route (docs/team/member-receipts-layout/P2x-callers.md).
+const GROUP_SCHEDULE_READERS = [MODULES.M_CHITS, MODULES.T_MEMBER_RECEIPTS, MODULES.T_ALL_RECEIPTS];
 const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
 const userController = require('../controllers/userController');
@@ -284,10 +288,11 @@ router.post('/gallery/get-all', authMiddleware.authenticateToken, validate(admin
 router.post('/gallery/get-by-id', authMiddleware.authenticateToken, validate(adminValidation.getByIdSchema), adminController.getGalleryById);
 router.post('/gallery/delete', authMiddleware.authenticateToken, validate(adminValidation.deleteGallerySchema), adminController.deleteGallery);
 // schedule view route
-router.post('/chits-installment/get-by-group', authMiddleware.authenticateToken, adminController.getInstallmentsByGroup);
+router.post('/chits-installment/get-by-group', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission(GROUP_SCHEDULE_READERS), validate(adminValidation.getInstallmentsByGroupSchema), adminController.getInstallmentsByGroup);
 
 // record winner route
-router.post('/auction/record-winner', authMiddleware.authenticateToken, adminController.recordWinner);
+// 2-BUG1: route gate = exactly the callers the service already allows (company admin); the service check stays as the second line.
+router.post('/auction/record-winner', authMiddleware.authenticateToken, authMiddleware.requireRole('company'), adminController.recordWinner);
 
 
 // staff routes

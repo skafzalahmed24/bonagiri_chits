@@ -755,7 +755,7 @@ class ReportService {
    * the payable amount of their due installments minus what has been verified
    * against them. Buckets differ; the money never does.
    */
-  async getOutstandingReport({ as_on_date, group_by = 'group', group_id, agent_id, area_id, route_id, group_status = 1, subscriber_type = 'ALL', collection_agent_id, business_agent_id, company_id }) {
+  async getOutstandingReport({ as_on_date, group_by = 'group', group_id, agent_id, area_id, route_id, group_status = 1, subscriber_type = 'ALL', collection_agent_id, business_agent_id, last_auction = 'yes', installments_range, company_id }) {
     const asOn = as_on_date || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     const round2 = (n) => parseFloat(Number(n).toFixed(2));
 
@@ -790,7 +790,7 @@ class ReportService {
     const suits = await SuitFileInformation.findAll({ where: { company_id }, attributes: ['group_id', 'subscriber_id'] });
     const suitFiled = new Set(suits.map((s) => s.group_id + ':' + s.subscriber_id));
 
-    const scoped = (route_id
+    let scoped = (route_id
       ? enrollments.filter((e) => e.area && String(e.area.route_id) === String(route_id))
       : enrollments).filter((e) => {
         if (!e.subscriber || e.subscriber.group_status === 1) return false;
@@ -810,6 +810,21 @@ class ReportService {
         
         return true;
       });
+
+    if (last_auction === 'yes') {
+      const groupIds = [...new Set(scoped.map((e) => e.group_id))];
+      if (groupIds.length > 0) {
+        const auctions = await Auction.findAll({
+          where: {
+            group_id: { [Op.in]: groupIds },
+            auction_date: { [Op.lte]: asOn },
+          },
+          attributes: ['group_id'],
+        });
+        const groupsWithAuction = new Set(auctions.map((a) => a.group_id));
+        scoped = scoped.filter((e) => groupsWithAuction.has(e.group_id));
+      }
+    }
 
     const empty = { as_on_date: asOn, group_by, summary: { total_outstanding: 0, members_count: 0, buckets_count: 0 }, rows: [] };
     if (scoped.length === 0) return empty;
@@ -930,38 +945,68 @@ class ReportService {
       grandTotal += pending;
     });
 
+    let minInst = null;
+    let maxInst = null;
+    if (installments_range && typeof installments_range === 'string') {
+      const parts = installments_range.split('-').map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
+      if (parts.length === 1) {
+        minInst = parts[0];
+        maxInst = parts[0];
+      } else if (parts.length >= 2) {
+        minInst = Math.min(parts[0], parts[1]);
+        maxInst = Math.max(parts[0], parts[1]);
+      }
+    }
+
     const rows = Object.values(buckets)
-      .map((b) => ({
-        bucket_id: b.bucket_id,
-        label: b.label,
-        outstanding_amount: round2(b.outstanding_amount),
-        penalty_amount: round2(b.penalty_amount),
-        installments_count: b.installments_count,
-        members_count: Object.keys(b.membersMap).length,
-        members: Object.values(b.membersMap)
-          .map((m) => Object.assign({}, m, {
-            outstanding_amount: round2(m.outstanding_amount),
-            current_due: round2(m.current_due),
-            previous_due: round2(m.previous_due),
-            penalty_amount: round2(m.penalty_amount),
-            // "18-20 ( 3)" in their report
-            installments_range:
-              m.first_installment_no === null
-                ? ''
-                : (m.first_installment_no === m.last_installment_no
-                    ? String(m.first_installment_no)
-                    : m.first_installment_no + '-' + m.last_installment_no) + ' (' + m.installments_count + ')',
-          }))
-          .sort((x, y) => y.outstanding_amount - x.outstanding_amount),
-      }))
+      .map((b) => {
+        let membersList = Object.values(b.membersMap);
+        if (minInst !== null) {
+          membersList = membersList.filter((m) => m.installments_count >= minInst && m.installments_count <= maxInst);
+        }
+        const bOutstanding = membersList.reduce((sum, m) => sum + m.outstanding_amount, 0);
+        const bPenalty = membersList.reduce((sum, m) => sum + m.penalty_amount, 0);
+        const bInstCount = membersList.reduce((sum, m) => sum + m.installments_count, 0);
+
+        return {
+          bucket_id: b.bucket_id,
+          label: b.label,
+          outstanding_amount: round2(bOutstanding),
+          penalty_amount: round2(bPenalty),
+          installments_count: bInstCount,
+          members_count: membersList.length,
+          members: membersList
+            .map((m) => Object.assign({}, m, {
+              outstanding_amount: round2(m.outstanding_amount),
+              current_due: round2(m.current_due),
+              previous_due: round2(m.previous_due),
+              penalty_amount: round2(m.penalty_amount),
+              installments_range:
+                m.first_installment_no === null
+                  ? ''
+                  : (m.first_installment_no === m.last_installment_no
+                      ? String(m.first_installment_no)
+                      : m.first_installment_no + '-' + m.last_installment_no) + ' (' + m.installments_count + ')',
+            }))
+            .sort((x, y) => y.outstanding_amount - x.outstanding_amount),
+        };
+      })
+      .filter((b) => b.members_count > 0)
       .sort((a, b) => b.outstanding_amount - a.outstanding_amount);
+
+    const finalMembersCount = new Set();
+    let finalGrandTotal = 0;
+    rows.forEach((b) => {
+      finalGrandTotal += b.outstanding_amount;
+      b.members.forEach((m) => finalMembersCount.add(String(m.member_id)));
+    });
 
     return {
       as_on_date: asOn,
       group_by,
       summary: {
-        total_outstanding: round2(grandTotal),
-        members_count: membersSeen.size,
+        total_outstanding: round2(finalGrandTotal),
+        members_count: finalMembersCount.size,
         buckets_count: rows.length,
       },
       rows,

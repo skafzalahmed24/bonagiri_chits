@@ -614,8 +614,8 @@ const storeOrUpdateAuction = async (req, res) => {
 const getAllAuctions = async (req, res) => {
   try {
     const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
-    const { group_id, bidder_id, min, max, search } = req.body || {};
-    return await adminService.getAllAuctionsService(res, comp_id, group_id, bidder_id, min, max, search);
+    const { group_id, bidder_id, min, max, search, date_from, date_to, sort } = req.body || {};
+    return await adminService.getAllAuctionsService(res, comp_id, group_id, bidder_id, min, max, search, { date_from, date_to, sort });
   } catch (error) {
     console.error('Error in getAllAuctions:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1435,7 +1435,7 @@ const deleteGallery = async (req, res) => {
 const getInstallmentsByGroup = async (req, res) => {
   try {
     const { group_id, enrollment_id, member_id, min, max } = req.body || {};
-    return await adminService.getInstallmentsByGroupService(res, group_id, enrollment_id, member_id, min, max);
+    return await adminService.getInstallmentsByGroupService(res, group_id, enrollment_id, member_id, min, max, req.user);
   } catch (error) {
     console.error('Error in getInstallmentsByGroup:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1692,7 +1692,7 @@ const updateCompanySetup = async (req, res) => {
 
 const getStatutoryReport = async (req, res) => {
   try {
-    return await adminService.getStatutoryReportService(res, req.body);
+    return await adminService.getStatutoryReportService(res, req.body, req.user);
   } catch (error) {
     console.error('Error in getStatutoryReport:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

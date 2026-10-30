@@ -1,4 +1,6 @@
 const Joi = require('joi');
+// L-BE (transactions-chitcare-parity): helpers for the optional keys added to list routes.
+const txv = require('./transactionsValidation');
 
 // E2E-016 (2026-10-14): place names (district, city, route, area) are trimmed and at most 100
 // characters. Triage assumption D2 - pending owner confirmation of the 100 limit.
@@ -959,8 +961,12 @@ module.exports = {
     bidder_id: Joi.number().integer().allow(null).optional(),
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional(),
-    search: Joi.string().allow('', null).optional()
-  }),
+    search: Joi.string().allow('', null).optional(),
+    // L-BE 2-BE1 (optional, additive): inclusive date range on auction_date and a sort direction.
+    date_from: txv.dateOnly(),
+    date_to: txv.dateOnly(),
+    sort: txv.sortDirection()
+  }).custom(txv.newListKeysRule(['date_from', 'date_to', 'sort'], 5000)),
 
   deleteAuctionSchema: Joi.object({
     id: Joi.string().uuid().required(),
@@ -1359,6 +1365,14 @@ module.exports = {
     body: Joi.string().required(),
     data_payload: Joi.object().optional(),
   }),
+  // P2b2 (2026-10-25). Unknown keys stay allowed: only the web sends this and the route had no Joi before.
+  getInstallmentsByGroupSchema: Joi.object({
+    group_id: Joi.string().uuid().required(),
+    enrollment_id: Joi.number().integer().min(1).allow(null, '').optional(),
+    member_id: Joi.number().integer().min(1).allow(null, '').optional(),
+    min: Joi.number().integer().min(0).optional(),
+    max: Joi.number().integer().min(1).max(1000).optional(),
+  }).unknown(true),
   storeDirectPaymentSchema: Joi.object({
     // A charges-only receipt names the ticket (enrollment_id) instead of an instalment.
     chits_installment_id: Joi.string().uuid().optional(),
@@ -1370,8 +1384,10 @@ module.exports = {
     received_amount: Joi.number().min(0).required(),
     penalty_paid: Joi.number().min(0).optional(),
     payment_date: Joi.date().iso().optional(),
-    payment_mode: Joi.number().integer().optional(),
-    transaction_reference: Joi.string().allow('', null).optional(),
+    // SEC-P6: only the modes a cashier can pick (1 cash, 2 UPI, 3 cheque, 4 bank, 5 others); 6 to 8 are written by the system.
+    payment_mode: Joi.number().integer().valid(1, 2, 3, 4, 5).optional(),
+    // SEC-P6: customer_payments.transaction_reference and cheque_number are VARCHAR(255); narration is TEXT (capped at 1000 here).
+    transaction_reference: Joi.string().trim().max(255).allow('', null).optional(),
     cash_amount: Joi.number().min(0).optional(),
     cash_account_id: Joi.number().integer().allow(null).optional(),
     override_reason: Joi.string().allow('', null).optional(),
@@ -1379,9 +1395,9 @@ module.exports = {
     upi_account_id: Joi.number().integer().allow(null).optional(),
     bank_amount: Joi.number().min(0).optional(),
     bank_account_id: Joi.number().integer().allow(null).optional(),
-    cheque_number: Joi.string().allow('', null).optional(),
+    cheque_number: Joi.string().trim().max(255).allow('', null).optional(),
     cheque_date: Joi.date().iso().allow('', null).optional(),
-    narration: Joi.string().allow('', null).optional()
+    narration: Joi.string().trim().max(1000).allow('', null).optional()
   }),
   getMemberDocumentsAdminSchema: Joi.object({
     group_id: Joi.string().uuid().required(),
@@ -1416,8 +1432,13 @@ module.exports = {
     date_from: Joi.date().iso().optional(),
     date_to: Joi.date().iso().optional(),
     search: Joi.string().allow('', null).optional(),
-    status: Joi.string().valid('active', 'cancelled', 'all').optional()
-  }),
+    status: Joi.string().valid('active', 'cancelled', 'all').optional(),
+    // L-BE spec 4 B6 (optional, additive): Payment Mode filter and receipt series / number range.
+    mode: Joi.string().uppercase().valid('CASH', 'CHEQUE', 'UPI', 'RTGS_NEFT', 'DD', 'BP_ADJ', 'BID_ADV', 'ADV_RCT_ADJ', 'MIXED', 'OTHERS', 'SPLIT').allow('', null).optional(),
+    receipt_series: Joi.string().trim().max(40).allow('', null).optional(),
+    receipt_from: Joi.number().integer().min(0).max(2000000000).allow('', null).optional(),
+    receipt_to: Joi.number().integer().min(0).max(2000000000).allow('', null).optional()
+  }).custom(txv.receiptNumberRule),
   updateBusinessDateSchema: Joi.object({
     business_date: Joi.date().iso().required(),
     reason: Joi.string().required(),

@@ -100,6 +100,8 @@ exports.getOutstandingReport = async (req, res) => {
       subscriber_type: req.body.subscriber_type,
       collection_agent_id: req.body.collection_agent_id,
       business_agent_id: req.body.business_agent_id,
+      last_auction: req.body.last_auction,
+      installments_range: req.body.installments_range,
       company_id: await resolveCompanyIdForAuth(req.user),
     };
     const data = await reportService.getOutstandingReport(params);

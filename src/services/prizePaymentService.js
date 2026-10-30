@@ -589,7 +589,14 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
   });
 }
 
-async function getAll({ companyId, payment_types, from_date, to_date, group_id, group_status, account_id, search, min, max }) {
+// `sort` is optional (3-BE1, additive): 'asc' = oldest payment date first, then voucher number;
+// 'desc' (or nothing) keeps today's order, payment_date DESC then createdAt DESC. Callers that do not send it
+// (the Bid Payment report included, in-process) get exactly the old result.
+async function getAll({ companyId, payment_types, from_date, to_date, group_id, group_status, account_id, search, min, max, sort }) {
+  const sortDir = (sort === undefined || sort === null || sort === '') ? null : String(sort).toLowerCase();
+  if (sortDir !== null && sortDir !== 'asc' && sortDir !== 'desc') {
+    throw new Error("sort must be 'asc' or 'desc'");
+  }
   const where = { company_id: companyId, is_deleted: 0 };
   
   if (from_date && to_date) {
@@ -626,7 +633,9 @@ async function getAll({ companyId, payment_types, from_date, to_date, group_id, 
   const { rows, count } = await PrizePayment.findAndCountAll({
     where,
     include,
-    order: [['payment_date', 'DESC'], ['createdAt', 'DESC']],
+    order: sortDir === 'asc'
+      ? [['payment_date', 'ASC'], ['voucher_number', 'ASC'], ['createdAt', 'ASC']]
+      : [['payment_date', 'DESC'], ['createdAt', 'DESC']],
     offset,
     limit,
     distinct: true
@@ -648,16 +657,18 @@ async function getAll({ companyId, payment_types, from_date, to_date, group_id, 
     by_mode[a.payment_type] = round2((by_mode[a.payment_type] || 0) + amt);
   });
 
-  const formattedRows = await Promise.all(rows.map(async (r) => {
+  // Holder names for every row of the page in ONE lookup (3-BE1; it was one query per row). Same
+  // function, same names; this also serves the Bid Payment register, which calls getAll in-process.
+  const holderNames = await holderNamesByEnrollment(rows.map((r) => r.enrollment_id));
+  const formattedRows = rows.map((r) => {
     const p = r.toJSON();
     p.ticket_number = p.enrollment?.group_position_number;
     p.member_name = p.member?.name;
-    const h = await holderNamesByEnrollment([r.enrollment_id]);
-    p.holder_names = h[r.enrollment_id] || p.member_name;
+    p.holder_names = holderNames[r.enrollment_id] || p.member_name;
     delete p.enrollment;
     delete p.member;
     return p;
-  }));
+  });
 
   return { rows: formattedRows, total: count, total_amount, totals: { count, amount: total_amount, by_mode } };
 }

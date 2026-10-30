@@ -146,6 +146,12 @@ module.exports = (sequelize, DataTypes) => {
     is_favorites: {
       type: DataTypes.JSON,
       allowNull: true
+    },
+    // Per-company transaction options (ChitCare parity). JSONB object or NULL (DB CHECK);
+    // NULL or a missing key = the default. Migration 20261026100000.
+    transaction_options: {
+      type: DataTypes.JSONB,
+      allowNull: true
     }
   }, {
     sequelize,
