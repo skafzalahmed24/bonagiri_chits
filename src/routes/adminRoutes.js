@@ -45,21 +45,19 @@ const uploadMiddleware = require('../middlewares/uploadMiddleware');
 const adminValidation = require('../validations/adminValidation');
 const userController = require('../controllers/userController');
 const userValidation = require('../validations/userValidation');
-const { authRateLimiter } = require('../middlewares/rateLimiter');
-
 // auth routes
-router.post('/login', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.loginAdminSchema), adminController.loginAdmin);
+router.post('/login', authMiddleware.authenticateDefaultToken, validate(adminValidation.loginAdminSchema), adminController.loginAdmin);
 router.post('/refresh-token', authMiddleware.authenticateDefaultToken, validate(adminValidation.refreshTokenSchema), adminController.refreshToken);
 
 // company routes
-router.post('/user/login', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.companyLoginSchema), adminController.loginCompany);
+router.post('/user/login', authMiddleware.authenticateDefaultToken, validate(adminValidation.companyLoginSchema), adminController.loginCompany);
 
 // forgot password & OTP routes
-router.post('/forgot-password', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.forgotPasswordSchema), adminController.forgotPassword);
-router.post('/resendOTP', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
-router.post('/verify-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyOtpSchema), adminController.verifyOtp);
-router.post('/reset-password', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resetPasswordSchema), adminController.resetPassword);
-router.post('/change-password', authRateLimiter, authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.changePassword);
+router.post('/forgot-password', authMiddleware.authenticateDefaultToken, validate(adminValidation.forgotPasswordSchema), adminController.forgotPassword);
+router.post('/resendOTP', authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
+router.post('/verify-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyOtpSchema), adminController.verifyOtp);
+router.post('/reset-password', authMiddleware.authenticateDefaultToken, validate(adminValidation.resetPasswordSchema), adminController.resetPassword);
+router.post('/change-password', authMiddleware.authenticateToken, validate(adminValidation.changePasswordSchema), adminController.changePassword);
 
 // Twilio OTP test routes
 // Twilio smoke-test routes — never mounted in production.
@@ -372,8 +370,8 @@ router.post('/public/terms-privacy', authMiddleware.authenticateDefaultToken, va
 router.post('/public/support', authMiddleware.authenticateDefaultToken, platformSupportController.getPublicSupport);
 
 // Member Delete Account routes
-router.post('/member/delete-account/send-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);
-router.post('/member/delete-account/verify', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyDeleteAccountOtpSchema), platformSupportController.verifyDeleteAccountOtp);
+router.post('/member/delete-account/send-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);
+router.post('/member/delete-account/verify', authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyDeleteAccountOtpSchema), platformSupportController.verifyDeleteAccountOtp);
 
 // Accounting Vouchers Routes
 router.post('/accounting-voucher/get-all', authMiddleware.authenticateToken, voucherPermission, accountingVoucherController.getAll);
