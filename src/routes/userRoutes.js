@@ -9,7 +9,6 @@ const userValidation = require('../validations/userValidation');
 const adminValidation = require('../validations/adminValidation');
 const platformSupportController = require('../controllers/platformSupportController');
 const bannerController = require('../controllers/bannerController');
-const { authRateLimiter } = require('../middlewares/rateLimiter');
 
 // get home record based on subscriber_id
 router.post('/home', authMiddleware.authenticateToken, validate(userValidation.getHomeRecordSchema), userController.getHomeRecord);
@@ -95,12 +94,12 @@ router.post('/public/terms-privacy', authMiddleware.authenticateDefaultToken, va
 router.post('/public/support', authMiddleware.authenticateDefaultToken, platformSupportController.getPublicSupport);
 
 // Member Delete Account routes
-router.post('/member/delete-account/send-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);
-router.post('/member/delete-account/verify', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyDeleteAccountOtpSchema), platformSupportController.verifyDeleteAccountOtp);
+router.post('/member/delete-account/send-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);
+router.post('/member/delete-account/verify', authMiddleware.authenticateDefaultToken, validate(adminValidation.verifyDeleteAccountOtpSchema), platformSupportController.verifyDeleteAccountOtp);
 
 // Resend OTP routes
-router.post('/resendOTP', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
-router.post('/resend-otp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
-router.post('/resendOtp', authRateLimiter, authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
+router.post('/resendOTP', authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
+router.post('/resend-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
+router.post('/resendOtp', authMiddleware.authenticateDefaultToken, validate(adminValidation.resendOtpSchema), adminController.resendOtp);
 
 module.exports = router;
