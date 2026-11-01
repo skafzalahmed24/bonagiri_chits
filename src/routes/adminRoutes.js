@@ -426,6 +426,7 @@ router.post('/surety/store-or-update', authMiddleware.authenticateToken, authMid
 router.post('/surety/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SURETY_ENTRY), suretyDenominationController.deleteSurety);
 router.post('/surety/documents/review', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_SURETY_ENTRY), suretyDenominationController.reviewSuretyDocument);
 router.post('/denomination/get-by-date', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_DENOMINATIONS), suretyDenominationController.getDenomination);
+router.post('/denomination/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_DENOMINATIONS), suretyDenominationController.listDenominations);
 router.post('/denomination/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_DENOMINATIONS), suretyDenominationController.saveDenomination);
 // Picker lookups (names and ids only) for any office user; portal members are refused.
 router.post('/options/chit-groups', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getGroupOptions);

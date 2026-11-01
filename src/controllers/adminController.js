@@ -123,8 +123,8 @@ const storeOrUpdateMember = async (req, res) => {
 const getAllMemberDetails = async (req, res) => {
   try {
     const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
-    const { introduced_as, min, max, search } = req.body || {};
-    return await adminService.getAllMemberDetailsService(res, comp_id, introduced_as, min, max, search);
+    const { introduced_as, min, max, search, from_date, to_date } = req.body || {};
+    return await adminService.getAllMemberDetailsService(res, comp_id, introduced_as, min, max, search, from_date, to_date);
   } catch (error) {
     console.error('Error in getAllMemberDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

@@ -268,6 +268,9 @@ const memberValidator = Joi.object({
 const getAllMemberSchema = Joi.object({
   company_id: Joi.string().uuid().allow('', null).optional(),
   introduced_as: Joi.alternatives().try(Joi.string(), Joi.number()).allow('', null).optional(),
+  // Optional registration-date range (yyyy-mm-dd, inclusive); added 2026-11-01 for the web Member List.
+  from_date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).allow('', null).optional(),
+  to_date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).allow('', null).optional(),
   min: Joi.number().integer().min(0).optional().messages({
     'number.min': 'Min must be greater than or equal to 0'
   }),

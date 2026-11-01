@@ -145,6 +145,26 @@ async function getDenomination({ company_id, count_date }) {
   };
 }
 
+// Denomination List: every saved cash count of the company, newest date first, optionally between two dates (yyyy-mm-dd, inclusive).
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+async function listDenominations({ company_id, from_date, to_date }) {
+  for (const d of [from_date, to_date]) {
+    if (d && !ISO_DATE.test(d)) throw new Error('Dates must be yyyy-mm-dd');
+  }
+  const where = { company_id };
+  if (from_date || to_date) {
+    where.count_date = { ...(from_date ? { [Op.gte]: from_date } : {}), ...(to_date ? { [Op.lte]: to_date } : {}) };
+  }
+  const rows = await CashDenomination.findAll({ where, order: [['count_date', 'DESC']], limit: 5000 });
+  return rows.map((r) => ({
+    ...r.toJSON(),
+    total_amount: round2(r.total_amount),
+    coins_amount: round2(r.coins_amount),
+    created_at: r.createdAt,
+    updated_at: r.updatedAt,
+  }));
+}
+
 async function saveDenomination({ company_id, data, counted_by }) {
   if (!data.count_date) throw new Error('Count date is required');
   const values = { remarks: data.remarks || null, counted_by: counted_by || null };
@@ -164,5 +184,5 @@ async function saveDenomination({ company_id, data, counted_by }) {
 
 module.exports = {
   listSureties, saveSurety, deleteSurety, reviewSuretyDocument,
-  getDenomination, saveDenomination, denominationTotal, NOTES,
+  getDenomination, saveDenomination, listDenominations, denominationTotal, NOTES,
 };

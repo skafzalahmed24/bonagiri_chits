@@ -732,7 +732,7 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
   }
 };
 
-const getAllMemberDetailsService = async (res, company_id, introduced_as, min, max, search) => {
+const getAllMemberDetailsService = async (res, company_id, introduced_as, min, max, search, from_date, to_date) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
@@ -742,6 +742,8 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
 
       ...(company_id && company_id !== '' ? { company_id } : {}),
       ...(introduced_as && introduced_as !== '' ? { introduced_as: { [Op.contains]: [introduced_as] } } : {}),
+      // Registration date range, inclusive; an empty bound is open. Optional, so existing callers are unchanged.
+      ...(from_date || to_date ? { registration_date: { ...(from_date ? { [Op.gte]: from_date } : {}), ...(to_date ? { [Op.lte]: to_date } : {}) } } : {}),
       // E2E-045 (2026-10-14): search is case-insensitive ("three" finds "Three").
       [Op.or]: [
         { name: { [Op.iLike]: `%${search || ''}%` } },

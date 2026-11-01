@@ -34,6 +34,10 @@ exports.getDenomination = handle(
   (req, company_id) => svc.getDenomination({ company_id, count_date: req.body.count_date }),
   'Cash count retrieved successfully'
 );
+exports.listDenominations = handle(
+  (req, company_id) => svc.listDenominations({ company_id, from_date: req.body.from_date, to_date: req.body.to_date }),
+  'Cash counts retrieved successfully'
+);
 exports.saveDenomination = handle(
   (req, company_id) => svc.saveDenomination({ company_id, data: req.body, counted_by: countedBy(req.user) }),
   'Cash count saved'
