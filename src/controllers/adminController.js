@@ -747,6 +747,15 @@ const getCompanyById = async (req, res) => {
 const getMemberById = async (req, res) => {
   try {
     const { id } = req.body || {};
+    // A member-role token (members, collection agents, business agents) may read only its OWN profile.
+    // The apps send the stored login id as a string; the token holds a number, so compare as strings.
+    // Staff and company tokens are unchanged. Missing token id fails closed. Never 409 (apps log out on it).
+    if (req.user?.role === 'member') {
+      const ownId = req.user.id;
+      if (ownId === undefined || ownId === null || String(id).trim() !== String(ownId)) {
+        return errorResponse(res, statusCodes.FORBIDDEN, 'You can only view your own profile');
+      }
+    }
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
       return await adminService.getMemberByIdService(res, id, companyId);
   } catch (error) {

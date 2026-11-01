@@ -5868,7 +5868,7 @@ const getMemberByIdService = async (res, id, companyId) => {
 
     const member = await Member.findOne({
       where,
-      attributes: { exclude: ['verification_otp', 'verification_otp_expires_at', 'verification_otp_attempts', 'other_info_user_password'] },
+      attributes: { exclude: ['verification_otp', 'verification_otp_expires_at', 'verification_otp_attempts', 'mobile_otp', 'mobile_otp_expires_at', 'mobile_otp_attempts', 'other_info_user_password'] },
       include: [
         { model: StaticDropdownsList, as: 'title' },
         { model: StaticDropdownSubcategoryList, as: 'parental_title' },
