@@ -1522,6 +1522,16 @@ const getAdminNotificationHistory = async (req, res) => {
   }
 };
 
+const getSentNotificationHistory = async (req, res) => {
+  try {
+    // company comes from the token inside the service; the body only carries paging/search/source
+    return await adminNotificationService.getSentNotificationHistoryService(res, req.user, req.body || {});
+  } catch (error) {
+    console.error('Error in getSentNotificationHistory:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getAdminNotificationBadgeCount = async (req, res) => {
   try {
     return await adminNotificationService.getAdminNotificationBadgeCountService(res, req.user);
@@ -1674,7 +1684,7 @@ const updateCustomerVisitStatus = async (req, res) => {
 
 const getLedgerReport = async (req, res) => {
   try {
-    return await adminService.getLedgerReportService(res, req.body);
+    return await adminService.getLedgerReportService(res, req.body, req.user);
   } catch (error) {
     console.error('Error in getLedgerReport:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -1915,6 +1925,7 @@ module.exports = {
   registerAdminToken,
   sendManualNotification,
   getAdminNotificationHistory,
+  getSentNotificationHistory,
   getAdminNotificationBadgeCount,
   markAdminNotificationRead,
   markAllAdminNotificationsRead,

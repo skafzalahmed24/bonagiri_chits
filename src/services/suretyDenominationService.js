@@ -117,7 +117,8 @@ async function deleteSurety({ company_id, id }) {
 
 // ----------------------------------------------------------- Denominations
 
-const NOTES = [500, 200, 100, 50, 20, 10];
+// Rs5, Rs2 and Rs1 columns added 2026-11-02 (migration 20261102100000); older counts read back 0 for them.
+const NOTES = [500, 200, 100, 50, 20, 10, 5, 2, 1];
 
 const denominationTotal = (d) =>
   round2(NOTES.reduce((s, n) => s + (parseInt(d[`notes_${n}`], 10) || 0) * n, 0) + (parseFloat(d.coins_amount) || 0));

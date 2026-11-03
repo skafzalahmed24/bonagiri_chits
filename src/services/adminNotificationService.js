@@ -1,8 +1,9 @@
-const { Op } = require('sequelize');
+const { Op, QueryTypes } = require('sequelize');
 const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
-const { StaffUser, Company, Member, Enrollment, NotificationHistory } = require('../models');
+const { StaffUser, Company, Member, Enrollment, NotificationHistory, sequelize } = require('../models');
 const fcmService = require('./fcmService');
+const { effectiveSentSource } = require('../utils/sentNotificationSource');
 
 /**
  * Register FCM device token and platform info for Staff / Admin
@@ -136,6 +137,89 @@ const getAdminNotificationHistoryService = async (res, userPayload, min = 0, max
     return successResponse(res, statusCodes.OK, 'Notification history retrieved successfully', { unread_count, count, rows });
   } catch (error) {
     console.error('Error in getAdminNotificationHistoryService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+/**
+ * Sent notifications history (what the office sent to MEMBERS), one row per send.
+ * Bug 2026-11-03: the "Notification History" tab used getAdminNotificationHistoryService above, which is the office users' OWN
+ * inbox (user_type STAFF/ADMIN/COMPANY) and is empty. A send is stored as one NotificationHistory row per recipient member
+ * (user_type 'MEMBER', see fcmService), with no batch id. A multicast uses bulkCreate, which gives every row of the send the
+ * same createdAt, so a send = same company + title + body + createdAt. A single-member send is one row = a group of 1.
+ *
+ * source 'manual' (default): only sends typed in the Push Notifications screen. Every automatic notification the system sends
+ * carries data_payload.type; the screen sends no data_payload, so "manual" = no data_payload.type.
+ * source 'all': also the automatic ones (their type is returned as `type`). Only the company admin token gets 'all'; for staff the
+ * source is forced to 'manual' (utils/sentNotificationSource.js), because the automatic texts carry payment amounts and receipt numbers.
+ *
+ * Company scope is mandatory and comes from the token (never the body). Only title, body, time, recipient count, the
+ * data_payload type scalar and (for a send to exactly one member) that member's name are read: no tokens, no payloads.
+ * Read-only.
+ * Response: data = { count (number of sends), rows: [{ title, body, sent_at, recipient_count, type, target_label }] }
+ */
+const getSentNotificationHistoryService = async (res, userPayload, query = {}) => {
+  try {
+    if (!userPayload) return errorResponse(res, statusCodes.UNAUTHORIZED, 'Unauthorized access');
+    // Lazy require: adminService loads this module's siblings, a top-level require here could be circular.
+    const { resolveCompanyIdForAuth } = require('./adminService');
+    const companyId = await resolveCompanyIdForAuth(userPayload);
+    if (!companyId) return errorResponse(res, statusCodes.BAD_REQUEST, 'Company could not be determined');
+
+    const limit = Math.min(Math.max(parseInt(query.max, 10) || 20, 1), 200);
+    const offset = Math.max(parseInt(query.min, 10) || 0, 0);
+    const search = typeof query.search === 'string' ? query.search.trim() : '';
+    // Only the company admin token may read the automatic rows (they carry payment amounts / receipt numbers); staff get 'manual'.
+    const manualOnly = effectiveSentSource(userPayload, query.source) === 'manual';
+
+    const replacements = { companyId, limit, offset };
+    let filters = '';
+    if (manualOnly) filters += ` AND (nh.data_payload->>'type') IS NULL`;
+    if (search) {
+      replacements.search = `%${search.replace(/[\\%_]/g, '\\$&')}%`;
+      filters += ' AND (nh.title ILIKE :search OR nh.body ILIKE :search)';
+    }
+
+    const grouped = `
+      SELECT nh.title, nh.body, nh."createdAt" AS sent_at,
+             COUNT(*)::int AS recipient_count,
+             MIN(nh.user_id) AS first_user_id,
+             MAX(nh.data_payload->>'type') AS type
+      FROM notification_histories nh
+      WHERE nh.company_id = :companyId AND nh.user_type = 'MEMBER'${filters}
+      GROUP BY nh.title, nh.body, nh."createdAt"`;
+
+    // One pass: total_count (window over the grouped set) is the number of sends; the page is cut after it.
+    // ORDER BY covers every grouping column (sent_at, title, body), so paging is stable.
+    const rows = await sequelize.query(
+      `SELECT g.title, g.body, g.sent_at, g.recipient_count, g.type, g.total_count,
+              CASE WHEN g.recipient_count = 1
+                   THEN COALESCE(NULLIF(TRIM(m.name), ''), NULLIF(TRIM(m.rep_by_first_name), ''))
+              END AS target_label
+       FROM (SELECT x.*, COUNT(*) OVER ()::int AS total_count FROM (${grouped}) x
+             ORDER BY x.sent_at DESC, x.title ASC, x.body ASC LIMIT :limit OFFSET :offset) g
+       LEFT JOIN member m ON g.recipient_count = 1 AND m.id::text = g.first_user_id AND m.company_id = :companyId
+       ORDER BY g.sent_at DESC, g.title ASC, g.body ASC`,
+      { replacements, type: QueryTypes.SELECT }
+    );
+
+    let count = rows.length ? rows[0].total_count : 0;
+    if (!rows.length && offset > 0) {
+      // A page past the end has no row to carry the total: ask for it so the pager still gets the right count.
+      const [countRow] = await sequelize.query(
+        `SELECT COUNT(*)::int AS count FROM (${grouped}) g`,
+        { replacements, type: QueryTypes.SELECT }
+      );
+      count = countRow ? countRow.count : 0;
+    }
+    const pageRows = rows.map(({ total_count, ...row }) => row);
+
+    return successResponse(res, statusCodes.OK, 'Sent notification history retrieved successfully', {
+      count,
+      rows: pageRows
+    });
+  } catch (error) {
+    console.error('Error in getSentNotificationHistoryService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -279,6 +363,7 @@ module.exports = {
   registerAdminTokenService,
   sendManualNotificationService,
   getAdminNotificationHistoryService,
+  getSentNotificationHistoryService,
   getAdminNotificationBadgeCountService,
   markAdminNotificationReadService,
   markAllAdminNotificationsReadService,

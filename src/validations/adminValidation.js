@@ -1361,6 +1361,15 @@ module.exports = {
     max: Joi.number().integer().min(1).optional().default(20),
     search: Joi.string().allow('', null).optional()
   }),
+  // Bug 2026-11-03 (sent-notifications-history): the office's SENT notifications, one row per send.
+  // min = offset, max = page size (same meaning as getAdminNotificationHistorySchema). source: 'manual' (default) = sends
+  // typed in the Push Notifications screen; 'all' = also the automatic notifications the system sends (payment received, ...).
+  getSentNotificationHistorySchema: Joi.object({
+    min: Joi.number().integer().min(0).max(1000000).optional().default(0),
+    max: Joi.number().integer().min(1).max(200).optional().default(20),
+    search: Joi.string().trim().max(200).allow('', null).optional(),
+    source: Joi.string().valid('manual', 'all').optional().default('manual')
+  }),
   sendManualNotificationSchema: Joi.object({
     target_type: Joi.string().valid('ALL', 'GROUP', 'SPECIFIC_MEMBER').required(),
     target_id: Joi.string().allow(null, '').optional(),

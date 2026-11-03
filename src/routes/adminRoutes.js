@@ -323,6 +323,7 @@ router.post('/agents/leaderboard/business', authMiddleware.authenticateToken, va
 router.post('/admin/notifications/register-token', authMiddleware.authenticateToken, validate(adminValidation.registerTokenSchema), adminController.registerAdminToken);
 router.post('/admin/notifications/send-manual', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.sendManualNotificationSchema), adminController.sendManualNotification);
 router.post('/admin/notifications/history', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, validate(adminValidation.getAdminNotificationHistorySchema), adminController.getAdminNotificationHistory);
+router.post('/admin/notifications/sent-history', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, authMiddleware.requirePermission(MODULES.NOTIFICATIONS), validate(adminValidation.getSentNotificationHistorySchema), adminController.getSentNotificationHistory);
 router.post('/admin/notifications/badge-count', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, adminController.getAdminNotificationBadgeCount);
 router.post('/admin/notifications/mark-read', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, adminController.markAdminNotificationRead);
 router.post('/admin/notifications/mark-all-read', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, adminController.markAllAdminNotificationsRead);

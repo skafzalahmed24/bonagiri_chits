@@ -8486,9 +8486,16 @@ const updateCustomerVisitStatusService = async (res, userPayload, payload) => {
   }
 };
 
-const getLedgerReportService = async (res, reqBody) => {
+// Newest-first cap so a company with years of receipts cannot hang the screen.
+const LEDGER_REPORT_ROW_LIMIT = 5000;
+
+const getLedgerReportService = async (res, reqBody, user) => {
   try {
     const { start_date, end_date, member_id } = reqBody;
+
+    // Company scope comes from the token, never the body (same as reportService.companyPaymentInclude).
+    const company_id = await resolveCompanyIdForAuth(user);
+    if (!company_id) return errorResponse(res, statusCodes.BAD_REQUEST, 'No company on this session');
 
     let whereClause = {};
     if (start_date && end_date) {
@@ -8503,15 +8510,20 @@ const getLedgerReportService = async (res, reqBody) => {
       {
         model: ChitsInstallment,
         as: 'installment',
+        attributes: ['id'],
         include: [
           {
             model: Enrollment,
             as: 'enrollment',
+            attributes: ['id', 'group_position_number', 'company_id'],
             include: [
-              { model: Member, as: 'subscriber', ...(member_id ? { where: { id: member_id } } : {}) },
-              { model: ChitsGroup, as: 'group' }
+              // Only what the ledger screen reads. A bare Member include returned mobile_otp, verification_otp,
+              // delete_account_otp and fcm_token for every row (and about 6 KB per row).
+              { model: Member, as: 'subscriber', attributes: ['id', 'name'], ...(member_id ? { where: { id: member_id } } : {}) },
+              { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name'] }
             ],
-            required: !!member_id
+            where: { company_id },
+            required: true
           }
         ],
         required: true
@@ -8520,8 +8532,11 @@ const getLedgerReportService = async (res, reqBody) => {
 
     const payments = await CustomerPayment.findAll({
       where: whereClause,
+      attributes: ['id', 'chits_installment_id', 'payment_date', 'received_amount', 'payment_status', 'createdAt'],
       include: includeOptions,
-      order: [['payment_date', 'DESC'], ['createdAt', 'DESC']]
+      // NULLS LAST: undated (pending) rows must not take the capped slots from dated receipts.
+      order: [['payment_date', 'DESC NULLS LAST'], ['createdAt', 'DESC']],
+      limit: LEDGER_REPORT_ROW_LIMIT
     });
 
     return successResponse(res, statusCodes.OK, 'Ledger report fetched successfully', { rows: payments });
@@ -8580,12 +8595,13 @@ const updateCompanySetupService = async (res, data = {}, userToken) => {
 const getStatutoryReportService = async (res, reqBody, user) => {
   try {
     const { start_date, end_date, group_status = 1 } = reqBody;
-    const company_id = user?.company_id;
+    // The admin token has no company_id for the company owner (the id IS the company),
+    // so resolve it the way every other company-scoped admin service does.
+    const company_id = await resolveCompanyIdForAuth(user);
+    if (!company_id) return errorResponse(res, statusCodes.BAD_REQUEST, 'No company on this session');
 
-    let whereClause = { delete_status: 0 };
-    if (company_id) {
-      whereClause.company_id = company_id;
-    }
+    // chits_groups soft-delete column is is_deleted_status (see models/chits_group.js)
+    const whereClause = { is_deleted_status: 0, company_id };
     if (start_date && end_date) {
       whereClause.createdAt = { [Op.between]: [new Date(start_date), new Date(end_date)] };
     }
@@ -8597,6 +8613,8 @@ const getStatutoryReportService = async (res, reqBody, user) => {
 
     const groups = await ChitsGroup.findAll({
       where: whereClause,
+      // Only what the Groups List screen reads (+ scope columns). The full row carries FDR, bank and asset details.
+      attributes: ['id', 'group_name', 'chit_amount', 'enrollment_fee', 'no_of_installments', 'auctions_per_month', 'pso_date', 'createdAt', 'company_id', 'is_deleted_status'],
       order: [['createdAt', 'DESC']]
     });
 
