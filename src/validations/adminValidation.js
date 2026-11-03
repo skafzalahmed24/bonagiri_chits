@@ -632,7 +632,49 @@ const getMember360ReportSchema = Joi.object({
   company_id: Joi.string().uuid().allow('', null).optional()
 });
 
+// Reports > Accounts Ledger and Groups List Report (web only; neither app calls them).
+// The global middleware in app.js turns '' into null before validation, so null is accepted for the optional keys.
+// Dates are YYYY-MM-DD exactly (what <input type="date"> sends) and are NOT converted, so the service
+// receives the same string as before. Unknown keys stay allowed; company_id is never used, so it is dropped.
+const reportDate = (label) => Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).custom((value, helpers) => {
+  const d = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== value) return helpers.error('any.invalid');
+  return value;
+}).allow(null).optional().messages({
+  'string.base': `${label} must be a date (YYYY-MM-DD)`,
+  'string.pattern.base': `${label} must be a date (YYYY-MM-DD)`,
+  'any.invalid': `${label} must be a real calendar date (YYYY-MM-DD)`
+});
+
+const reportDateRange = {
+  start_date: reportDate('Start date'),
+  end_date: reportDate('End date'),
+  company_id: Joi.any().strip()
+};
+
+const ledgerReportSchema = Joi.object({
+  ...reportDateRange,
+  member_id: Joi.number().integer().min(1).max(2147483647).allow(null).optional().messages({
+    'number.base': 'Member ID must be a number',
+    'number.integer': 'Member ID must be a whole number',
+    'number.min': 'Member ID must be a positive whole number',
+    'number.max': 'Member ID is too large',
+    'number.unsafe': 'Member ID is too large'
+  })
+}).unknown(true);
+
+const statutoryReportSchema = Joi.object({
+  ...reportDateRange,
+  group_status: Joi.number().integer().valid(0, 1, 2).optional().messages({
+    'number.base': 'Group status must be 0 (Both), 1 (Running) or 2 (Closed)',
+    'number.integer': 'Group status must be 0 (Both), 1 (Running) or 2 (Closed)',
+    'any.only': 'Group status must be 0 (Both), 1 (Running) or 2 (Closed)'
+  })
+}).unknown(true);
+
 module.exports = {
+  ledgerReportSchema,
+  statutoryReportSchema,
   getMember360ReportSchema,
   storeOrUpdateFAQSchema,
   getAllFAQSchema,

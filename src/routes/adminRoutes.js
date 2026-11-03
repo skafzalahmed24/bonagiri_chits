@@ -343,8 +343,8 @@ router.post('/customer-visit/details', authMiddleware.authenticateToken, validat
 router.post('/customer-visit/status', authMiddleware.authenticateToken, validate(adminValidation.updateCustomerVisitStatusSchema), adminController.updateCustomerVisitStatus);
 
 // reports routes
-router.post('/reports/ledger', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_LEDGER), adminController.getLedgerReport);
-router.post('/reports/statutory', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_GROUPS_LIST), adminController.getStatutoryReport);
+router.post('/reports/ledger', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_LEDGER), validate(adminValidation.ledgerReportSchema), adminController.getLedgerReport);
+router.post('/reports/statutory', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_GROUPS_LIST), validate(adminValidation.statutoryReportSchema), adminController.getStatutoryReport);
 
 // enquiry route
 router.post('/enquiry/search', authMiddleware.authenticateToken, adminController.searchEnquiry);

@@ -4,6 +4,8 @@ const path = require('path');
 const adminRoutes = require('./routes/adminRoutes');
 const userRoutes = require('./routes/userRoutes');
 const { startDailyPenaltyCron } = require('./utils/cronJobs');
+const { errorResponse } = require('./utils/responseHelper');
+const statusCodes = require('./utils/statusCodes');
 
 const app = express();
 
@@ -51,6 +53,17 @@ app.use('/api/public', express.static(path.join(__dirname, 'utils/public')));
 // Basic health check route
 app.get('/', (req, res) => {
   res.status(200).json({ message: 'Welcome to Bonagiri Chits API' });
+});
+
+// Malformed JSON body: the body parser already answers 400; this only changes the BODY of that answer.
+// Without it Express' default handler returns an HTML page with the stack trace and file paths
+// (unless NODE_ENV=production). Every other error (413 too large, 415, route errors...) is passed on
+// untouched, so its status code and body stay exactly as before.
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.parse.failed' && !res.headersSent) {
+    return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid JSON body');
+  }
+  return next(err);
 });
 
 module.exports = app;

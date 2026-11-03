@@ -6566,7 +6566,9 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         cash_account: accountNames(sub.id, 'cash_account'),
         upi_amount: sub.payment_type === 2 ? amount : null,
         upi_account: accountNames(sub.id, 'upi_account'),
-        bank_amount: [3, 4, 5].includes(sub.payment_type) || sub.bank_details ? amount : null,
+        // A UPI submission (type 2) also carries bank_details (the app sends the account), so `|| sub.bank_details` showed
+        // a UPI payment under Bank as well (sheet row, 2026-11-03). Only the bank-type modes count as Bank.
+        bank_amount: [3, 4, 5].includes(sub.payment_type) ? amount : null,
         bank_account: accountNames(sub.id, 'bank_account'),
         advance_created: advances.find(a => a.collection_agent_amount_id === sub.id)?.amount || 0,
         method: getPaymentMethod(sub.payment_type),
