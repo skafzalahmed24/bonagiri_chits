@@ -356,7 +356,22 @@ const chitsGroupValidator = Joi.object({
   }),
   group_name: Joi.string().allow('', null).optional(),
   chit_category_id: Joi.number().integer().allow(null).optional(),
-  scheme_configuration_id: Joi.string().uuid().allow(null).optional(),
+  // Creating a FIXED chit (category 2, no id) needs its scheme template (sheet row 46, 2026-11-04). Editing a stored group is not forced:
+  // groups saved before this rule may have no template. Open auction groups never need one.
+  scheme_configuration_id: Joi.when('chit_category_id', {
+    is: 2,
+    then: Joi.when('id', {
+      is: Joi.exist(),
+      then: Joi.string().uuid().allow(null).optional(),
+      otherwise: Joi.string().uuid().required().messages({
+        'any.required': 'Chit scheme template is required for a fixed chit',
+        'string.base': 'Chit scheme template is required for a fixed chit',
+        'string.empty': 'Chit scheme template is required for a fixed chit',
+        'string.guid': 'Chit scheme template is not valid',
+      }),
+    }),
+    otherwise: Joi.string().uuid().allow(null).optional(),
+  }),
   chit_series_term: Joi.number().integer().min(1).required().messages({
     'any.required': 'Chit series term is required',
     'number.min': 'Chit series term must be at least 1'
