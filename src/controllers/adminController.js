@@ -4,6 +4,7 @@ const adminNotificationService = require('../services/adminNotificationService')
 const twilioService = require('../services/twilioService');
 const { errorResponse, successResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
+const { getBaseUrl } = require('../utils/fileHelper');
 
 const loginAdmin = async (req, res) => {
   try {
@@ -1418,7 +1419,7 @@ const getAllCollectionSubmissions = async (req, res) => {
     if (req.user.role === 'member') {
       collection_agent_id = req.user.id;
     }
-    return await adminService.getAllCollectionSubmissionsService(res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id);
+    return await adminService.getAllCollectionSubmissionsService(res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id, getBaseUrl(req));
   } catch (error) {
     console.error('Error in getAllCollectionSubmissions:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

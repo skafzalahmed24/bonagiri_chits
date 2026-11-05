@@ -64,6 +64,33 @@ const deleteUploadedFile = (filePathOrUrl) => {
   }
 };
 
+/**
+ * Public origin used to build absolute file URLs: FILE_BASE_URL from the environment
+ * (e.g. https://chits.bonagirichits.com), else the origin of the incoming request.
+ */
+const getBaseUrl = (req) => {
+  if (process.env.FILE_BASE_URL) return process.env.FILE_BASE_URL.trim().replace(/\/+$/, '');
+  if (!req) return '';
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  return host ? `${proto}://${host}` : '';
+};
+
+/**
+ * Turns a stored upload path ('/uploads/abc.png', 'uploads/abc.png' or 'abc.png') into a full URL.
+ * Empty values and values that are already absolute (http, https, data:) are returned unchanged.
+ * Served from /api/uploads, which works whether the proxy forwards only /api or everything.
+ */
+const toFullFileUrl = (value, baseUrl) => {
+  if (!value || typeof value !== 'string') return value;
+  const v = value.trim();
+  if (!v || /^(https?:)?\/\//i.test(v) || /^data:/i.test(v) || !baseUrl) return value;
+  const rel = v.replace(/^[\\/]+/, '').replace(/^(api\/)?uploads\//i, '');
+  return `${baseUrl}/api/uploads/${rel}`;
+};
+
 module.exports = {
-  deleteUploadedFile
+  deleteUploadedFile,
+  getBaseUrl,
+  toFullFileUrl
 };

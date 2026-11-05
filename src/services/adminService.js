@@ -13,7 +13,7 @@ const fcmService = require('./fcmService');
 const { calculateMemberRating } = require('../utils/ratingHelper');
 const { MoneyRuleError, assertAdmin, assertReason, actorName, enforceLock, todayIST } = require('../utils/moneyControls');
 const chargeService = require('./chargeService');
-const { deleteUploadedFile } = require('../utils/fileHelper');
+const { deleteUploadedFile, toFullFileUrl } = require('../utils/fileHelper');
 const { dailyPenaltyFor, penaltyPercentFor, toDateStr, daysBetween, addDays } = require('../utils/penalty');
 const { memberTicketsInGroup, ticketWin, holderMembersOf } = require('../utils/jointHolders');
 
@@ -6396,7 +6396,7 @@ const logoutService = async (req, res, userPayload) => {
   }
 };
 
-const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id) => {
+const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id, baseUrl = '') => {
   try {
     const whereClause = {};
     if (collection_agent_id) {
@@ -6559,7 +6559,7 @@ const getAllCollectionSubmissionsService = async (res, collection_agent_id, type
         member_name: sub.member ? sub.member.name : 'Unknown',
         agent_name: agent_name_value,
         gender: sub.member ? sub.member.gender : null,
-        profile_image: sub.member ? sub.member.upload_image : '',
+        profile_image: sub.member ? toFullFileUrl(sub.member.upload_image, baseUrl) : '',
         group_name: groupNames || 'No Group',
         amount,
         cash_amount: sub.payment_type === 1 ? amount : null,
