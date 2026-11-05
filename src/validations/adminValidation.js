@@ -1,4 +1,6 @@
 const Joi = require('joi');
+const { normalizePlatformType } = require('../utils/platformHelper');
+const { isValidVersion } = require('../utils/versionCompare');
 // L-BE (transactions-chitcare-parity): helpers for the optional keys added to list routes.
 const txv = require('./transactionsValidation');
 
@@ -686,6 +688,16 @@ const statutoryReportSchema = Joi.object({
     'any.only': 'Group status must be 0 (Both), 1 (Running) or 2 (Closed)'
   })
 }).unknown(true);
+
+// 'android' | 'ios' (the numeric codes 1 / 2 used by platform_type are also accepted)
+const appPlatform = Joi.any().custom((value, helpers) => {
+  const p = normalizePlatformType(value);
+  return ['android', 'ios'].includes(p) ? p : helpers.error('any.invalid');
+}).messages({ 'any.invalid': 'platform must be android or ios', 'any.required': 'platform is required' });
+
+const appVersion = Joi.string().trim().custom((value, helpers) => (
+  isValidVersion(value) ? value : helpers.error('any.invalid')
+)).messages({ 'any.invalid': 'version must look like 1.2.3', 'any.required': 'version is required' });
 
 module.exports = {
   ledgerReportSchema,
@@ -1587,6 +1599,19 @@ module.exports = {
       'any.required': 'Content is required'
     })
   }),
+  // App version / force update
+  checkAppVersionSchema: Joi.object({
+    platform: appPlatform.required(),
+    current_version: appVersion.required()
+  }),
+  storeOrUpdateAppVersionSchema: Joi.object({
+    platform: appPlatform.required(),
+    latest_version: appVersion.optional(),
+    min_supported_version: appVersion.optional(),
+    force_update: Joi.boolean().optional(),
+    store_url: Joi.string().uri().max(500).allow('', null).optional(),
+    update_message: Joi.string().max(1000).allow('', null).optional()
+  }).or('latest_version', 'min_supported_version', 'force_update', 'store_url', 'update_message'),
   storeOrUpdatePlatformSupportContactSchema: Joi.object({
     id: Joi.number().integer().optional(),
     address: Joi.string().allow('', null).optional(),

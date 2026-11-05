@@ -8,6 +8,7 @@ const authMiddleware = require('../middlewares/authMiddleware');
 const userValidation = require('../validations/userValidation');
 const adminValidation = require('../validations/adminValidation');
 const platformSupportController = require('../controllers/platformSupportController');
+const appVersionController = require('../controllers/appVersionController');
 const bannerController = require('../controllers/bannerController');
 
 // get home record based on subscriber_id
@@ -92,6 +93,7 @@ router.post('/public/terms-privacy', authMiddleware.authenticateDefaultToken, va
 
 // Public Support route
 router.post('/public/support', authMiddleware.authenticateDefaultToken, platformSupportController.getPublicSupport);
+router.post('/public/app-version/check', authMiddleware.authenticateDefaultToken, validate(adminValidation.checkAppVersionSchema), appVersionController.checkAppVersion);
 
 // Member Delete Account routes
 router.post('/member/delete-account/send-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);

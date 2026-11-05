@@ -11,6 +11,7 @@ const expenditureController = require('../controllers/expenditureController');
 const suretyDenominationController = require('../controllers/suretyDenominationController');
 const reportController = require('../controllers/reportController');
 const platformSupportController = require('../controllers/platformSupportController');
+const appVersionController = require('../controllers/appVersionController');
 const bannerController = require('../controllers/bannerController');
 const prizePaymentController = require('../controllers/prizePaymentController');
 const receiptController = require('../controllers/receiptController');
@@ -369,6 +370,11 @@ router.post('/public/terms-privacy', authMiddleware.authenticateDefaultToken, va
 
 // Public Support route
 router.post('/public/support', authMiddleware.authenticateDefaultToken, platformSupportController.getPublicSupport);
+
+// App version / force update (Android & iOS)
+router.post('/public/app-version/check', authMiddleware.authenticateDefaultToken, validate(adminValidation.checkAppVersionSchema), appVersionController.checkAppVersion);
+router.post('/super-admin/app-version/get', authMiddleware.authenticateSuperAdminToken, appVersionController.getAppVersions);
+router.post('/super-admin/app-version/store-or-update', authMiddleware.authenticateSuperAdminToken, validate(adminValidation.storeOrUpdateAppVersionSchema), appVersionController.storeOrUpdateAppVersion);
 
 // Member Delete Account routes
 router.post('/member/delete-account/send-otp', authMiddleware.authenticateDefaultToken, validate(adminValidation.sendDeleteAccountOtpSchema), platformSupportController.sendDeleteAccountOtp);
