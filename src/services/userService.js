@@ -2649,11 +2649,19 @@ const getCollectionAgentDashboardService = async (res, collection_agent_id, from
             endOfPeriod.setHours(23, 59, 59, 999);
         }
 
+        // Same rule as getTodayCollectionService: a payment is in the period when its payment_date
+        // (the business date it was taken on) OR its createdAt falls inside it. createdAt alone misses
+        // payments entered under a business date that differs from the real clock.
+        const periodFromStr = (from_date && to_date) ? toDateOnlyStr(new Date(from_date)) : currentDateStr;
+        const periodToStr = (from_date && to_date) ? toDateOnlyStr(new Date(to_date)) : currentDateStr;
         const todayCollectionsList = collectedInstallments.filter(payment => {
+            const paidStr = toDateOnlyStr(payment.payment_date);
+            if (paidStr && paidStr >= periodFromStr && paidStr <= periodToStr) return true;
             const d = new Date(payment.createdAt);
             return d >= startOfPeriod && d <= endOfPeriod;
         });
-        const today_collection = todayCollectionsList.reduce((sum, payment) => sum + (parseFloat(payment.received_amount) || 0), 0);
+        // Cash actually taken: instalment amount plus any penalty paid with it (the list shows the same total).
+        const today_collection = todayCollectionsList.reduce((sum, payment) => sum + (parseFloat(payment.received_amount) || 0) + (parseFloat(payment.penalty_paid) || 0), 0);
 
         const activeGroupsLimit3 = await ChitsGroup.findAll({
             where: {
