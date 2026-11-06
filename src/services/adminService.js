@@ -4437,11 +4437,17 @@ const deleteSelfChitService = async (res, id, companyId) => {
     });
 
     if (companyEnrollment) {
+      // customer_payments has no enrollment_id (a payment belongs to an instalment, and the instalment to the enrollment):
+      // the old filter was a column that does not exist, so every self chit delete was a 500 (sheet row, 2026-11-09).
       const paymentsCount = await CustomerPayment.count({
-        where: {
-          enrollment_id: companyEnrollment.id,
-          payment_status: { [Op.in]: [0, 1] }
-        }
+        where: { payment_status: { [Op.in]: [0, 1] } },
+        include: [{
+          model: ChitsInstallment,
+          as: 'installment',
+          attributes: [],
+          required: true,
+          where: { enrollment_id: companyEnrollment.id }
+        }]
       });
       if (paymentsCount > 0) {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot delete a self chit that has recorded payments');
@@ -7154,8 +7160,13 @@ const getDashboardSummaryService = async (res, companyId) => {
     });
 
     // 2. outstanding_dues & defaulters_count
+    // Outstanding = unpaid instalments that are DUE by today (India date), the same basis as the Outstanding Dues & Defaulters page.
+    // It used to add every unpaid instalment of every started group, including months not due yet, so the card showed a
+    // much bigger figure than the page behind it (sheet row, 2026-11-09).
+    const dueUpTo = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     const pendingInstallments = await ChitsInstallment.findAll({
       where: {
+        due_date: { [Op.lte]: dueUpTo },
         id: {
           [Op.notIn]: sequelize.literal(`(SELECT "chits_installment_id" FROM "customer_payments" WHERE "payment_status" = 1 AND "chits_installment_id" IS NOT NULL)`)
         }
@@ -7195,6 +7206,16 @@ const getDashboardSummaryService = async (res, companyId) => {
         }
       }
     });
+
+    // The card shows the SAME figure as the Outstanding Dues & Defaulters page (Group Outstanding report as on today), so the page
+    // behind the card always agrees with it. The raw instalment sum above stays only as a fallback if the report fails.
+    try {
+      const outstandingReport = await require('./reportService').getOutstandingReport({ as_on_date: dueUpTo, group_by: 'group', company_id: companyId });
+      const reportTotal = Number(outstandingReport?.summary?.total_outstanding);
+      if (Number.isFinite(reportTotal)) outstandingDues = reportTotal;
+    } catch (reportErr) {
+      console.error('Dashboard outstanding report failed, using the instalment sum:', reportErr.message);
+    }
 
     // 3. commission_earned & dividend_distributed & self_transfer & borrow
     const commissionEarned = await Auction.sum('company_commission', { where: { company_id: companyId } });

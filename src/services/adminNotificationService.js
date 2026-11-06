@@ -52,12 +52,14 @@ const sendManualNotificationService = async (res, userPayload, data) => {
     const { target_type, target_id, title, body, data_payload } = data;
     const companyId = userPayload.company_id || userPayload.id;
 
+    // ALL and GROUP go to EVERY member of the target: sendPushToMulticast saves the in-app history for all of them and pushes only
+    // to those with a device token. Filtering by fcm_token here dropped members without a token from the history (and from their
+    // in-app inbox), so "All Members" showed "sent to 2 members" (sheet row, 2026-11-09).
     if (target_type === 'ALL') {
       const allMembers = await Member.findAll({
         where: {
           company_id: companyId,
-          is_deleted_status: 0,
-          fcm_token: { [Op.ne]: null }
+          is_deleted_status: 0
         }
       });
       fcmService.sendPushToMulticast(allMembers, companyId, title, body, data_payload);
@@ -81,11 +83,12 @@ const sendManualNotificationService = async (res, userPayload, data) => {
         include: [{
           model: Member,
           as: 'subscriber',
-          where: { is_deleted_status: 0, fcm_token: { [Op.ne]: null } },
+          where: { is_deleted_status: 0 },
           required: true
         }]
       });
-      const members = enrollments.map(e => e.subscriber);
+      // one subscriber can hold several tickets in the group: notify each member once
+      const members = [...new Map(enrollments.map(e => [e.subscriber.id, e.subscriber])).values()];
       fcmService.sendPushToMulticast(members, companyId, title, body, data_payload);
     }
 

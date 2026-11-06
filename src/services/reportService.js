@@ -1900,7 +1900,7 @@ class ReportService {
   async getMemberOptions({ company_id }) {
     const members = await Member.findAll({
       where: { company_id, is_deleted_status: 0 },
-      attributes: ['id', 'name', 'member_id', 'introduced_as'],
+      attributes: ['id', 'name', 'member_id', 'introduced_as', 'is_verified', 'type'],
       order: [['name', 'ASC']],
     });
     const asArray = (v) => {
@@ -1908,7 +1908,9 @@ class ReportService {
       if (typeof v === 'string') { try { return JSON.parse(v).map(Number); } catch { return [Number(v)].filter(Boolean); } }
       return v != null ? [Number(v)] : [];
     };
-    return members.map((m) => ({ id: m.id, name: m.name, member_code: m.member_id, introduced_as: asArray(m.introduced_as) }));
+    // is_verified and type are additive keys: the enrollment and agent forms need them from this uncapped lookup
+    // (member/get-all pages by 20, so their pickers listed only the first 20 members).
+    return members.map((m) => ({ id: m.id, name: m.name, member_code: m.member_id, introduced_as: asArray(m.introduced_as), is_verified: !!m.is_verified, type: m.type }));
   }
 
   async getAreaOptions({ company_id }) {
