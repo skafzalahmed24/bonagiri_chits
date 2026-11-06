@@ -2086,10 +2086,12 @@ const storeOrUpdateUpcomingChitService = async (res, data = {}) => {
     } else {
       const newUpcomingChit = await UpcomingChit.create(upcomingChitData);
 
-      // Trigger Push Notification & Save History for all company members
+      // Trigger Push Notification & Save History for all company members.
+      // Only an ACTIVE chit (status 1) is announced: members see only status 1 chits, so an inactive one must not notify
+      // (sheet row, 2026-11-06). Activating an inactive chit later does not send the announcement.
       try {
         const companyId = newUpcomingChit.company_id || upcomingChitData.company_id;
-        if (companyId) {
+        if (companyId && Number(newUpcomingChit.status) === 1) {
           const allMembers = await Member.findAll({
             where: { company_id: companyId, is_deleted_status: 0 }
           });
@@ -4771,6 +4773,89 @@ const getAllHistoryBusinessAgentsService = async (res, configure_business_agent_
     return successResponse(res, statusCodes.OK, 'History records retrieved successfully', records);
   } catch (error) {
     console.error('Error in getAllHistoryBusinessAgentsService:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
+/**
+ * Company-wide commission payout list for Transactions > Agents > Agent Commission Payment List (sheet row, 2026-11-06:
+ * the screen called this route before it existed, so it was always empty). Office only; one company, always: the payout is
+ * tied to its company through its configuration. Filters: paid_date range, one business agent, status active / cancelled / both.
+ * `voucher_number`, `cheque_number`, `cheque_date` and `created_by_name` are not stored on a payout yet, so they are null
+ * (the screen shows "-").
+ */
+const getAllCompanyHistoryBusinessAgentsService = async (res, companyId, filters = {}) => {
+  try {
+    if (!companyId) return errorResponse(res, statusCodes.BAD_REQUEST, 'Company is required');
+    const { from_date, to_date, status = 'active', business_agent_id } = filters;
+    const limit = parseInt(filters.max, 10) || 20;
+    const offset = parseInt(filters.min, 10) || 0;
+
+    const where = {};
+    if (status === 'active') where.is_deleted_status = 0;
+    else if (status === 'cancelled') where.is_deleted_status = 1;
+    // Payouts made before paid_date existed have none: they count on the day they were created (India time).
+    if (from_date || to_date) {
+      const paidRange = {};
+      const createdRange = {};
+      if (from_date) { paidRange[Op.gte] = from_date; createdRange[Op.gte] = new Date(`${from_date}T00:00:00+05:30`); }
+      if (to_date) { paidRange[Op.lte] = to_date; createdRange[Op.lte] = new Date(`${to_date}T23:59:59.999+05:30`); }
+      where[Op.or] = [{ paid_date: paidRange }, { paid_date: null, createdAt: createdRange }];
+    }
+
+    const memberAttrs = ['id', 'name', 'rep_by_first_name', 'sur_name'];
+    const { count, rows } = await HistoryBusinessAgent.findAndCountAll({
+      where,
+      attributes: ['id', 'paid_amount', 'paid_date', 'createdAt', 'payment_mode', 'account_id', 'description', 'upload_document', 'is_deleted_status', 'cancelled_at', 'cancelled_by_name', 'cancel_reason'],
+      include: [
+        {
+          model: ConfigureBusinessAgentCommission,
+          as: 'configure_business_agent',
+          required: true,
+          where: { company_id: companyId, ...(business_agent_id ? { business_agent_id } : {}) },
+          attributes: ['id'],
+          include: [
+            { model: Member, as: 'business_agent', attributes: memberAttrs },
+            { model: Member, as: 'member', attributes: memberAttrs },
+            { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name'] },
+          ],
+        },
+        { model: PaymentAccount, as: 'account', attributes: ['id', 'name'], required: false },
+      ],
+      order: [['paid_date', 'DESC'], ['createdAt', 'DESC']],
+      limit,
+      offset,
+      distinct: true,
+    });
+
+    const nameOf = (m) => (m ? (m.name || [m.rep_by_first_name, m.sur_name].filter(Boolean).join(' ') || null) : null);
+    const shaped = rows.map((r) => {
+      const cfg = r.configure_business_agent;
+      return {
+        id: r.id,
+        voucher_number: null,
+        paid_date: r.paid_date || new Date(r.createdAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
+        paid_amount: Number(r.paid_amount) || 0,
+        payment_mode: r.payment_mode,
+        account: r.account ? { id: r.account.id, name: r.account.name } : null,
+        cheque_number: null,
+        cheque_date: null,
+        description: r.description,
+        upload_document: r.upload_document,
+        is_cancelled: Number(r.is_deleted_status) === 1,
+        cancelled_at: r.cancelled_at,
+        cancelled_by_name: r.cancelled_by_name,
+        cancel_reason: r.cancel_reason,
+        created_by_name: null,
+        business_agent: cfg?.business_agent ? { id: cfg.business_agent.id, name: nameOf(cfg.business_agent) } : null,
+        member: cfg?.member ? { id: cfg.member.id, name: nameOf(cfg.member) } : null,
+        group: cfg?.group ? { id: cfg.group.id, group_name: cfg.group.group_name } : null,
+      };
+    });
+
+    return successResponse(res, statusCodes.OK, 'Commission payments retrieved successfully', { count, rows: shaped });
+  } catch (error) {
+    console.error('Error in getAllCompanyHistoryBusinessAgentsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }
 };
@@ -9018,6 +9103,7 @@ module.exports = {
   deleteConfigureBusinessAgentCommissionService,
   storeOrUpdateHistoryBusinessAgentService,
   getAllHistoryBusinessAgentsService,
+  getAllCompanyHistoryBusinessAgentsService,
   getHistoryBusinessAgentByIdService,
   deleteHistoryBusinessAgentService,
   getBusinessAgentCommissionSummaryService,

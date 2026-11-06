@@ -1226,6 +1226,15 @@ module.exports = {
     min: Joi.number().integer().min(0).optional(),
     max: Joi.number().integer().min(1).optional()
   }),
+  // Agent Commission Payment List (company-wide). No company_id here: it comes from the token.
+  getAllCompanyHistoryBusinessAgentSchema: Joi.object({
+    from_date: Joi.date().iso().raw().allow('', null).optional(),
+    to_date: Joi.date().iso().raw().allow('', null).optional(),
+    status: Joi.string().valid('active', 'cancelled', 'both').default('active'),
+    business_agent_id: Joi.number().integer().min(1).allow('', null).optional(),
+    min: Joi.number().integer().min(0).max(1000000).default(0),
+    max: Joi.number().integer().min(1).max(5000).default(20)
+  }),
   deleteHistoryBusinessAgentSchema: Joi.object({
     id: Joi.string().uuid().required(),
     reason: Joi.string().allow('', null).optional(),

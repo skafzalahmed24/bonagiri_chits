@@ -1313,6 +1313,16 @@ const storeOrUpdateHistoryBusinessAgent = async (req, res) => {
   }
 };
 
+const getAllCompanyHistoryBusinessAgents = async (req, res) => {
+  try {
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    return await adminService.getAllCompanyHistoryBusinessAgentsService(res, companyId, req.body || {});
+  } catch (error) {
+    console.error('Error in getAllCompanyHistoryBusinessAgents:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const getAllHistoryBusinessAgents = async (req, res) => {
   try {
     const { configure_business_agent_id, min, max } = req.body || {};
@@ -1894,6 +1904,7 @@ module.exports = {
   deleteConfigureBusinessAgentCommission,
   storeOrUpdateHistoryBusinessAgent,
   getAllHistoryBusinessAgents,
+  getAllCompanyHistoryBusinessAgents,
   getHistoryBusinessAgentById,
   deleteHistoryBusinessAgent,
   getBusinessAgentCommissionSummary,
