@@ -40,6 +40,16 @@ app.use((req, res, next) => {
 
 // Routes
 const auditLogger = require('./middlewares/auditMiddleware');
+// Normalize consecutive slashes in request URLs (e.g. /api//uploads/ -> /api/uploads/)
+// Ensures mobile apps concatenating baseUrl + '/uploads/...' load assets cleanly without 404
+app.use((req, res, next) => {
+  if (req.url && req.url.includes('//')) {
+    const [pathname, search] = req.url.split('?');
+    req.url = pathname.replace(/\/{2,}/g, '/') + (search !== undefined ? '?' + search : '');
+  }
+  next();
+});
+
 app.use('/api', auditLogger); // Applies globally to all /api and /api/user routes exactly once
 app.use('/api', adminRoutes);
 app.use('/api/user', userRoutes);
