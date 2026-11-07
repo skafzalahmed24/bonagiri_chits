@@ -17,6 +17,7 @@ const prizePaymentController = require('../controllers/prizePaymentController');
 const receiptController = require('../controllers/receiptController');
 const moneyExtrasController = require('../controllers/moneyExtrasController');
 const validate = require('../middlewares/validate');
+const requireBusinessDateTools = require('../middlewares/requireBusinessDateTools');
 const MODULES = require('../utils/modules');
 
 const authMiddleware = require('../middlewares/authMiddleware');
@@ -333,11 +334,11 @@ router.post('/admin/notifications/delete', authMiddleware.authenticateToken, aut
 
 // System Utilities Routes
 router.get('/admin/system/settings', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemSettings);
-router.put('/admin/system/settings/business-date', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), validate(adminValidation.updateBusinessDateSchema), adminController.updateBusinessDate);
-router.put('/admin/system/settings/scheduler-mode', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), validate(adminValidation.updateSchedulerModeSchema), adminController.updateSchedulerMode);
-router.get('/admin/system/settings/impact-preview', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemImpactPreview);
-router.post('/admin/system/jobs/run', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.runSystemJobs);
-router.post('/admin/system/audit-logs', authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemAuditLogs);
+router.put('/admin/system/settings/business-date', requireBusinessDateTools, authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), validate(adminValidation.updateBusinessDateSchema), adminController.updateBusinessDate);
+router.put('/admin/system/settings/scheduler-mode', requireBusinessDateTools, authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), validate(adminValidation.updateSchedulerModeSchema), adminController.updateSchedulerMode);
+router.get('/admin/system/settings/impact-preview', requireBusinessDateTools, authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemImpactPreview);
+router.post('/admin/system/jobs/run', requireBusinessDateTools, authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.runSystemJobs);
+router.post('/admin/system/audit-logs', requireBusinessDateTools, authMiddleware.authenticateToken, authMiddleware.requireRole('superadmin'), adminController.getSystemAuditLogs);
 
 // customer visit routes
 router.post('/customer-visit/list', authMiddleware.authenticateToken, validate(adminValidation.getAllCustomerVisitsSchema), adminController.getAllCustomerVisits);

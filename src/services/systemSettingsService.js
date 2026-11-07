@@ -2,6 +2,19 @@ const { SystemSettings, SystemAuditLog, StaffUser, sequelize } = require('../mod
 
 class SystemSettingsService {
   /**
+   * Business Date, scheduler mode and manual job tools are for dev and staging only.
+   * ENABLE_BUSINESS_DATE_TOOLS ('true' / 'false') is the single switch and wins when set.
+   * When it is not set the tools are on, except when NODE_ENV is production, so a forgotten
+   * setting can never expose them on a production server.
+   */
+  static toolsEnabled() {
+    const flag = String(process.env.ENABLE_BUSINESS_DATE_TOOLS || '').trim().toLowerCase();
+    if (flag === 'true') return true;
+    if (flag === 'false') return false;
+    return process.env.NODE_ENV !== 'production';
+  }
+
+  /**
    * Get the current system settings. If none exist, create default.
    */
   static async getSettings() {
@@ -19,9 +32,11 @@ class SystemSettingsService {
   }
 
   /**
-   * Get the current business date. Returns real date if not set.
+   * Get the current business date. Returns real date if not set, and always the real date
+   * when the tools are off (production), so an override saved earlier can never stay active.
    */
   static async getBusinessDate() {
+    if (!this.toolsEnabled()) return new Date();
     const settings = await this.getSettings();
     if (settings.business_date) {
       return new Date(settings.business_date);

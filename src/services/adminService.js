@@ -8362,8 +8362,12 @@ const getAllReceiptsService = async (res, companyId, filters = {}) => {
 
 const getSystemSettingsService = async (res) => {
   try {
+    // Production hides Business Date: only the flag is returned, never the stored date or scheduler mode.
+    if (!SystemSettingsService.toolsEnabled()) {
+      return successResponse(res, statusCodes.OK, 'System settings retrieved', { tools_enabled: false });
+    }
     const settings = await SystemSettingsService.getSettings();
-    return successResponse(res, statusCodes.OK, 'System settings retrieved', settings);
+    return successResponse(res, statusCodes.OK, 'System settings retrieved', { ...settings.toJSON(), tools_enabled: true });
   } catch (error) {
     console.error('Error in getSystemSettingsService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
