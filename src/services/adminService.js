@@ -657,26 +657,48 @@ const generateUniqueMemberId = async () => {
   return memberId;
 };
 
+const hasDuplicateMemberMobile = async (companyId, mobileNumber, excludeId = null) => {
+  const cleanMobile = String(mobileNumber || '').trim();
+  if (!cleanMobile || !companyId) return false;
+  const where = {
+    company_id: companyId,
+    is_deleted_status: 0,
+    [Op.and]: [sequelize.where(sequelize.fn('TRIM', sequelize.col('mobile_number')), cleanMobile)]
+  };
+  if (excludeId) {
+    where.id = { [Op.ne]: excludeId };
+  }
+  return Boolean(await Member.findOne({ where, attributes: ['id'] }));
+};
+
 const storeOrUpdateMemberService = async (res, data = {}) => {
   try {
     const { id, ...memberData } = data;
+    if (typeof memberData.mobile_number === 'string') {
+      memberData.mobile_number = memberData.mobile_number.trim();
+    }
+
     if (id) {
-      // Update existing
-      const member = await Member.findByPk(id);
+      // Update existing (active member scoped to caller's company)
+      const findWhere = { id, is_deleted_status: 0 };
+      if (memberData.company_id) {
+        findWhere.company_id = memberData.company_id;
+      }
+      const member = await Member.findOne({ where: findWhere });
       if (!member) {
         return errorResponse(res, statusCodes.NOT_FOUND, 'Member not found');
       }
 
-      if (memberData.mobile_number) {
-        const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number, id: { [Op.ne]: id } } });
-        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+      if (memberData.mobile_number && await hasDuplicateMemberMobile(member.company_id, memberData.mobile_number, id)) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
       }
 
       if (memberData.country_code) {
         memberData.country_code = memberData.country_code.toUpperCase().trim();
       }
 
-      // Prevent updating generated fields during edit
+      // Prevent updating generated or tenant-ownership fields during edit
+      delete memberData.company_id;
       delete memberData.member_id;
       delete memberData.other_info_user_code;
 
@@ -693,14 +715,16 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       return successResponse(res, statusCodes.OK, 'Member updated successfully', safeMember);
     } else {
       // Create new
+      if (!memberData.company_id) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Company context is required');
+      }
       if (!memberData.country_code) {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Country code is required');
       }
       memberData.country_code = memberData.country_code.toUpperCase().trim();
 
-      if (memberData.mobile_number) {
-        const existing = await Member.findOne({ where: { mobile_number: memberData.mobile_number } });
-        if (existing) return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+      if (memberData.mobile_number && await hasDuplicateMemberMobile(memberData.company_id, memberData.mobile_number)) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
       }
 
       if (!memberData.member_id) {
@@ -727,6 +751,19 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
       return successResponse(res, statusCodes.CREATED, 'Member registered successfully', safeMember);
     }
   } catch (error) {
+    if (error.name === 'SequelizeUniqueConstraintError' || error?.parent?.code === '23505') {
+      const constraint = error?.parent?.constraint || '';
+      if (constraint === 'member_company_mobile_active_unique') {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+      }
+      if (constraint.includes('other_info_user_code')) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'User Code already exists');
+      }
+      if (constraint.includes('member_id')) {
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Member ID already exists');
+      }
+      return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile number already exists');
+    }
     console.error('Error in storeOrUpdateMemberService:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
   }

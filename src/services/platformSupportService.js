@@ -274,8 +274,8 @@ const getPublicSupportService = async (res) => {
 /**
  * Helper to find member by user_id, user_code, member_id, or mobile number
  */
-const findMemberByIdentifier = async (identifier, withPassword = false) => {
-  if (!identifier) return null;
+const findMembersByIdentifier = async (identifier, withPassword = false) => {
+  if (!identifier) return [];
   const cleanId = String(identifier).trim();
   const digitsOnly = cleanId.replace(/\D/g, '');
   const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
@@ -304,11 +304,12 @@ const findMemberByIdentifier = async (identifier, withPassword = false) => {
         { is_deleted_status: 0 },
         { [Op.or]: whereConditions }
       ]
-    }
+    },
+    order: [['id', 'ASC']]
   };
 
   const model = withPassword ? Member.scope('withPassword') : Member;
-  return await model.findOne(queryOptions);
+  return await model.findAll(queryOptions);
 };
 
 /**
@@ -316,14 +317,17 @@ const findMemberByIdentifier = async (identifier, withPassword = false) => {
  */
 const sendDeleteAccountOtpService = async (res, identifier, password) => {
   try {
-    const member = await findMemberByIdentifier(identifier, true);
-
-    if (!member || !member.other_info_user_password) {
-      return errorResponse(res, statusCodes.OK, 'Incorrect User ID or password. Please try again.');
+    const candidates = await findMembersByIdentifier(identifier, true);
+    let member = null;
+    for (const candidate of candidates) {
+      if (!candidate.other_info_user_password) continue;
+      if (await bcrypt.compare(password, candidate.other_info_user_password)) {
+        member = candidate;
+        if (candidate.is_active !== false) break;
+      }
     }
 
-    const isPasswordValid = await bcrypt.compare(password, member.other_info_user_password);
-    if (!isPasswordValid) {
+    if (!member) {
       return errorResponse(res, statusCodes.OK, 'Incorrect User ID or password. Please try again.');
     }
 
@@ -363,23 +367,30 @@ const sendDeleteAccountOtpService = async (res, identifier, password) => {
  */
 const verifyDeleteAccountOtpService = async (res, identifier, otp) => {
   try {
-    const member = await findMemberByIdentifier(identifier, false);
+    const candidates = await findMembersByIdentifier(identifier, false);
 
-    if (!member) {
+    if (candidates.length === 0) {
       return errorResponse(res, statusCodes.OK, 'Invalid OTP. Please check and try again.');
     }
 
     const now = new Date();
-    if (!member.delete_account_otp_expires_at || now > new Date(member.delete_account_otp_expires_at)) {
+    const unexpired = candidates.filter(
+      (c) => c.delete_account_otp_expires_at && now <= new Date(c.delete_account_otp_expires_at)
+    );
+    if (unexpired.length === 0) {
       return errorResponse(res, statusCodes.OK, 'OTP has expired. Please request a new one.');
     }
 
-    const isStatic = twilioService.isStaticOtp() || twilioService.isStaticUser(member.other_info_user_code) || twilioService.isStaticUser(member);
     const inputOtp = String(otp).trim();
-    const isMatch = (isStatic && inputOtp === '123456') ||
-      (member.delete_account_otp && member.delete_account_otp.trim() === inputOtp);
+    const matchesOtp = (c) => {
+      const isStatic = twilioService.isStaticOtp() || twilioService.isStaticUser(c.other_info_user_code) || twilioService.isStaticUser(c);
+      return (c.delete_account_otp && c.delete_account_otp.trim() === inputOtp) || (isStatic && inputOtp === '123456');
+    };
+    const member =
+      unexpired.find((c) => c.delete_account_otp && c.delete_account_otp.trim() === inputOtp) ||
+      unexpired.find(matchesOtp);
 
-    if (!isMatch) {
+    if (!member) {
       return errorResponse(res, statusCodes.OK, 'Invalid OTP. Please check and try again.');
     }
 

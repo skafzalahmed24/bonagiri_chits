@@ -111,8 +111,9 @@ const refreshToken = async (req, res) => {
 const storeOrUpdateMember = async (req, res) => {
   try {
     const data = { ...req.body };
-    if (req.user && req.user.role === 'company' && req.user.id) {
-      data.company_id = req.user.id;
+    const authCompanyId = await adminService.resolveCompanyIdForAuth(req.user);
+    if (authCompanyId) {
+      data.company_id = authCompanyId;
     }
     return await adminService.storeOrUpdateMemberService(res, data);
   } catch (error) {
