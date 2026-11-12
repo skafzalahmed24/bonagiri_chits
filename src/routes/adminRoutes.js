@@ -442,6 +442,7 @@ router.post('/options/chit-groups', authMiddleware.authenticateToken, authMiddle
 router.post('/options/members', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getMemberOptions);
 router.post('/options/areas', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getAreaOptions);
 router.post('/options/routes', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getRouteOptions);
+router.post('/options/cities', authMiddleware.authenticateToken, authMiddleware.requireOfficeUser, reportController.getCityOptions);
 router.post('/reports/fdr-statement', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_FDR_RELEASE, MODULES.E_GROUP]), reportController.getFdrStatement);
 router.post('/reports/agent-targets', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_AGENT_TARGETS), reportController.getAgentTargetReport);
 router.post('/reports/advance-register', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_ADV_ADJUSTMENTS), reportController.getAdvanceRegister);

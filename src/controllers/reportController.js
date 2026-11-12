@@ -298,3 +298,12 @@ exports.getRouteOptions = async (req, res) => {
     res.json({ status: false, message: error.message });
   }
 };
+
+exports.getCityOptions = async (req, res) => {
+  try {
+    const data = await reportService.getCityOptions({ company_id: await resolveCompanyIdForAuth(req.user) });
+    res.json({ status: true, message: 'Cities retrieved', data });
+  } catch (error) {
+    res.json({ status: false, message: error.message });
+  }
+};

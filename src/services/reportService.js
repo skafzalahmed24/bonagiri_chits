@@ -1,6 +1,7 @@
 const {
   AgentTargetEntry,
   Company,
+  City,
   Area,
   Route,
   ChitsGroup,
@@ -1929,6 +1930,17 @@ class ReportService {
       order: [['route_name', 'ASC']],
     });
     return routes.map((r) => ({ id: r.id, name: r.route_name }));
+  }
+
+  /** Cities for a picker: all active company cities (city/get-all defaults to 10 per page). */
+  async getCityOptions({ company_id }) {
+    if (!company_id) return [];
+    const cities = await City.findAll({
+      where: { company_id, is_deleted_status: 0 },
+      attributes: ['id', 'city_name'],
+      order: [['city_name', 'ASC']],
+    });
+    return cities.map((c) => ({ id: c.id, name: c.city_name }));
   }
 }
 
