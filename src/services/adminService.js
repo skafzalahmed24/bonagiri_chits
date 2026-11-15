@@ -8100,17 +8100,36 @@ const verifyMemberDocumentService = async (res, payload, userPayload) => {
 
 const getAllAuditLogsService = async (res, user_id, action_type, min, max, search, company_id) => {
   try {
-    const whereCondition = {};
-    if (user_id) whereCondition.user_id = user_id;
-    if (action_type) whereCondition.action_type = action_type;
-    if (company_id) whereCondition.company_id = company_id;
+    const conditions = [];
 
-    if (search) {
-      whereCondition[Op.or] = [
-        { module_or_route: { [Op.iLike]: `%${search}%` } },
-        { action_type: { [Op.iLike]: `%${search}%` } }
-      ];
+    if (company_id) {
+      conditions.push({
+        [Op.or]: [
+          { company_id: String(company_id) },
+          { user_type: 'company', user_id: String(company_id) }
+        ]
+      });
     }
+
+    if (user_id && String(user_id).trim() !== '') {
+      conditions.push({ user_id: String(user_id).trim() });
+    }
+
+    if (action_type && String(action_type).trim() !== '' && String(action_type).toUpperCase() !== 'ALL') {
+      conditions.push({ action_type: String(action_type).trim() });
+    }
+
+    if (search && String(search).trim() !== '') {
+      const term = `%${String(search).trim()}%`;
+      conditions.push({
+        [Op.or]: [
+          { module_or_route: { [Op.iLike]: term } },
+          { action_type: { [Op.iLike]: term } }
+        ]
+      });
+    }
+
+    const whereCondition = conditions.length > 0 ? { [Op.and]: conditions } : {};
 
     // Set pagination limits
     const limit = max ? parseInt(max) : 10;

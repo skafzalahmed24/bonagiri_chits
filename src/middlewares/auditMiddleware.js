@@ -35,7 +35,17 @@ const auditLogger = async (req, res, next) => {
       // Extract user info if available (depends on authMiddleware running before this)
       const userId = req.user ? req.user.id : null;
       const userType = req.user ? req.user.role : 'Guest';
-      const companyId = req.user ? req.user.company_id : (req.body && req.body.company_id ? req.body.company_id : null);
+      let companyId = null;
+      if (req.user) {
+        if (req.user.role === 'company') {
+          companyId = req.user.id;
+        } else if (req.user.company_id) {
+          companyId = req.user.company_id;
+        }
+      }
+      if (!companyId && req.body && req.body.company_id) {
+        companyId = req.body.company_id;
+      }
       
       try {
         await AuditLog.create({
