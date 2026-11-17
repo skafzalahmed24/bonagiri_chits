@@ -5,6 +5,7 @@ const statusCodes = require('../utils/statusCodes');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
 const { Company, Member, Route, Area, ChitsGroup, Country, State, District, City, StaticDropdownsList, StaticDropdownSubcategoryList, Enrollment, ChitsInstallment, UpcomingChit, SuitFileInformation, Auction, AgentTargetEntry, GroupUnderStaticList, AccountCreationDetail, ContactUs, FAQ, TermsPrivacy, SelfChit, ConfigureBusinessAgentCommission, HistoryBusinessAgent, CollectionAgentAmount, CustomerPayment, Gallery, FixedSchemeChitsConfiguration, Role, StaffUser, AuditLog, MemberDocument, MemberReferral, CustomerVisit, PaymentAccount, MemberAdvance, NotificationHistory, EnrollmentJointHolder, SelfTransfer, BorrowRepay, sequelize } = require('../models');
 const { generateTokens, verifyRefreshToken, generateResetToken, verifyResetToken } = require('../utils/jwtHelper');
+const { compactStaffPermissions } = require('../utils/authHelpers');
 const { applyWinnerSchemeAdjustments, getSchemeWinningAmount, applyOpenAuctionAdjustments, calculateOpenAuctionFinancials, validateOpenAuctionBid, nextOpenAuctionNumber, isFinalOpenMonth, dividendTargetMonth, lastInstalmentDate, getGroupCompanySeats, extractCompanySeats, auctionPrizeKeyFieldsChanged } = require('../utils/schemeHelpers');
 const { Op } = require('sequelize');
 const SystemSettingsService = require('./systemSettingsService');
@@ -253,7 +254,7 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
       user_id: type === 1 ? (role === 'company' ? user.company_id : user.user_code) : user.other_info_user_code,
       role,
       company_id: role !== 'company' ? user.company_id : undefined,
-      permissions: role === 'staff' ? staffPermissions : undefined,
+      permissions: role === 'staff' ? compactStaffPermissions(staffPermissions) : undefined,
       introduced_as: introduced_as_details.map(i => i.id),
       device_unique_id: activeDeviceUniqueId
     };
@@ -587,6 +588,7 @@ const refreshTokenService = async (res, refresh_token) => {
 
     const payload = { ...decoded };
     delete payload.iat;
+    if (payload.permissions) payload.permissions = compactStaffPermissions(payload.permissions);
     delete payload.exp;
     const tokens = generateTokens(payload);
     return successResponse(res, statusCodes.OK, 'Token refreshed successfully', { tokens });
@@ -2844,8 +2846,18 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
         : null;
 
+      // The winning TICKET's enrollment, not just the member's first one: a member with three tickets has three
+      // enrollments, and each ticket's instalments switch to the Withdrawn amounts only when that ticket wins
+      // (tester sheet 2026-11-17). Auctions saved without a ticket number keep the old first-enrollment lookup.
+      const winnerTicket = auctionResult && auctionResult.ticket_number != null ? Number(auctionResult.ticket_number) : null;
       const winnerEnrollment = resolvedBidderId ? await Enrollment.findOne({
-        where: { group_id: resolvedGroupId, subscriber_id: resolvedBidderId, delete_status: 0 },
+        where: {
+          group_id: resolvedGroupId,
+          subscriber_id: resolvedBidderId,
+          delete_status: 0,
+          ...(winnerTicket ? { group_position_number: winnerTicket } : {})
+        },
+        order: [['group_position_number', 'ASC']],
         transaction
       }) : null;
 

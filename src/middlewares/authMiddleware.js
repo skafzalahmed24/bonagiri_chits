@@ -1,7 +1,7 @@
 const { errorResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 const { verifyAccessToken } = require('../utils/jwtHelper');
-const { isCollectionAgent } = require('../utils/authHelpers');
+const { isCollectionAgent, staffCanView, staffHasAnyView } = require('../utils/authHelpers');
 
 if (!process.env.DEFAULT_API_TOKEN) {
   console.error("FATAL ERROR: DEFAULT_API_TOKEN is not defined in the environment.");
@@ -67,7 +67,7 @@ const authenticateSuperAdminToken = (req, res, next) => {
 const requirePermission = (moduleId) => (req, res, next) => {
   if (!req.user) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
   if (req.user.role === 'company') return next();
-  if (req.user.role === 'staff' && req.user.permissions?.[moduleId]?.view) return next();
+  if (req.user.role === 'staff' && staffCanView(req.user.permissions, moduleId)) return next();
   return errorResponse(res, statusCodes.FORBIDDEN, `You don't have permission to access this module`);
 };
 
@@ -78,7 +78,7 @@ const requireAnyPermission = (moduleIds) => (req, res, next) => {
   if (!req.user) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
   if (req.user.role === 'company') return next();
   const ids = typeof moduleIds === 'function' ? moduleIds(req) : moduleIds;
-  if (req.user.role === 'staff' && ids.some((id) => req.user.permissions?.[id]?.view)) return next();
+  if (req.user.role === 'staff' && ids.some((id) => staffCanView(req.user.permissions, id))) return next();
   return errorResponse(res, statusCodes.FORBIDDEN, `You don't have permission to access this module`);
 };
 
@@ -86,7 +86,7 @@ const requirePermissionOrUserRole = (moduleId, extraRole) => (req, res, next) =>
   if (!req.user) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
   if (req.user.role === extraRole) return next();
   if (req.user.role === 'company') return next();
-  if (req.user.role === 'staff' && req.user.permissions?.[moduleId]?.view) return next();
+  if (req.user.role === 'staff' && staffCanView(req.user.permissions, moduleId)) return next();
   return errorResponse(res, statusCodes.FORBIDDEN, `You don't have permission to access this module`);
 };
 
@@ -104,7 +104,7 @@ const requireRole = (allowedRoles) => (req, res, next) => {
 const requireOfficeUser = (req, res, next) => {
   if (!req.user) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
   if (req.user.role === 'company') return next();
-  if (req.user.role === 'staff' && Object.values(req.user.permissions || {}).some((p) => p && p.view)) return next();
+  if (req.user.role === 'staff' && staffHasAnyView(req.user.permissions)) return next();
   return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
 };
 

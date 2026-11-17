@@ -2,6 +2,7 @@ const { AccountingVoucher, AccountingVoucherLine, PaymentAccount, AccountCreatio
 const { Op, fn, col, literal, where: sqlWhere } = require('sequelize');
 const { resolveCompanyIdForAuth } = require('./adminService');
 const MODULES = require('../utils/modules');
+const { staffCanView } = require('../utils/authHelpers');
 const { statusFilter, cancelStamp } = require('../utils/cancellable');
 const { assertAdmin, assertReason, actorName, enforceLock, MoneyRuleError } = require('../utils/moneyControls');
 
@@ -18,7 +19,7 @@ const VOUCHER_MODULES = { CR: MODULES.T_CASH_RECEIPTS, CP: MODULES.T_CASH_PAYMEN
 const checkPermission = (user, voucherType) => {
   if (user.role === 'company') return;
   const reqModule = VOUCHER_MODULES[voucherType];
-  if (!user.permissions?.[reqModule]?.view) {
+  if (!staffCanView(user.permissions, reqModule)) {
     throw new Error("You don't have permission to access this module");
   }
 };

@@ -1,5 +1,6 @@
 const { PrizePayment, Auction, Enrollment, Member, PaymentAccount, ChitsGroup, CustomerPayment, Surety, Sequelize } = require('../models');
 const { enforceLock } = require('../utils/moneyControls');
+const { staffCanView } = require('../utils/authHelpers');
 const db = require('../models');
 const fcmService = require('./fcmService');
 const { ticketWin, holderNamesByEnrollment, holderMembersOf } = require('../utils/jointHolders');
@@ -395,7 +396,7 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
   // Staff need the module for this kind of payment: Bid Payments (types 1, 3) or Bid Advance (type 2).
   if (user && user.role === 'staff') {
     const needed = payment_type === 2 ? 'T_BID_ADVANCE' : 'T_BID_PAYMENTS';
-    if (!user.permissions?.[needed]?.view) throw new Error(`You don't have permission for ${payment_type === 2 ? 'bid advances' : 'bid payments'}.`);
+    if (!staffCanView(user.permissions, needed)) throw new Error(`You don't have permission for ${payment_type === 2 ? 'bid advances' : 'bid payments'}.`);
   }
   const byName = await userDisplayName(user);
   return await db.sequelize.transaction(async (transaction) => {

@@ -1,4 +1,5 @@
 const reportService = require('../services/reportService');
+const { staffCanView } = require('../utils/authHelpers');
 const { resolveCompanyIdForAuth } = require('../services/adminService');
 
 exports.getDayReport = async (req, res) => {
@@ -38,10 +39,10 @@ exports.getAccountBookReport = async (req, res) => {
       const account = await PaymentAccount.findOne({ where: { id: req.body.account_id, company_id } });
       if (!account) return res.json({ status: false, message: 'Account not found' });
 
-      if (account.account_type === 'CASH' && !req.user.permissions?.R_CASH_BOOK?.view) {
+      if (account.account_type === 'CASH' && !staffCanView(req.user.permissions, 'R_CASH_BOOK')) {
         return res.json({ status: false, message: "You don't have permission to access CASH book" });
       }
-      if (account.account_type !== 'CASH' && !req.user.permissions?.R_BANK_BOOK?.view) {
+      if (account.account_type !== 'CASH' && !staffCanView(req.user.permissions, 'R_BANK_BOOK')) {
         return res.json({ status: false, message: "You don't have permission to access BANK/UPI book" });
       }
     }

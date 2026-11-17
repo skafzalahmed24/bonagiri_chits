@@ -1,4 +1,5 @@
 const { PaymentAccount } = require('../models');
+const { staffCanView } = require('../utils/authHelpers');
 const { successResponse, errorResponse } = require('../utils/responseHelper');
 const statusCodes = require('../utils/statusCodes');
 const { Op } = require('sequelize');
@@ -111,9 +112,9 @@ const getAllPaymentAccountsService = async (res, comp_id, body, user) => {
     let returnRows = rows;
     if (user && user.role === 'staff') {
       // Self Transfer needs balances: it moves money between accounts and warns on shortfalls.
-      const hasPermission = user.permissions?.M_PAYMENT_ACCOUNTS?.view
-        || user.permissions?.R_BALANCE_SUMMARY?.view
-        || user.permissions?.T_SELF_TRANSFER?.view;
+      const hasPermission = staffCanView(user.permissions, 'M_PAYMENT_ACCOUNTS')
+        || staffCanView(user.permissions, 'R_BALANCE_SUMMARY')
+        || staffCanView(user.permissions, 'T_SELF_TRANSFER');
       if (!hasPermission) {
         returnRows = rows.map(r => {
           const acc = r.toJSON();
