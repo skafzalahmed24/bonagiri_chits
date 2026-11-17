@@ -1283,7 +1283,9 @@ module.exports = {
     max: Joi.number().integer().min(1).optional(),
     from_date: Joi.date().iso().optional(),
     to_date: Joi.date().iso().optional(),
-    group_id: Joi.string().uuid().optional()
+    group_id: Joi.string().uuid().optional(),
+    // Optional filter (1 cash, 2 UPI, 3 cheque, 4 bank, 5 others). The apps never send it.
+    payment_mode: Joi.number().integer().valid(1, 2, 3, 4, 5).optional()
   }),
   galleryValidator: Joi.object({
     id: Joi.alternatives().try(Joi.string().uuid(), Joi.string(), Joi.number()).optional(),

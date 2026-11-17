@@ -2736,6 +2736,14 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       capWarning = buildCommissionCapWarning(financials);
     }
 
+    // Fixed chit: the winner is paid the month's winning amount in full (company commission comes out of the
+    // pool, as for open auctions). bid_payable used to stay empty here, so Bid Payment and the member's prize
+    // list showed every fixed-chit winner as "fully paid" with 0 payable (tester sheet, Recent Feedback row 15).
+    if (groupForMath && groupForMath.scheme_configuration_id) {
+      const schemeWinning = parseFloat(auctionData.bid_amount ?? (existingAuction ? existingAuction.bid_amount : null));
+      if (Number.isFinite(schemeWinning) && schemeWinning > 0) auctionData.bid_payable = schemeWinning;
+    }
+
     // Dividend already applied to the members' running balance by earlier saves of this auction (SEC-7).
     const previousDividend = existingAuction ? (parseFloat(existingAuction.dividend) || 0) : null;
 
@@ -3024,6 +3032,9 @@ const recordWinnerService = async (res, reqBody, userToken) => {
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Cannot record winner for a company month');
       }
       auctionData.bid_amount = derivedWinningAmount;
+      // Fixed chit: the winner is paid the winning amount in full (see store-or-update); without this the
+      // prize showed as fully paid with 0 payable.
+      auctionData.bid_payable = derivedWinningAmount;
     } else {
       const chitAmount = parseFloat(group.chit_amount) || 0;
       // The last instalment has no auction discount: its winner is recorded at the full chit amount.
@@ -6572,12 +6583,14 @@ const logoutService = async (req, res, userPayload) => {
   }
 };
 
-const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id, baseUrl = '') => {
+const getAllCollectionSubmissionsService = async (res, collection_agent_id, type, min, max, companyId, from_date, to_date, group_id, baseUrl = '', payment_mode = null) => {
   try {
     const whereClause = {};
     if (collection_agent_id) {
       whereClause.collection_agent_id = collection_agent_id;
     }
+    // Optional payment-mode filter (1 cash, 2 UPI, 3 cheque, 4 bank, 5 others); absent for the apps.
+    if (payment_mode) whereClause.payment_type = payment_mode;
     // 1 - all, 2 - pending, 3 - verified, 4 - rejected
     if (type === 2) whereClause.status = { [Op.in]: [0, 1] }; // pending
     if (type === 3) whereClause.status = 2; // verified
