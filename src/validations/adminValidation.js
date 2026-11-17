@@ -279,7 +279,9 @@ const getAllMemberSchema = Joi.object({
   max: Joi.number().integer().min(1).optional().messages({
     'number.min': 'Max must be greater than or equal to 1'
   }),
-  search: Joi.string().allow('', null).optional()
+  search: Joi.string().allow('', null).optional(),
+  verification_status: Joi.string().valid('verified', 'unverified', 'all', '').allow(null).optional(),
+  is_verified: Joi.alternatives().try(Joi.boolean(), Joi.number(), Joi.string()).allow('', null).optional()
 });
 
 const deleteMemberSchema = Joi.object({
@@ -876,7 +878,9 @@ module.exports = {
     year: Joi.number().integer().optional(),
     group_id: Joi.string().uuid().allow('', null).optional(),
     business_agent_id: Joi.number().integer().allow(null).optional(),
-    collection_agent_id: Joi.number().integer().allow(null).optional()
+    collection_agent_id: Joi.number().integer().allow(null).optional(),
+    from_range: Joi.number().integer().min(0).allow(null, '').optional(),
+    to_range: Joi.number().integer().min(0).allow(null, '').optional()
   }),
   deleteEnrollmentSchema: Joi.object({
     id: Joi.number().integer().required().messages({

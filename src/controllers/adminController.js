@@ -125,8 +125,8 @@ const storeOrUpdateMember = async (req, res) => {
 const getAllMemberDetails = async (req, res) => {
   try {
     const comp_id = await adminService.resolveCompanyIdForAuth(req.user);
-    const { introduced_as, min, max, search, from_date, to_date } = req.body || {};
-    return await adminService.getAllMemberDetailsService(res, comp_id, introduced_as, min, max, search, from_date, to_date);
+    const { introduced_as, min, max, search, from_date, to_date, verification_status, is_verified } = req.body || {};
+    return await adminService.getAllMemberDetailsService(res, comp_id, introduced_as, min, max, search, from_date, to_date, verification_status ?? is_verified);
   } catch (error) {
     console.error('Error in getAllMemberDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
@@ -442,9 +442,9 @@ const updateJointHolders = async (req, res) => {
 const getAllEnrollmentDetails = async (req, res) => {
   try {
     const authCompanyId = await adminService.resolveCompanyIdForAuth(req.user);
-    const { company_id, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id } = req.body || {};
+    const { company_id, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id, from_range, to_range } = req.body || {};
     const targetCompanyId = authCompanyId || company_id;
-    return await adminService.getAllEnrollmentDetailsService(res, targetCompanyId, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id);
+    return await adminService.getAllEnrollmentDetailsService(res, targetCompanyId, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id, from_range, to_range);
   } catch (error) {
     console.error('Error in getAllEnrollmentDetails:', error);
     return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');

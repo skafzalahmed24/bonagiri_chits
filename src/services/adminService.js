@@ -769,10 +769,17 @@ const storeOrUpdateMemberService = async (res, data = {}) => {
   }
 };
 
-const getAllMemberDetailsService = async (res, company_id, introduced_as, min, max, search, from_date, to_date) => {
+const getAllMemberDetailsService = async (res, company_id, introduced_as, min, max, search, from_date, to_date, verification_status) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
+
+    let isVerifiedFilter = null;
+    if (verification_status === 'verified' || verification_status === true || verification_status === 'true' || verification_status === 1 || verification_status === '1') {
+      isVerifiedFilter = true;
+    } else if (verification_status === 'unverified' || verification_status === false || verification_status === 'false' || verification_status === 0 || verification_status === '0') {
+      isVerifiedFilter = false;
+    }
 
     const where = {
       is_deleted_status: 0,
@@ -781,6 +788,7 @@ const getAllMemberDetailsService = async (res, company_id, introduced_as, min, m
       ...(introduced_as && introduced_as !== '' ? { introduced_as: { [Op.contains]: [introduced_as] } } : {}),
       // Registration date range, inclusive; an empty bound is open. Optional, so existing callers are unchanged.
       ...(from_date || to_date ? { registration_date: { ...(from_date ? { [Op.gte]: from_date } : {}), ...(to_date ? { [Op.lte]: to_date } : {}) } } : {}),
+      ...(isVerifiedFilter !== null ? { is_verified: isVerifiedFilter } : {}),
       // E2E-045 (2026-10-14): search is case-insensitive ("three" finds "Three").
       [Op.or]: [
         { name: { [Op.iLike]: `%${search || ''}%` } },
@@ -1975,17 +1983,26 @@ const storeOrUpdateEnrollmentService = async (res, data = {}) => {
   }
 };
 
-const getAllEnrollmentDetailsService = async (res, company_id, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id) => {
+const getAllEnrollmentDetailsService = async (res, company_id, min, max, search, from_date, to_date, month, year, group_id, business_agent_id, collection_agent_id, from_range, to_range) => {
   try {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
+
+    const hasFromRange = from_range !== undefined && from_range !== null && from_range !== '';
+    const hasToRange = to_range !== undefined && to_range !== null && to_range !== '';
 
     const whereClause = {
       ...(company_id && company_id !== '' ? { company_id } : {}),
       delete_status: 0,
       ...(group_id ? { group_id } : {}),
       ...(business_agent_id ? { business_agent_id } : {}),
-      ...(collection_agent_id ? { collection_agent_id } : {})
+      ...(collection_agent_id ? { collection_agent_id } : {}),
+      ...(hasFromRange || hasToRange ? {
+        group_position_number: {
+          ...(hasFromRange ? { [Op.gte]: parseInt(from_range, 10) } : {}),
+          ...(hasToRange ? { [Op.lte]: parseInt(to_range, 10) } : {})
+        }
+      } : {})
     };
 
     // Date / month filtering
@@ -2298,15 +2315,18 @@ const getGroupMembersService = async (res, company_id, group_id, min, max, filte
 
     const auctions = await Auction.findAll({
       where: { group_id },
-      attributes: ['bidder_id', 'auction_number']
+      attributes: ['bidder_id', 'ticket_number', 'auction_number']
     });
 
     const companySeats = await getGroupCompanySeats(group_id);
 
     let members = enrollments.map(e => {
       const memberId = e.subscriber ? e.subscriber.id : null;
-      const winData = auctions.find(a => a.bidder_id === memberId);
-      const isCompanySeat = companySeats.includes(Number(e.group_position_number));
+      const pos = Number(e.group_position_number);
+      const winData = auctions.find(a =>
+        a.ticket_number != null ? Number(a.ticket_number) === pos : a.bidder_id === memberId
+      );
+      const isCompanySeat = companySeats.includes(pos);
       return {
         id: memberId,
         enrollment_id: e.id,
@@ -2518,6 +2538,10 @@ const auctionUniqueConflictMessage = (error) => {
   if (!error || error.name !== 'SequelizeUniqueConstraintError') return null;
   const constraint = (error.parent && error.parent.constraint) || (error.original && error.original.constraint) || '';
   const paths = (error.errors || []).map((e) => e && e.path);
+  if (constraint === 'auctions_group_ticket_number_unique' || paths.includes('auctions_group_ticket_number_unique') ||
+      (paths.includes('group_id') && paths.includes('ticket_number'))) {
+    return 'This ticket has already won an auction in this group. Refresh the list to see it.';
+  }
   if (constraint === 'auctions_group_bidder_unique' || paths.includes('auctions_group_bidder_unique') ||
       (paths.includes('group_id') && paths.includes('bidder_id'))) {
     return 'This member has already won an auction in this group. Refresh the list to see it.';
@@ -2741,13 +2765,24 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
             return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
           }
 
-          const existingWin = await Auction.findOne({
-            where: { group_id: auctionData.group_id, bidder_id: auctionData.bidder_id },
-            transaction
-          });
-          if (existingWin) {
-            await transaction.rollback();
-            return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
+          if (auctionData.ticket_number) {
+            const ticketWin = await Auction.findOne({
+              where: { group_id: auctionData.group_id, ticket_number: auctionData.ticket_number },
+              transaction
+            });
+            if (ticketWin) {
+              await transaction.rollback();
+              return errorResponse(res, statusCodes.BAD_REQUEST, `Ticket #${auctionData.ticket_number} has already won auction #${ticketWin.auction_number} in this group`);
+            }
+          } else {
+            const existingWin = await Auction.findOne({
+              where: { group_id: auctionData.group_id, bidder_id: auctionData.bidder_id },
+              transaction
+            });
+            if (existingWin) {
+              await transaction.rollback();
+              return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
+            }
           }
         }
 
@@ -2895,14 +2930,27 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     }
     let winnerEnrollment = null;
     let existingWin = null;
-    for (const ticket of bidderTickets) {
-      const win = await ticketWin(ticket, { transaction });
-      if (!win) { winnerEnrollment = ticket; break; }
-      existingWin = existingWin || win;
+    if (reqBody.ticket_number) {
+      const targetTicket = bidderTickets.find(t => Number(t.group_position_number) === Number(reqBody.ticket_number));
+      if (targetTicket) {
+        const win = await ticketWin(targetTicket, { transaction });
+        if (!win) {
+          winnerEnrollment = targetTicket;
+        } else {
+          existingWin = win;
+        }
+      }
+    }
+    if (!winnerEnrollment && !existingWin) {
+      for (const ticket of bidderTickets) {
+        const win = await ticketWin(ticket, { transaction });
+        if (!win) { winnerEnrollment = ticket; break; }
+        existingWin = existingWin || win;
+      }
     }
     if (!winnerEnrollment) {
       await transaction.rollback();
-      return errorResponse(res, statusCodes.BAD_REQUEST, `This member's ticket has already won auction #${existingWin.auction_number} in this group`);
+      return errorResponse(res, statusCodes.BAD_REQUEST, `This ticket has already won auction #${existingWin ? existingWin.auction_number : ''} in this group`);
     }
 
     const companySeats = await getGroupCompanySeats(group.id, group, transaction);
