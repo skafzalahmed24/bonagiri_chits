@@ -11,6 +11,7 @@
 require('dotenv').config();
 const assert = require('assert');
 const adminService = require('../services/adminService');
+const { repair } = require('./repairWithdrawnMultiTicketInstalments');
 const { FixedSchemeChitsConfiguration, ChitsGroup, Enrollment, Auction, Member, ChitsInstallment, sequelize } = require('../models');
 
 const mockRes = () => {
@@ -43,8 +44,8 @@ async function run() {
     });
     created.group = group.id;
 
-    // Tickets 1, 2, 3 belong to the same member; ticket 4 to another member.
-    const tickets = [[multi, 1], [multi, 2], [multi, 3], [other, 4]];
+    // Tickets 10, 11, 12 belong to the same member (the tester's "Ram"); ticket 13 to another member.
+    const tickets = [[multi, 10], [multi, 11], [multi, 12], [other, 13]];
     const enrollmentByTicket = {};
     for (const [member, pos] of tickets) {
       const e = await Enrollment.create({ group_id: group.id, subscriber_id: member.id, company_id: companyId, group_position_number: pos, delete_status: 0 });
@@ -55,8 +56,9 @@ async function run() {
       }
     }
 
-    // Auctions 1, 2, 3 are won by the three tickets of the same member, one each.
-    for (const [auctionNumber, ticket] of [[1, 1], [2, 2], [3, 3]]) {
+    // The three tickets of the same member win one auction each, and the FIRST enrollment (ticket 10) wins last.
+    const wins = [[1, 12], [2, 11], [3, 10]];
+    for (const [auctionNumber, ticket] of wins) {
       const res = mockRes();
       await adminService.storeOrUpdateAuctionService(res, {
         group_id: group.id, bidder_id: multi.id, ticket_number: ticket, auction_number: auctionNumber,
@@ -71,17 +73,35 @@ async function run() {
       Number((await ChitsInstallment.findOne({ where: { enrollment_id: enrollmentByTicket[ticket], installment_no: month } })).payable_amount);
 
     // Winning month and every later month are Withdrawn for the winning ticket; earlier months stay Not Withdrawn.
-    for (const [ticket, winMonth] of [[1, 1], [2, 2], [3, 3]]) {
-      for (let m = 1; m <= 4; m++) {
-        const expected = m >= winMonth ? WITHDRAWN[m - 1] : NOT_WITHDRAWN;
-        assert.strictEqual(await payable(ticket, m), expected, `ticket ${ticket} month ${m}: expected ${expected}`);
+    const expectedFor = (ticket, m) => {
+      const win = wins.find(([, t]) => t === ticket);
+      return win && m >= win[0] ? WITHDRAWN[m - 1] : NOT_WITHDRAWN;
+    };
+    const checkAll = async (label) => {
+      for (const ticket of [10, 11, 12, 13]) {
+        for (let m = 1; m <= 4; m++) {
+          assert.strictEqual(await payable(ticket, m), expectedFor(ticket, m), `${label}: ticket ${ticket} month ${m}: expected ${expectedFor(ticket, m)}`);
+        }
       }
-      console.log(`ok ticket ${ticket} (won month ${winMonth}) switched to the Withdrawn amounts`);
-    }
+      console.log(`ok ${label}: every ticket matches the template (winners Withdrawn from their win month, others Not Withdrawn)`);
+    };
+    await checkAll('after saving the three auctions');
+
+    // The state the OLD code left behind: every win applied to the first ticket (10) -> Withdrawn from month 1,
+    // tickets 11 and 12 never switched. The repair must put every ticket back to the template.
     for (let m = 1; m <= 4; m++) {
-      assert.strictEqual(await payable(4, m), NOT_WITHDRAWN, `ticket 4 (other member, no win) month ${m} must stay Not Withdrawn`);
+      await ChitsInstallment.update({ payable_amount: WITHDRAWN[m - 1] }, { where: { enrollment_id: enrollmentByTicket[10], installment_no: m } });
+      await ChitsInstallment.update({ payable_amount: NOT_WITHDRAWN }, { where: { enrollment_id: [enrollmentByTicket[11], enrollmentByTicket[12]], installment_no: m } });
     }
-    console.log('ok ticket 4 (no win) stays on Not Withdrawn');
+    const quiet = () => {};
+    const dry = await repair({ apply: false, groupWhere: { id: group.id }, log: quiet });
+    assert.ok(dry.fixes.length > 0, 'dry run must list the wrong instalments');
+    assert.strictEqual(await payable(10, 1), WITHDRAWN[0], 'dry run must not write');
+    await repair({ apply: true, groupWhere: { id: group.id }, log: quiet });
+    await checkAll('after the repair');
+    const again = await repair({ apply: false, groupWhere: { id: group.id }, log: quiet });
+    assert.strictEqual(again.fixes.length, 0, 'a second run finds nothing to change');
+    console.log('ok repair is idempotent');
     console.log('ALL PASSED');
   } finally {
     if (created.group) await Auction.destroy({ where: { group_id: created.group } });

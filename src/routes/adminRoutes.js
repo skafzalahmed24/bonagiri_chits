@@ -189,7 +189,7 @@ router.post('/agent/get-enrollments', authMiddleware.authenticateToken, authMidd
 router.post('/agent-target-entry/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AGENT_TARGETS), validate(adminValidation.storeOrUpdateAgentTargetEntrySchema), adminController.storeOrUpdateAgentTargetEntry);
 router.post('/agent-target-entry/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AGENT_TARGETS), validate(adminValidation.getAllAgentTargetEntrySchema), adminController.getAllAgentTargetEntry);
 router.post('/member/get-filtered-by-group-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_MEMBERS), validate(adminValidation.getFilteredMembersByGroupAndAgentSchema), adminController.getFilteredMembersByGroupAndAgent);
-router.post('/agent/transfer-agent', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.M_AGENT_TRANSFER), validate(adminValidation.transferAgentUpdateSchema), adminController.transferAgentUpdate);
+router.post('/agent/transfer-agent', authMiddleware.authenticateToken, authMiddleware.requireRole('company'), validate(adminValidation.transferAgentUpdateSchema), adminController.transferAgentUpdate);
 router.post('/member/businesslist-under-members', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getBusinessListUnderMembersSchema), adminController.getBusinessListUnderMembers);
 
 //get by id routes 
