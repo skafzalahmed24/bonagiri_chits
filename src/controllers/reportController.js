@@ -200,6 +200,20 @@ exports.getRepeatedPersons = async (req, res) => {
   }
 };
 
+exports.getMemberAccount = async (req, res) => {
+  try {
+    const data = await reportService.getMemberAccount({
+      member_id: req.body.member_id,
+      enrollment_ids: req.body.enrollment_ids,
+      as_on_date: req.body.as_on_date,
+      company_id: await resolveCompanyIdForAuth(req.user),
+    });
+    res.json({ status: true, message: 'Member account generated successfully', data });
+  } catch (error) {
+    res.json({ status: false, message: error.message });
+  }
+};
+
 exports.getAccountCopy = async (req, res) => {
   try {
     const data = await reportService.getAccountCopy({

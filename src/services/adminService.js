@@ -16,7 +16,7 @@ const { MoneyRuleError, assertAdmin, assertReason, actorName, enforceLock, today
 const chargeService = require('./chargeService');
 const { deleteUploadedFile, toFullFileUrl } = require('../utils/fileHelper');
 const { dailyPenaltyFor, penaltyPercentFor, toDateStr, daysBetween, addDays } = require('../utils/penalty');
-const { memberTicketsInGroup, ticketWin, holderMembersOf } = require('../utils/jointHolders');
+const { memberTicketsInGroup, ticketWin, holderMembersOf, holderDuesByEnrollment } = require('../utils/jointHolders');
 
 const formatDateDDMMYYYY = (dateVal) => {
   if (!dateVal) return null;
@@ -2322,6 +2322,12 @@ const getGroupMembersService = async (res, company_id, group_id, min, max, filte
 
     const companySeats = await getGroupCompanySeats(group_id);
 
+    // Joint tickets (sheet row 27): every holder with the share they still owe, so the Member Receipt screen can
+    // show both and let staff pick who is paying. Additive: single-holder tickets get no `holders` key.
+    const bd = await SystemSettingsService.getBusinessDate();
+    const todayStr = `${bd.getFullYear()}-${String(bd.getMonth() + 1).padStart(2, '0')}-${String(bd.getDate()).padStart(2, '0')}`;
+    const holdersByEnrollment = await holderDuesByEnrollment(enrollments.map(e => e.id), todayStr);
+
     let members = enrollments.map(e => {
       const memberId = e.subscriber ? e.subscriber.id : null;
       const pos = Number(e.group_position_number);
@@ -2336,7 +2342,8 @@ const getGroupMembersService = async (res, company_id, group_id, min, max, filte
         position: e.group_position_number,
         has_won: !!winData,
         won_month: winData ? parseInt(winData.auction_number, 10) : null,
-        is_company: isCompanySeat
+        is_company: isCompanySeat,
+        ...(holdersByEnrollment[e.id] ? { holders: holdersByEnrollment[e.id] } : {})
       };
     });
 
@@ -5814,7 +5821,7 @@ const storeDirectPaymentService = async (res, user, data) => {
       received_amount, penalty_paid, payment_date,
       payment_mode, transaction_reference,
       cash_amount, cash_account_id, upi_amount, upi_account_id, bank_amount, bank_account_id,
-      cheque_number, cheque_date, narration, override_reason
+      cheque_number, cheque_date, narration, override_reason, payer_member_id
     } = data;
     // SEC-P3: whole paise once, before any comparison or storage, so what is checked is what is stored.
     const { toPaise, checkPenaltyCap, penaltyCapMessage } = require('./receiptMoneyRules');
@@ -5981,8 +5988,21 @@ const storeDirectPaymentService = async (res, user, data) => {
       else final_payment_mode = 5; // Mixed / Others
     }
 
+    // Joint tickets (sheet row 27): the holder who paid. Optional; when given it must be one of the ticket's own
+    // holders, otherwise a receipt could be pinned on a stranger. Without it the receipt is split by share, as before.
+    let payerHolderId = null;
+    if (payer_member_id !== undefined && payer_member_id !== null && payer_member_id !== '') {
+      const holderIds = await require('../utils/jointHolders').ticketHolderIds(installmentInfo.enrollment, { transaction });
+      if (!holderIds.includes(Number(payer_member_id))) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'The paying holder is not a holder of this ticket');
+      }
+      payerHolderId = Number(payer_member_id);
+    }
+
     const newPayment = await CustomerPayment.create({
       chits_installment_id,
+      payer_member_id: payerHolderId,
       received_amount: receivedAmountFloat,
       penalty_paid: penaltyPaidFloat,
       payment_status: 1, // Auto-verified for admin direct payments

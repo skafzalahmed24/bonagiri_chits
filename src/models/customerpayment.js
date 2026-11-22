@@ -65,6 +65,12 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true
     },
+    // Joint tickets: the holder (members.id) who paid this receipt. NULL = not recorded, so the receipt is
+    // split by share (sheet rows 27/34/37). userService.js already reads this when it works out per-holder dues.
+    payer_member_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
     recorded_by_id: {
       type: DataTypes.STRING,
       allowNull: true

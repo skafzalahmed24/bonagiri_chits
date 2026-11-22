@@ -624,6 +624,24 @@ const getAllAuctions = async (req, res) => {
   }
 };
 
+// Auction Progress (tester sheet row 36): one row per chit group, read only, company from the token (never optional).
+const getAuctionProgress = async (req, res) => {
+  try {
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    if (!companyId) return errorResponse(res, statusCodes.FORBIDDEN, 'Insufficient permissions');
+    const { group_id, search } = req.body || {};
+    const data = await require('../services/auctionProgressService').getAuctionProgress({
+      companyId,
+      groupId: group_id || null,
+      search: search && String(search).trim() ? String(search).trim() : null,
+    });
+    return successResponse(res, statusCodes.OK, 'Auction progress retrieved successfully', data);
+  } catch (error) {
+    console.error('Error in getAuctionProgress:', error);
+    return errorResponse(res, statusCodes.INTERNAL_SERVER_ERROR, 'Internal server error');
+  }
+};
+
 const deleteAuction = async (req, res) => {
   try {
     const { id } = req.body || {};
@@ -1863,6 +1881,7 @@ module.exports = {
   deleteSuitFileInformation,
   storeOrUpdateAuction,
   getAllAuctions,
+  getAuctionProgress,
   deleteAuction,
   getAllSubcategories,
   getAgentByAgentType,

@@ -23,7 +23,11 @@ module.exports = (sequelize, DataTypes) => {
     is_deleted: { type: DataTypes.INTEGER, defaultValue: 0 },
     deleted_by_name: { type: DataTypes.STRING, allowNull: true },
     deleted_at: { type: DataTypes.DATE, allowNull: true },
-    delete_reason: { type: DataTypes.TEXT, allowNull: true }
+    delete_reason: { type: DataTypes.TEXT, allowNull: true },
+    // Split payments (sheet row 42): the two parts of one payment share split_group_id; split_part is 1 (cash) or 2.
+    // Both NULL for an ordinary payment.
+    split_group_id: { type: DataTypes.UUID, allowNull: true },
+    split_part: { type: DataTypes.SMALLINT, allowNull: true }
   }, {
     tableName: 'prize_payments',
     timestamps: true

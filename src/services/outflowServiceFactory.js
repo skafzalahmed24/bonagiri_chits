@@ -46,7 +46,10 @@ module.exports = function makeOutflowService({ Model, entity, label, fields }) {
         order: [['date', 'DESC'], ['id', 'DESC']],
         include: [{ model: PaymentAccount, as: 'Account', attributes: ['id', 'name', 'account_type'] }],
       });
-      return { total: count, rows };
+      // Tester sheet row 35: the sum of every non-cancelled entry that matches the filters, across all pages
+      // (so it does not change when the user moves between pages). Additive key; `total` is still the row count.
+      const total_amount = Number(await Model.unscoped().sum('amount', { where: where({ ...params, status: 'active' }) })) || 0;
+      return { total: count, total_amount: Math.round((total_amount + Number.EPSILON) * 100) / 100, rows };
     },
 
     async getById(id, company_id) {

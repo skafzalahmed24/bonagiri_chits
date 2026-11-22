@@ -8,7 +8,7 @@
  * is any of its holders.
  */
 const { Op } = require('sequelize');
-const { Enrollment, EnrollmentJointHolder, Auction, Member } = require('../models');
+const { Enrollment, EnrollmentJointHolder, Auction, Member, ChitsInstallment, CustomerPayment, CollectionAgentAmount } = require('../models');
 
 /** Member ids of everyone holding the ticket, main holder first. */
 const ticketHolderIds = async (enrollment, { transaction } = {}) => {
@@ -127,4 +127,79 @@ const holderMembersOf = async (enrollmentIds, { transaction } = {}) => {
   return [...byId.values()];
 };
 
-module.exports = { ticketHolderIds, memberTicketsInGroup, ticketWin, isTicketPrized, prizedTicketIds, holderNamesByEnrollment, holderMembersOf };
+/**
+ * What each holder of a JOINT ticket still owes, for the Member Receipt screen and the outstanding reports
+ * (tester sheet rows 27 / 34 / 37). Returns { [enrollmentId]: [{ member_id, name, share_percent, due_amount }] }
+ * (label A, B, … in holder order) and only has an entry for tickets with more than one active holder.
+ *
+ * Same rule the apps use (userService.js): a holder owes `share` of every instalment due by `asOn`; a verified
+ * receipt that names its payer (office receipt `payer_member_id`, or the member who submitted it to a collection
+ * agent) counts in full for that holder only; a receipt with no named payer counts for each holder by share.
+ */
+const holderDuesByEnrollment = async (enrollmentIds, asOn) => {
+  const ids = [...new Set((enrollmentIds || []).filter(Boolean))];
+  if (!ids.length) return {};
+  const enrollments = await Enrollment.findAll({
+    where: { id: { [Op.in]: ids } },
+    attributes: ['id', 'subscriber_id', 'main_holder_share'],
+    include: [
+      { model: Member, as: 'subscriber', attributes: ['id', 'name'] },
+      {
+        model: EnrollmentJointHolder, as: 'joint_holders', required: false, where: { removed_on: null },
+        attributes: ['id', 'member_id', 'share_percent'], include: [{ model: Member, as: 'member', attributes: ['id', 'name'] }]
+      }
+    ]
+  });
+  const jointOnly = enrollments.filter((e) => (e.joint_holders || []).some((j) => j.member));
+  if (!jointOnly.length) return {};
+
+  const installments = await ChitsInstallment.findAll({
+    where: { enrollment_id: { [Op.in]: jointOnly.map((e) => e.id) }, payable_amount: { [Op.gt]: 0 }, due_date: { [Op.lte]: asOn } },
+    attributes: ['id', 'enrollment_id', 'payable_amount'],
+  });
+  const payments = installments.length
+    ? await CustomerPayment.findAll({
+        where: { chits_installment_id: { [Op.in]: installments.map((i) => i.id) }, payment_status: 1 },
+        attributes: ['chits_installment_id', 'received_amount', 'payer_member_id'],
+        include: [{ model: CollectionAgentAmount, as: 'collection_submission', attributes: ['member_id'], required: false }],
+      })
+    : [];
+  const paymentsByInst = new Map();
+  payments.forEach((p) => {
+    if (!paymentsByInst.has(p.chits_installment_id)) paymentsByInst.set(p.chits_installment_id, []);
+    paymentsByInst.get(p.chits_installment_id).push(p);
+  });
+  const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+  const out = {};
+  jointOnly.forEach((e) => {
+    const joint = (e.joint_holders || []).filter((j) => j.member);
+    const jointTotal = joint.reduce((s, j) => s + (parseFloat(j.share_percent) || 0), 0);
+    const mainShare = parseFloat(e.main_holder_share) || Math.max(0, 100 - jointTotal);
+    const holders = [
+      { member_id: Number(e.subscriber_id), name: e.subscriber && e.subscriber.name, share: mainShare },
+      ...joint.map((j) => ({ member_id: Number(j.member.id), name: j.member.name, share: parseFloat(j.share_percent) || 0 })),
+    ].map((h) => ({ ...h, due: 0 }));
+
+    installments.filter((i) => i.enrollment_id === e.id).forEach((i) => {
+      const payable = parseFloat(i.payable_amount) || 0;
+      const pays = paymentsByInst.get(i.id) || [];
+      holders.forEach((h) => {
+        const ratio = h.share / 100;
+        let paid = 0;
+        pays.forEach((p) => {
+          const amt = parseFloat(p.received_amount) || 0;
+          const payer = p.collection_submission ? Number(p.collection_submission.member_id) : (p.payer_member_id ? Number(p.payer_member_id) : null);
+          if (payer == null) paid += amt * ratio; // no named payer: counted by share
+          else if (payer === h.member_id) paid += amt; // named payer: all of it is this holder's
+        });
+        h.due += Math.max(0, payable * ratio - paid);
+      });
+    });
+    // `label` is the holder's letter on the ticket (A = main holder), kept even when a paid holder is left out later.
+    out[e.id] = holders.map((h, i) => ({ label: String.fromCharCode(65 + i), member_id: h.member_id, name: h.name, share_percent: h.share, due_amount: round2(h.due) }));
+  });
+  return out;
+};
+
+module.exports = { ticketHolderIds, memberTicketsInGroup, ticketWin, isTicketPrized, prizedTicketIds, holderNamesByEnrollment, holderMembersOf, holderDuesByEnrollment };

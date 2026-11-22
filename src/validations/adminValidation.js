@@ -1044,6 +1044,12 @@ module.exports = {
     sort: txv.sortDirection()
   }).custom(txv.newListKeysRule(['date_from', 'date_to', 'sort'], 5000)),
 
+  // Auction Progress (sheet row 36): optional group filter and name search; the company is read from the token.
+  getAuctionProgressSchema: Joi.object({
+    group_id: Joi.string().uuid().allow('', null).optional(),
+    search: Joi.string().max(100).allow('', null).optional()
+  }),
+
   deleteAuctionSchema: Joi.object({
     id: Joi.string().uuid().required(),
     company_id: Joi.string().uuid().allow('', null).optional()
@@ -1493,7 +1499,9 @@ module.exports = {
     bank_account_id: Joi.number().integer().allow(null).optional(),
     cheque_number: Joi.string().trim().max(255).allow('', null).optional(),
     cheque_date: Joi.date().iso().allow('', null).optional(),
-    narration: Joi.string().trim().max(1000).allow('', null).optional()
+    narration: Joi.string().trim().max(1000).allow('', null).optional(),
+    // Joint tickets (sheet row 27): the holder (members.id) who is paying; checked against the ticket's holders.
+    payer_member_id: Joi.number().integer().allow(null).optional()
   }),
   getMemberDocumentsAdminSchema: Joi.object({
     group_id: Joi.string().uuid().required(),
@@ -1709,6 +1717,23 @@ module.exports = {
     status: Joi.number().integer().valid(0, 1).required().messages({
       'any.required': 'Status is required'
     })
+  }),
+  // Split bid payment (sheet row 42): a cash part and a cheque part of one prize, saved together.
+  storePrizeSplitSchema: Joi.object({
+    enrollment_id: Joi.number().integer().required(),
+    payment_date: Joi.string().isoDate().required(),
+    narration: Joi.string().allow(null, '').optional(),
+    override_reason: Joi.string().allow('', null).optional(),
+    cash: Joi.object({
+      account_id: Joi.number().integer().required(),
+      amount: Joi.number().positive().precision(2).required()
+    }).required(),
+    cheque: Joi.object({
+      account_id: Joi.number().integer().required(),
+      amount: Joi.number().positive().precision(2).required(),
+      cheque_number: Joi.string().trim().max(255).required(),
+      cheque_date: Joi.string().isoDate().required()
+    }).required()
   }),
   storeOrUpdatePrizePaymentSchema: Joi.object({
     id: Joi.number().optional(),

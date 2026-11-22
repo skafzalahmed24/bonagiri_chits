@@ -43,6 +43,17 @@ async function storeOrUpdate(req, res) {
   }
 }
 
+// Split bid payment (sheet row 42): the cash part and the cheque part are saved together or not at all.
+async function storeSplit(req, res) {
+  try {
+    const companyId = await adminService.resolveCompanyIdForAuth(req.user);
+    const result = await prizePaymentService.storeSplit({ ...req.body, companyId, user: req.user });
+    return successResponse(res, statusCodes.OK, 'Success', result);
+  } catch (error) {
+    return res.status(statusCodes.BAD_REQUEST).json({ status: 0, message: error.message, code: error.code });
+  }
+}
+
 async function getAll(req, res) {
   try {
     const companyId = await adminService.resolveCompanyIdForAuth(req.user);
@@ -129,6 +140,7 @@ module.exports = {
   getPosition,
   advancePosition,
   storeOrUpdate,
+  storeSplit,
   getAll,
   getById,
   deletePayment,

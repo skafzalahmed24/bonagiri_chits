@@ -181,7 +181,8 @@ router.post('/suit-file-information/delete', authMiddleware.authenticateToken, a
 // auction routes
 router.post('/auction/store-or-update', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AUCTIONS), validate(adminValidation.auctionValidator), adminController.storeOrUpdateAuction);
 router.post('/auction/get-all', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AUCTIONS), validate(adminValidation.getAllAuctionsSchema), adminController.getAllAuctions);
-router.post('/auction/delete', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AUCTIONS), validate(adminValidation.deleteAuctionSchema), adminController.deleteAuction);
+router.post('/auction/progress', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AUCTIONS), validate(adminValidation.getAuctionProgressSchema), adminController.getAuctionProgress);
+router.post('/auction/delete',authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AUCTIONS), validate(adminValidation.deleteAuctionSchema), adminController.deleteAuction);
 
 // agent by type routes
 router.post('/agent/get-by-type', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.T_AGENT_SETUP), validate(adminValidation.getAgentTargetSchema), adminController.getAgentByAgentType);
@@ -447,7 +448,9 @@ router.post('/reports/fdr-statement', authMiddleware.authenticateToken, authMidd
 router.post('/reports/agent-targets', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_AGENT_TARGETS), reportController.getAgentTargetReport);
 router.post('/reports/advance-register', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.R_ADV_ADJUSTMENTS), reportController.getAdvanceRegister);
 router.post('/reports/subscriber-ledger', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.C_SUB_LEDGER, MODULES.E_GROUP]), reportController.getSubscriberLedger);
-router.post('/reports/account-copy', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_MEMBER_ACC_RECEIPT, MODULES.R_MEMBER_ACC_CRDR]), reportController.getAccountCopy);
+// Member Account report (tester sheet row 41): its own module, and anyone who can open the Account Copy reports it grows from.
+router.post('/reports/member-account', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_MEMBER_ACCOUNT, MODULES.R_MEMBER_ACC_RECEIPT, MODULES.R_MEMBER_ACC_CRDR]), reportController.getMemberAccount);
+router.post('/reports/account-copy',authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_MEMBER_ACC_RECEIPT, MODULES.R_MEMBER_ACC_CRDR]), reportController.getAccountCopy);
 router.post('/reports/subscribers', authMiddleware.authenticateToken, authMiddleware.requireAnyPermission([MODULES.R_SUBSCRIBERS_LIST, MODULES.R_PERSONS_REPORT, MODULES.E_GROUP, MODULES.T_SURETY_ENTRY]), reportController.getSubscriberRegister);
 // Points at likely duplicate members; never merges anything.
 router.post('/reports/repeated-persons', authMiddleware.authenticateToken, authMiddleware.requirePermission(MODULES.U_REPEATED_PERSONS), reportController.getRepeatedPersons);
@@ -474,6 +477,7 @@ router.post('/prize-payment/ticket-search', authMiddleware.authenticateToken, pr
 router.post('/prize-payment/position', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.getPosition);
 router.post('/prize-payment/advance-position', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.advancePosition);
 router.post('/prize-payment/store-or-update', authMiddleware.authenticateToken, prizePaymentPermission, validate(adminValidation.storeOrUpdatePrizePaymentSchema), prizePaymentController.storeOrUpdate);
+router.post('/prize-payment/store-split', authMiddleware.authenticateToken, prizePaymentPermission, validate(adminValidation.storePrizeSplitSchema), prizePaymentController.storeSplit);
 router.post('/prize-payment/get-all', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.getAll);
 router.post('/prize-payment/get-by-id', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.getById);
 router.post('/prize-payment/delete', authMiddleware.authenticateToken, prizePaymentPermission, prizePaymentController.deletePayment);

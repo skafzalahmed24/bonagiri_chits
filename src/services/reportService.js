@@ -28,7 +28,7 @@ const {
 } = require('../models');
 const { getGroupStartDate } = require('./adminService');
 const { Op } = require('sequelize');
-const { prizedTicketIds, holderNamesByEnrollment } = require('../utils/jointHolders');
+const { prizedTicketIds, holderNamesByEnrollment, holderDuesByEnrollment } = require('../utils/jointHolders');
 
 // CustomerPayment has no company_id column; scope it through installment -> enrollment.
 const companyPaymentInclude = (company_id) => [{
@@ -856,6 +856,9 @@ class ReportService {
 
     // Prized = the ticket has won an auction (a joint ticket is prized whichever holder bid).
     const holderNames = await holderNamesByEnrollment(enrollments.map((e) => e.id));
+    // Joint tickets (sheet rows 34 / 37): what each holder still owes. A holder who has paid their whole share
+    // is left out, so only the holders who still owe are named, each with their own amount.
+    const holderDues = await holderDuesByEnrollment(enrollmentIds, asOn);
 
     const bucketOf = (e) => {
       const key = e.group_id + ':' + e.subscriber_id;
@@ -909,7 +912,10 @@ class ReportService {
         bucket.membersMap[mk] = {
           enrollment_id: e.id,
           member_id: e.subscriber.id,
-          name: holderNames[e.id] || e.subscriber.name,
+          name: (holderDues[e.id] && holderDues[e.id].some((h) => h.due_amount > 0.005))
+            ? holderDues[e.id].filter((h) => h.due_amount > 0.005).map((h) => h.name).join(' & ')
+            : (holderNames[e.id] || e.subscriber.name),
+          ...(holderDues[e.id] ? { holders: holderDues[e.id].filter((h) => h.due_amount > 0.005) } : {}),
           member_code: e.subscriber.member_id,
           mobile_number: e.subscriber.mobile_number,
           group_name: (e.group && e.group.group_name) || '',
@@ -1663,6 +1669,148 @@ class ReportService {
         paid: credits,
         penalty_paid: round2(receipts.reduce((s, r) => s + r.penalty, 0)),
         balance: round2(debits - credits), // positive = member owes; negative = paid ahead
+      },
+    };
+  }
+
+
+  /**
+   * Member Account (tester sheet row 41): one member, several tickets, as on a date.
+   *   1. Member details.  2. Chit accounts and instalment status (one row per selected ticket).
+   *   3. Receipt-wise details for the selected tickets up to and including the date.
+   * `enrollment_ids` narrows the tickets; empty/omitted = all of the member's tickets (Running, Completed
+   * and Upcoming alike). Paid amounts, balances and instalment status are as on `as_on_date`.
+   */
+  async getMemberAccount({ member_id, enrollment_ids, as_on_date, company_id }) {
+    const { penaltyOwed } = require('./installmentBalanceHelper');
+    const asOn = as_on_date || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const round2 = (n) => parseFloat(Number(n || 0).toFixed(2));
+    const MODE = { 1: 'Cash', 2: 'UPI', 3: 'Cheque', 4: 'Bank', 5: 'Mixed', 6: 'From Advance' };
+    const GROUP_STATUS = { 0: 'Upcoming', 1: 'Running', 2: 'Completed' };
+    const dateStr = (d) => (d ? String(d).slice(0, 10) : null);
+
+    const member = await Member.findOne({
+      where: { id: member_id, company_id },
+      attributes: ['id', 'name', 'member_id', 'mobile_number'],
+    });
+    if (!member) throw new Error('Member not found');
+
+    const enrollments = await Enrollment.findAll({
+      where: { company_id, subscriber_id: member.id, delete_status: 0 },
+      include: [{ model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'chits_group_status', 'chit_start_date', 'commencement_date', 'chit_end_date'], required: true }],
+      order: [['enrollment_date', 'ASC'], ['id', 'ASC']],
+    });
+    const tickets = enrollments.map((e) => ({
+      enrollment_id: e.id,
+      group_name: e.group.group_name,
+      ticket_number: e.group_position_number,
+      group_status: GROUP_STATUS[Number(e.group.chits_group_status)] || 'Running',
+    }));
+
+    const wanted = Array.isArray(enrollment_ids) && enrollment_ids.length ? new Set(enrollment_ids.map(String)) : null;
+    const chosen = wanted ? enrollments.filter((e) => wanted.has(String(e.id))) : enrollments;
+    const base = {
+      as_on_date: asOn,
+      member: { id: member.id, name: member.name, member_code: member.member_id, mobile_number: member.mobile_number || '' },
+      tickets,
+    };
+    if (chosen.length === 0) {
+      return { ...base, accounts: [], receipts: [], summary: { total_paid: 0, outstanding: 0, penalty: 0, current_payable: 0 } };
+    }
+
+    const installments = await ChitsInstallment.findAll({
+      where: { enrollment_id: { [Op.in]: chosen.map((e) => e.id) } },
+      order: [['installment_no', 'ASC']],
+    });
+    const payments = installments.length
+      ? await CustomerPayment.findAll({
+          where: { chits_installment_id: { [Op.in]: installments.map((i) => i.id) }, payment_status: 1, payment_date: { [Op.lte]: asOn } },
+          order: [['payment_date', 'ASC'], ['createdAt', 'ASC']],
+        })
+      : [];
+    const wonRows = await Auction.findAll({
+      where: { company_id, group_id: { [Op.in]: [...new Set(chosen.map((e) => e.group_id))] } },
+      attributes: ['group_id', 'ticket_number'],
+      raw: true,
+    });
+    const won = new Set(wonRows.map((a) => `${a.group_id}:${a.ticket_number}`));
+
+    const instByEnrollment = new Map();
+    installments.forEach((i) => {
+      if (!instByEnrollment.has(i.enrollment_id)) instByEnrollment.set(i.enrollment_id, []);
+      instByEnrollment.get(i.enrollment_id).push(i);
+    });
+    const paidByInst = new Map();
+    const penaltyPaidByInst = new Map();
+    payments.forEach((p) => {
+      paidByInst.set(p.chits_installment_id, round2((paidByInst.get(p.chits_installment_id) || 0) + (parseFloat(p.received_amount) || 0)));
+      penaltyPaidByInst.set(p.chits_installment_id, round2((penaltyPaidByInst.get(p.chits_installment_id) || 0) + (parseFloat(p.penalty_paid) || 0)));
+    });
+
+    const accounts = chosen.map((e) => {
+      const list = instByEnrollment.get(e.id) || [];
+      const due = list.filter((i) => dateStr(i.due_date) <= asOn);
+      let paidCount = 0; let pendingAmount = 0; let paidAmount = 0; let penalty = 0;
+      list.forEach((i) => { paidAmount = round2(paidAmount + (paidByInst.get(i.id) || 0)); });
+      due.forEach((i) => {
+        const payable = round2(i.payable_amount);
+        const paid = paidByInst.get(i.id) || 0;
+        if (paid + 0.005 >= payable) paidCount += 1;
+        else pendingAmount = round2(pendingAmount + (payable - paid));
+        penalty = round2(penalty + penaltyOwed(i.penalty_amount, penaltyPaidByInst.get(i.id) || 0));
+      });
+      // Next due date / monthly due come from the chit schedule: the first instalment on or after the date.
+      const upcoming = list.find((i) => dateStr(i.due_date) >= asOn) || null;
+      const monthlyRef = upcoming || list[list.length - 1] || null;
+      const g = e.group;
+      return {
+        enrollment_id: e.id,
+        group_name: g.group_name,
+        ticket_number: e.group_position_number,
+        group_status: GROUP_STATUS[Number(g.chits_group_status)] || 'Running',
+        chit_value: round2(g.chit_amount),
+        duration_months: g.no_of_installments,
+        monthly_due: monthlyRef ? round2(monthlyRef.payable_amount) : 0,
+        won_status: won.has(`${e.group_id}:${e.group_position_number}`) ? 'Won' : 'Not Won',
+        installments_due: due.length,
+        installments_paid: paidCount,
+        installments_pending: due.length - paidCount,
+        next_due_date: upcoming ? dateStr(upcoming.due_date) : null,
+        start_date: dateStr(g.commencement_date || g.chit_start_date),
+        end_date: dateStr(g.chit_end_date) || (list.length ? dateStr(list[list.length - 1].due_date) : null),
+        paid_amount: paidAmount,
+        pending_amount: pendingAmount,
+        penalty,
+        total_payable: round2(pendingAmount + penalty),
+      };
+    });
+
+    const labelOf = new Map(chosen.map((e) => [e.id, `${e.group.group_name} / #${e.group_position_number}`]));
+    const instInfo = new Map(installments.map((i) => [i.id, { no: i.installment_no, enrollment_id: i.enrollment_id }]));
+    const receipts = payments.map((p) => {
+      const info = instInfo.get(p.chits_installment_id) || {};
+      return {
+        id: p.id,
+        receipt_number: p.receipt_number || '',
+        date: dateStr(p.payment_date),
+        group_ticket: labelOf.get(info.enrollment_id) || '',
+        installment_no: info.no ?? null,
+        mode: MODE[Number(p.payment_mode)] || 'Other',
+        source: p.collection_agent_amount_id ? 'Agent' : 'Office',
+        paid_amount: round2((parseFloat(p.received_amount) || 0) + (parseFloat(p.penalty_paid) || 0)),
+      };
+    });
+
+    const sum = (k) => round2(accounts.reduce((s, a) => s + a[k], 0));
+    return {
+      ...base,
+      accounts,
+      receipts,
+      summary: {
+        total_paid: sum('paid_amount'),
+        outstanding: sum('pending_amount'),
+        penalty: sum('penalty'),
+        current_payable: sum('total_payable'),
       },
     };
   }

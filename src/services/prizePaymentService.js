@@ -180,7 +180,11 @@ async function nextVoucherNumber(companyId, type, date, transaction) {
 }
 
 async function ticketSearch({ companyId, search, purpose, group_id }) {
-  if (!search || search.length < 2) throw new Error('Search string must be at least 2 characters.');
+  // Sheet row 32: with a group and no search text, list every member of that group who has something to
+  // be paid (the "member list after choosing the chit"). A search still needs 2 characters.
+  const listWholeGroup = !!group_id && !(search && String(search).trim());
+  if (!listWholeGroup && (!search || search.length < 2)) throw new Error('Search string must be at least 2 characters.');
+  search = listWholeGroup ? '' : search;
 
   let where = { company_id: companyId, delete_status: 0 };
   if (group_id) where.group_id = group_id;
@@ -200,8 +204,9 @@ async function ticketSearch({ companyId, search, purpose, group_id }) {
     const names = hInfos[en.id] || en.subscriber?.name || '';
     const searchLow = search.toLowerCase();
     
-    if (names.toLowerCase().includes(searchLow) || 
-        (en.subscriber?.mobile_number && en.subscriber.mobile_number.includes(search)) || 
+    if (listWholeGroup ||
+        names.toLowerCase().includes(searchLow) ||
+        (en.subscriber?.mobile_number && en.subscriber.mobile_number.includes(search)) ||
         en.group_position_number.toString() === search) {
       
       try {
@@ -230,9 +235,10 @@ async function ticketSearch({ companyId, search, purpose, group_id }) {
         // Skip company chits etc.
       }
     }
-    if (matchingEnrolls.length >= 20) break;
+    if (matchingEnrolls.length >= (listWholeGroup ? 200 : 20)) break;
   }
 
+  if (listWholeGroup) matchingEnrolls.sort((a, b) => Number(a.ticket_number) - Number(b.ticket_number));
   return matchingEnrolls;
 }
 
@@ -247,9 +253,10 @@ async function getMemberStatus(enrollmentId) {
   const balances = await getInstallmentsBalancesBatch(installments.map(i => i.id));
   
   let dues = 0;
+  let pendingMonths = 0;
   let paidUpTo = null;
   let currentInstallment = 0;
-  
+
   for (const inst of installments) {
     currentInstallment = Math.max(currentInstallment, inst.installment_no);
     const payable = round2(inst.payable_amount);
@@ -257,12 +264,13 @@ async function getMemberStatus(enrollmentId) {
     const due = round2(payable - paid);
     if (due > 0) {
       dues += due;
+      pendingMonths += 1; // each instalment due up to today that is not fully paid (partly paid counts)
     } else {
       const d = new Date(inst.due_date);
       paidUpTo = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     }
   }
-  return { current_installment: currentInstallment, dues: round2(dues), paid_up_to: paidUpTo };
+  return { current_installment: currentInstallment, dues: round2(dues), pending_months: pendingMonths, paid_up_to: paidUpTo };
 }
 
 async function getPosition({ companyId, auctionId, groupId, ticketNumber, paymentId, auction_id, group_id, ticket_number, payment_id }) {
@@ -392,14 +400,16 @@ async function advancePositionEndpoint({ companyId, enrollmentId, groupId, ticke
   };
 }
 
-async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollment_id, payment_date, account_id, payment_mode, amount, cheque_number, cheque_date, reference_no, narration, user, override_reason }) {
+// `_tx` / `_split` are internal (used by storeSplit): with `_tx` the payment is saved inside the caller's transaction
+// and the caller commits; with `_split` it is stamped as one part of a split payment (sheet row 42).
+async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollment_id, payment_date, account_id, payment_mode, amount, cheque_number, cheque_date, reference_no, narration, user, override_reason, _tx = null, _split = null }) {
   // Staff need the module for this kind of payment: Bid Payments (types 1, 3) or Bid Advance (type 2).
   if (user && user.role === 'staff') {
     const needed = payment_type === 2 ? 'T_BID_ADVANCE' : 'T_BID_PAYMENTS';
     if (!staffCanView(user.permissions, needed)) throw new Error(`You don't have permission for ${payment_type === 2 ? 'bid advances' : 'bid payments'}.`);
   }
   const byName = await userDisplayName(user);
-  return await db.sequelize.transaction(async (transaction) => {
+  const runInTx = async (transaction) => {
     const { enrollment, group, win } = await loadTicket({ companyId, enrollmentId: enrollment_id, transaction });
     
     let limit = 0;
@@ -410,6 +420,8 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
       oldPayment = await PrizePayment.findOne({ where: { id, company_id: companyId, is_deleted: 0 }, transaction });
       if (!oldPayment || oldPayment.enrollment_id !== enrollment.id) throw new Error('Not found.');
       if (oldPayment.payment_type !== payment_type) throw new Error('Payment type cannot be changed.');
+      // Phase 2 (tester, row 42): a saved split payment is not edited; cancel it (both parts) and enter it again.
+      if (oldPayment.split_group_id) throw new Error('A split payment cannot be edited. Delete it (both parts) and enter it again.');
     }
     // Transaction Lock Days (docs/MONEY_FLOW_BATCH2_3.md §2.3). Opening paid records prizes paid
     // before the app, so it is old-dated by nature and exempt.
@@ -542,7 +554,9 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
         narration: narration || null,
         created_by_id: user.id,
         created_by_role: user.role,
-        created_by_name: byName
+        created_by_name: byName,
+        split_group_id: _split ? _split.groupId : null,
+        split_part: _split ? _split.part : null
       }, { transaction });
     }
 
@@ -553,7 +567,10 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
     }
 
     return payment;
-  }).then(async (payment) => {
+  };
+  // Inside a caller's transaction (split): the caller commits and builds the answer.
+  if (_tx) return { payment: await runInTx(_tx) };
+  return await db.sequelize.transaction(runInTx).then(async (payment) => {
     if ((payment_type === 1 || payment_type === 2) && !id) {
       try {
         const holderMems = await holderMembersOf([enrollment.id]);
@@ -588,6 +605,26 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
       return { payment, position: pos.position };
     }
   });
+}
+
+/**
+ * Split bid payment (tester sheet row 42): one prize paid as a cash part plus a cheque part, saved together. Both
+ * parts are written inside ONE transaction, so either both exist or neither does (a failure on the second part
+ * leaves nothing behind). They share a split_group_id; the list shows them as one row and Delete removes both.
+ */
+async function storeSplit({ companyId, enrollment_id, payment_date, narration, override_reason, user, cash, cheque }) {
+  if (!cash || !cheque) throw new Error('A split payment needs a cash part and a cheque part.');
+  if (!(Number(cash.amount) > 0) || !(Number(cheque.amount) > 0)) throw new Error('Both parts need an amount above 0.');
+  const groupId = require('crypto').randomUUID();
+  const common = { companyId, payment_type: 1, enrollment_id, payment_date, narration, override_reason, user };
+  let first = null;
+  let second = null;
+  await db.sequelize.transaction(async (transaction) => {
+    first = (await storeOrUpdate({ ...common, ...cash, payment_mode: 1, cheque_number: null, cheque_date: null, _tx: transaction, _split: { groupId, part: 1 } })).payment;
+    second = (await storeOrUpdate({ ...common, ...cheque, payment_mode: 3, _tx: transaction, _split: { groupId, part: 2 } })).payment;
+  });
+  const pos = await getPosition({ companyId, auctionId: first.auction_id });
+  return { payment: second, payments: [first, second], split_group_id: groupId, position: pos.position };
 }
 
 // `sort` is optional (3-BE1, additive): 'asc' = oldest payment date first, then voucher number;
@@ -631,8 +668,11 @@ async function getAll({ companyId, payment_types, from_date, to_date, group_id, 
   const offset = min || 0;
   const limit = (max && min !== undefined) ? (max - min + 1) : 100;
 
+  // Split payments (sheet row 42): the list shows one row per split, the first (cash) part carrying both. The
+  // totals below keep using `where`, so they still add up both parts.
+  const pageWhere = { ...where, [Sequelize.Op.and]: [{ [Sequelize.Op.or]: [{ split_part: null }, { split_part: 1 }] }] };
   const { rows, count } = await PrizePayment.findAndCountAll({
-    where,
+    where: pageWhere,
     include,
     order: sortDir === 'asc'
       ? [['payment_date', 'ASC'], ['voucher_number', 'ASC'], ['createdAt', 'ASC']]
@@ -661,8 +701,24 @@ async function getAll({ companyId, payment_types, from_date, to_date, group_id, 
   // Holder names for every row of the page in ONE lookup (3-BE1; it was one query per row). Same
   // function, same names; this also serves the Bid Payment register, which calls getAll in-process.
   const holderNames = await holderNamesByEnrollment(rows.map((r) => r.enrollment_id));
+  const splitIds = [...new Set(rows.map((r) => r.split_group_id).filter(Boolean))];
+  const secondParts = splitIds.length
+    ? await PrizePayment.findAll({
+        where: { company_id: companyId, split_group_id: { [Sequelize.Op.in]: splitIds }, split_part: 2, is_deleted: 0 },
+        include: [{ model: PaymentAccount, as: 'account', attributes: ['id', 'name', 'account_type'] }]
+      })
+    : [];
+  const secondByGroup = new Map(secondParts.map((x) => [x.split_group_id, x]));
+  const partOf = (x) => ({
+    id: x.id, voucher_number: x.voucher_number, amount: Number(x.amount), payment_mode: x.payment_mode,
+    cheque_number: x.cheque_number || null, cheque_date: x.cheque_date || null, account_name: x.account ? x.account.name : null
+  });
   const formattedRows = rows.map((r) => {
     const p = r.toJSON();
+    if (r.split_group_id && secondByGroup.has(r.split_group_id)) {
+      const parts = [partOf(r), partOf(secondByGroup.get(r.split_group_id))];
+      p.split = { group_id: r.split_group_id, total_amount: round2(parts.reduce((a, x) => a + x.amount, 0)), parts };
+    }
     p.ticket_number = p.enrollment?.group_position_number;
     p.member_name = p.member?.name;
     p.holder_names = holderNames[r.enrollment_id] || p.member_name;
@@ -803,8 +859,14 @@ async function deletePayment({ companyId, id, reason, user, override_reason }) {
   if (!reason || reason.length < 3) throw new Error('Delete reason must be at least 3 characters.');
 
   await db.sequelize.transaction(async (transaction) => {
-    const payment = await PrizePayment.findOne({ where: { id, company_id: companyId, is_deleted: 0 }, transaction });
-    if (!payment) throw new Error('Not found.');
+    const target = await PrizePayment.findOne({ where: { id, company_id: companyId, is_deleted: 0 }, transaction });
+    if (!target) throw new Error('Not found.');
+    // A split payment is removed as a whole (sheet row 42): every live part, in this one transaction, so a
+    // failure on any part leaves all parts as they were.
+    const parts = target.split_group_id
+      ? await PrizePayment.findAll({ where: { company_id: companyId, split_group_id: target.split_group_id, is_deleted: 0 }, order: [['split_part', 'ASC']], transaction })
+      : [target];
+    for (const payment of parts) {
     if (payment.payment_type !== 3) {
       await enforceLock({ companyId, user, entity: 'prize_payment', entityId: payment.id, action: 'cancel', dates: [payment.payment_date], overrideReason: override_reason, transaction });
     }
@@ -839,6 +901,7 @@ async function deletePayment({ companyId, id, reason, user, override_reason }) {
     } else {
       const { win } = await loadTicket({ companyId, enrollmentId: payment.enrollment_id, transaction });
       if (win) await recalcPrizeTotals(win.id, transaction);
+    }
     }
   });
 }
@@ -1087,6 +1150,7 @@ async function reverseAdjustment({ companyId, customer_payment_id, reason, user 
 }
 
 module.exports = {
+  storeSplit,
   recalcPrizeTotals,
   ticketSearch,
   getPosition,
