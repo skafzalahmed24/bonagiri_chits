@@ -29,6 +29,7 @@ const {
 const { getGroupStartDate } = require('./adminService');
 const { Op } = require('sequelize');
 const { prizedTicketIds, holderNamesByEnrollment, holderDuesByEnrollment } = require('../utils/jointHolders');
+const { lastInstalmentDate } = require('../utils/schemeHelpers');
 
 // CustomerPayment has no company_id column; scope it through installment -> enrollment.
 const companyPaymentInclude = (company_id) => [{
@@ -779,7 +780,7 @@ class ReportService {
         { model: Member, as: 'subscriber', attributes: ['id', 'name', 'member_id', 'mobile_number', 'group_status'] },
         { model: Member, as: 'collection_agent', attributes: ['id', 'name'], required: false },
         { model: Member, as: 'business_agent', attributes: ['id', 'name'], required: false },
-        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount'], required: true, where: groupStatusWhere },
+        { model: ChitsGroup, as: 'group', attributes: ['id', 'group_name', 'chit_amount', 'no_of_installments', 'commencement_date', 'chit_start_date', 'chit_end_date', 'due_date_number_count'], required: true, where: groupStatusWhere },
         {
           model: Area, as: 'area', attributes: ['id', 'area_name', 'route_id'], required: false,
           include: [{ model: Route, as: 'route', attributes: ['id', 'route_name'], required: false }],
@@ -882,6 +883,7 @@ class ReportService {
     };
 
     const enrollmentById = scoped.reduce((acc, e) => { acc[e.id] = e; return acc; }, {});
+    const dueAgg = {};
     const buckets = {};
     const membersSeen = new Set();
     let grandTotal = 0;
@@ -892,6 +894,13 @@ class ReportService {
 
       const payable = parseFloat(inst.payable_amount) || 0;
       const pending = Math.max(0, payable - (paidByInstallment[inst.id] || 0));
+      // Instalment status for the Group-wise report (sheet rows 34 / 37): every instalment due by the date counts,
+      // paid ones too, so "4/20 Completed, 2 Paid, 2 Pending" can be shown.
+      const agg = dueAgg[inst.enrollment_id] || (dueAgg[inst.enrollment_id] = { due: 0, paid: 0, chit: 0, paidAmt: 0 });
+      agg.due += 1;
+      agg.chit += payable;
+      agg.paidAmt += payable - pending;
+      if (pending <= 0) agg.paid += 1;
       if (pending <= 0) return;
 
       // Penalty still owed: what the instalment carries, less any penalty already paid on it.
@@ -933,6 +942,10 @@ class ReportService {
           first_installment_no: null,
           last_installment_no: null,
           oldest_due_date: inst.due_date,
+          total_installments: parseInt(e.group && e.group.no_of_installments, 10) || 0,
+          chit_start_date: (e.group && (e.group.commencement_date || e.group.chit_start_date)) || null,
+          chit_end_date: (e.group && (e.group.chit_end_date
+            || lastInstalmentDate(String(e.group.commencement_date || e.group.chit_start_date || '').slice(0, 10), e.group.no_of_installments, e.group.due_date_number_count))) || null,
         };
       }
       const m = bucket.membersMap[mk];
@@ -984,6 +997,13 @@ class ReportService {
           members_count: membersList.length,
           members: membersList
             .map((m) => Object.assign({}, m, {
+              // Group-wise report columns (sheet rows 34 / 37), all additive.
+              installments_due: (dueAgg[m.enrollment_id] || {}).due || 0,
+              installments_paid: (dueAgg[m.enrollment_id] || {}).paid || 0,
+              installments_pending: ((dueAgg[m.enrollment_id] || {}).due || 0) - ((dueAgg[m.enrollment_id] || {}).paid || 0),
+              chit_amount: round2((dueAgg[m.enrollment_id] || {}).chit || 0),
+              paid_amount: round2((dueAgg[m.enrollment_id] || {}).paidAmt || 0),
+              total_payable: round2(m.outstanding_amount + m.penalty_amount),
               outstanding_amount: round2(m.outstanding_amount),
               current_due: round2(m.current_due),
               previous_due: round2(m.previous_due),

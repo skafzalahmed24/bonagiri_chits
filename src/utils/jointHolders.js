@@ -155,12 +155,12 @@ const holderDuesByEnrollment = async (enrollmentIds, asOn) => {
 
   const installments = await ChitsInstallment.findAll({
     where: { enrollment_id: { [Op.in]: jointOnly.map((e) => e.id) }, payable_amount: { [Op.gt]: 0 }, due_date: { [Op.lte]: asOn } },
-    attributes: ['id', 'enrollment_id', 'payable_amount'],
+    attributes: ['id', 'enrollment_id', 'payable_amount', 'penalty_amount'],
   });
   const payments = installments.length
     ? await CustomerPayment.findAll({
         where: { chits_installment_id: { [Op.in]: installments.map((i) => i.id) }, payment_status: 1 },
-        attributes: ['chits_installment_id', 'received_amount', 'payer_member_id'],
+        attributes: ['chits_installment_id', 'received_amount', 'penalty_paid', 'payer_member_id'],
         include: [{ model: CollectionAgentAmount, as: 'collection_submission', attributes: ['member_id'], required: false }],
       })
     : [];
@@ -179,25 +179,43 @@ const holderDuesByEnrollment = async (enrollmentIds, asOn) => {
     const holders = [
       { member_id: Number(e.subscriber_id), name: e.subscriber && e.subscriber.name, share: mainShare },
       ...joint.map((j) => ({ member_id: Number(j.member.id), name: j.member.name, share: parseFloat(j.share_percent) || 0 })),
-    ].map((h) => ({ ...h, due: 0 }));
+    ].map((h) => ({ ...h, due: 0, penalty: 0, chit: 0, due_count: 0, paid_count: 0 }));
 
     installments.filter((i) => i.enrollment_id === e.id).forEach((i) => {
       const payable = parseFloat(i.payable_amount) || 0;
+      const penaltyOnInst = parseFloat(i.penalty_amount) || 0;
       const pays = paymentsByInst.get(i.id) || [];
       holders.forEach((h) => {
         const ratio = h.share / 100;
         let paid = 0;
+        let penaltyPaid = 0;
         pays.forEach((p) => {
           const amt = parseFloat(p.received_amount) || 0;
+          const pen = parseFloat(p.penalty_paid) || 0;
           const payer = p.collection_submission ? Number(p.collection_submission.member_id) : (p.payer_member_id ? Number(p.payer_member_id) : null);
-          if (payer == null) paid += amt * ratio; // no named payer: counted by share
-          else if (payer === h.member_id) paid += amt; // named payer: all of it is this holder's
+          if (payer == null) { paid += amt * ratio; penaltyPaid += pen * ratio; } // no named payer: counted by share
+          else if (payer === h.member_id) { paid += amt; penaltyPaid += pen; } // named payer: all of it is this holder's
         });
-        h.due += Math.max(0, payable * ratio - paid);
+        const dueI = Math.max(0, payable * ratio - paid);
+        h.due += dueI;
+        h.chit += payable * ratio;
+        h.penalty += Math.max(0, penaltyOnInst * ratio - penaltyPaid);
+        h.due_count += 1;
+        if (dueI <= 0.005) h.paid_count += 1;
       });
     });
     // `label` is the holder's letter on the ticket (A = main holder), kept even when a paid holder is left out later.
-    out[e.id] = holders.map((h, i) => ({ label: String.fromCharCode(65 + i), member_id: h.member_id, name: h.name, share_percent: h.share, due_amount: round2(h.due) }));
+    // penalty_amount / chit_amount / paid_amount / instalments_* are additive (sheet rows 27, 34, 37): the holder's own
+    // penalty still owed, instalments due by `asOn`, what they paid, and how many of those instalments are paid or pending.
+    out[e.id] = holders.map((h, i) => ({
+      label: String.fromCharCode(65 + i), member_id: h.member_id, name: h.name, share_percent: h.share, due_amount: round2(h.due),
+      penalty_amount: round2(h.penalty),
+      chit_amount: round2(h.chit),
+      paid_amount: round2(Math.max(0, h.chit - h.due)),
+      installments_due: h.due_count,
+      installments_paid: h.paid_count,
+      installments_pending: h.due_count - h.paid_count,
+    }));
   });
   return out;
 };

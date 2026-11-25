@@ -244,8 +244,13 @@ async function ticketSearch({ companyId, search, purpose, group_id }) {
 
 async function getMemberStatus(enrollmentId) {
   const { ChitsInstallment } = require('../models');
+  // "Due up to today" is the business date, like every other screen (it equals the real date unless the system
+  // test tool has moved it). The real clock made Pending Months and Current Installment stick at month 1 (sheet row 33).
+  const SystemSettingsService = require('./systemSettingsService');
+  const bd = await SystemSettingsService.getBusinessDate();
+  const today = `${bd.getFullYear()}-${String(bd.getMonth() + 1).padStart(2, '0')}-${String(bd.getDate()).padStart(2, '0')}`;
   const installments = await ChitsInstallment.findAll({
-    where: { enrollment_id: enrollmentId, due_date: { [Sequelize.Op.lte]: new Date() } },
+    where: { enrollment_id: enrollmentId, due_date: { [Sequelize.Op.lte]: today } },
     order: [['installment_no', 'ASC']]
   });
   
@@ -409,8 +414,10 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
     if (!staffCanView(user.permissions, needed)) throw new Error(`You don't have permission for ${payment_type === 2 ? 'bid advances' : 'bid payments'}.`);
   }
   const byName = await userDisplayName(user);
+  let loadedTicket = null;
   const runInTx = async (transaction) => {
     const { enrollment, group, win } = await loadTicket({ companyId, enrollmentId: enrollment_id, transaction });
+    loadedTicket = { enrollment, group, win };
     
     let limit = 0;
     let oldPayment = null;
@@ -573,7 +580,9 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
   return await db.sequelize.transaction(runInTx).then(async (payment) => {
     if ((payment_type === 1 || payment_type === 2) && !id) {
       try {
-        const holderMems = await holderMembersOf([enrollment.id]);
+        const { enrollment, group, win } = loadedTicket || {};
+        if (enrollment) {
+          const holderMems = await holderMembersOf([enrollment.id]);
         const mLabel = payment_mode === 1 ? 'cash' : payment_mode === 2 ? 'UPI' : payment_mode === 3 ? 'cheque' : 'bank transfer';
         const d = new Date(payment_date);
         const dd = String(d.getDate()).padStart(2, '0');
@@ -591,6 +600,7 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
               `An advance of ₹${amount} against your chit ${group.group_name}, ticket ${enrollment.group_position_number}, has been paid by ${mLabel} on ${dd}/${mm}/${yy}.`,
               { type: 'PRIZE_PAYMENT', group_id: group.id, enrollment_id: enrollment.id }, companyId);
           }
+        }
         }
       } catch (e) {
         console.error('Failed to send push for prize payment:', e);
@@ -612,19 +622,53 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
  * parts are written inside ONE transaction, so either both exist or neither does (a failure on the second part
  * leaves nothing behind). They share a split_group_id; the list shows them as one row and Delete removes both.
  */
-async function storeSplit({ companyId, enrollment_id, payment_date, narration, override_reason, user, cash, cheque }) {
-  if (!cash || !cheque) throw new Error('A split payment needs a cash part and a cheque part.');
-  if (!(Number(cash.amount) > 0) || !(Number(cheque.amount) > 0)) throw new Error('Both parts need an amount above 0.');
+async function storeSplit({ companyId, enrollment_id, payment_date, narration, override_reason, user, cash, cheque, parts }) {
+  // Two shapes: `parts` = any number of accounts, each with its own amount (Cash / Bank / UPI, tester round 3), or the
+  // first release's { cash, cheque }, kept so nothing that already calls it breaks.
+  let list;
+  if (Array.isArray(parts) && parts.length > 0) {
+    list = parts.map((p) => ({ ...p }));
+  } else if (cash && cheque) {
+    list = [
+      { ...cash, payment_mode: 1, cheque_number: null, cheque_date: null },
+      { ...cheque, payment_mode: 3 },
+    ];
+  } else {
+    throw new Error('A split payment needs at least two parts, each with an account and an amount.');
+  }
+  if (list.length < 2) throw new Error('A split payment needs at least two parts.');
+  if (list.some((p) => !(Number(p.amount) > 0))) throw new Error('Every part needs an amount above 0.');
+  const accountIds = list.map((p) => Number(p.account_id));
+  if (new Set(accountIds).size !== accountIds.length) throw new Error('Use each account only once in a split payment.');
+
+  // Each part's mode follows its account (Cash 1, UPI 2); a Bank part says cheque (3) or bank transfer (4).
+  const accounts = await PaymentAccount.findAll({ where: { id: accountIds, company_id: companyId }, attributes: ['id', 'account_type'] });
+  const typeOf = new Map(accounts.map((a) => [Number(a.id), a.account_type]));
+  list.forEach((p) => {
+    const t = typeOf.get(Number(p.account_id));
+    if (!t) throw new Error('Not found.');
+    if (t === 'CASH') { p.payment_mode = 1; p.cheque_number = null; p.cheque_date = null; p.reference_no = null; }
+    else if (t === 'UPI') { p.payment_mode = 2; p.cheque_number = null; p.cheque_date = null; }
+    else if (!(Number(p.payment_mode) === 3 || Number(p.payment_mode) === 4)) throw new Error('Choose cheque or bank transfer for the bank account.');
+  });
+
   const groupId = require('crypto').randomUUID();
   const common = { companyId, payment_type: 1, enrollment_id, payment_date, narration, override_reason, user };
-  let first = null;
-  let second = null;
+  const saved = [];
   await db.sequelize.transaction(async (transaction) => {
-    first = (await storeOrUpdate({ ...common, ...cash, payment_mode: 1, cheque_number: null, cheque_date: null, _tx: transaction, _split: { groupId, part: 1 } })).payment;
-    second = (await storeOrUpdate({ ...common, ...cheque, payment_mode: 3, _tx: transaction, _split: { groupId, part: 2 } })).payment;
+    for (let i = 0; i < list.length; i += 1) {
+      const p = list[i];
+      const res = await storeOrUpdate({
+        ...common,
+        account_id: Number(p.account_id), amount: p.amount, payment_mode: Number(p.payment_mode),
+        cheque_number: p.cheque_number || null, cheque_date: p.cheque_date || null, reference_no: p.reference_no || null,
+        _tx: transaction, _split: { groupId, part: i + 1 },
+      });
+      saved.push(res.payment);
+    }
   });
-  const pos = await getPosition({ companyId, auctionId: first.auction_id });
-  return { payment: second, payments: [first, second], split_group_id: groupId, position: pos.position };
+  const pos = await getPosition({ companyId, auctionId: saved[0].auction_id });
+  return { payment: saved[saved.length - 1], payments: saved, split_group_id: groupId, position: pos.position };
 }
 
 // `sort` is optional (3-BE1, additive): 'asc' = oldest payment date first, then voucher number;
@@ -702,21 +746,27 @@ async function getAll({ companyId, payment_types, from_date, to_date, group_id, 
   // function, same names; this also serves the Bid Payment register, which calls getAll in-process.
   const holderNames = await holderNamesByEnrollment(rows.map((r) => r.enrollment_id));
   const splitIds = [...new Set(rows.map((r) => r.split_group_id).filter(Boolean))];
-  const secondParts = splitIds.length
+  // The other parts of a split (part 2, 3, ...): the list shows the first part's row and carries all of them.
+  const otherParts = splitIds.length
     ? await PrizePayment.findAll({
-        where: { company_id: companyId, split_group_id: { [Sequelize.Op.in]: splitIds }, split_part: 2, is_deleted: 0 },
-        include: [{ model: PaymentAccount, as: 'account', attributes: ['id', 'name', 'account_type'] }]
+        where: { company_id: companyId, split_group_id: { [Sequelize.Op.in]: splitIds }, split_part: { [Sequelize.Op.gt]: 1 }, is_deleted: 0 },
+        include: [{ model: PaymentAccount, as: 'account', attributes: ['id', 'name', 'account_type'] }],
+        order: [['split_part', 'ASC']]
       })
     : [];
-  const secondByGroup = new Map(secondParts.map((x) => [x.split_group_id, x]));
+  const othersByGroup = new Map();
+  otherParts.forEach((x) => {
+    if (!othersByGroup.has(x.split_group_id)) othersByGroup.set(x.split_group_id, []);
+    othersByGroup.get(x.split_group_id).push(x);
+  });
   const partOf = (x) => ({
     id: x.id, voucher_number: x.voucher_number, amount: Number(x.amount), payment_mode: x.payment_mode,
     cheque_number: x.cheque_number || null, cheque_date: x.cheque_date || null, account_name: x.account ? x.account.name : null
   });
   const formattedRows = rows.map((r) => {
     const p = r.toJSON();
-    if (r.split_group_id && secondByGroup.has(r.split_group_id)) {
-      const parts = [partOf(r), partOf(secondByGroup.get(r.split_group_id))];
+    if (r.split_group_id && othersByGroup.has(r.split_group_id)) {
+      const parts = [partOf(r), ...othersByGroup.get(r.split_group_id).map(partOf)];
       p.split = { group_id: r.split_group_id, total_amount: round2(parts.reduce((a, x) => a + x.amount, 0)), parts };
     }
     p.ticket_number = p.enrollment?.group_position_number;
@@ -837,7 +887,22 @@ async function getById({ companyId, id }) {
   p.member_name = p.member?.name;
   const h = await holderNamesByEnrollment([r.enrollment_id]);
   p.holder_names = h[r.enrollment_id] || p.member_name;
-  
+
+  // A split payment (sheet row 42): the voucher shows every part and their total. Additive key; absent otherwise.
+  if (r.split_group_id) {
+    const all = await PrizePayment.findAll({
+      where: { company_id: companyId, split_group_id: r.split_group_id, is_deleted: 0 },
+      include: [{ model: PaymentAccount, as: 'account', attributes: ['id', 'name', 'account_type'] }],
+      order: [['split_part', 'ASC']]
+    });
+    const parts = all.map((x) => ({
+      id: x.id, voucher_number: x.voucher_number, amount: Number(x.amount), payment_mode: x.payment_mode,
+      cheque_number: x.cheque_number || null, cheque_date: x.cheque_date || null, reference_no: x.reference_no || null,
+      account_name: x.account ? x.account.name : null
+    }));
+    p.split = { group_id: r.split_group_id, total_amount: round2(parts.reduce((a, x) => a + x.amount, 0)), parts };
+  }
+
   if (p.payment_type === 1 || p.payment_type === 3) {
     const pos = await getPosition({ companyId, auctionId: p.auction_id });
     p.position = pos.position;
@@ -1166,5 +1231,6 @@ module.exports = {
   reverseAdjustment,
   loadTicket,
   prizePosition,
-  advancePosition
+  advancePosition,
+  getMemberStatus
 };

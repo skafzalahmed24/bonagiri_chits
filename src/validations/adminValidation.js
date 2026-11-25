@@ -1724,17 +1724,28 @@ module.exports = {
     payment_date: Joi.string().isoDate().required(),
     narration: Joi.string().allow(null, '').optional(),
     override_reason: Joi.string().allow('', null).optional(),
+    // First release: a cash part and a cheque part.
     cash: Joi.object({
       account_id: Joi.number().integer().required(),
       amount: Joi.number().positive().precision(2).required()
-    }).required(),
+    }),
     cheque: Joi.object({
       account_id: Joi.number().integer().required(),
       amount: Joi.number().positive().precision(2).required(),
       cheque_number: Joi.string().trim().max(255).required(),
       cheque_date: Joi.string().isoDate().required()
-    }).required()
-  }),
+    }),
+    // Tester round 3: any number of accounts (Cash, Bank, UPI), each with its own amount. A Bank part also sends
+    // payment_mode 3 (cheque: number + date) or 4 (bank transfer: reference); a UPI part sends a reference.
+    parts: Joi.array().min(2).max(8).items(Joi.object({
+      account_id: Joi.number().integer().required(),
+      amount: Joi.number().positive().precision(2).required(),
+      payment_mode: Joi.number().valid(1, 2, 3, 4).optional(),
+      cheque_number: Joi.string().trim().max(255).allow(null, '').optional(),
+      cheque_date: Joi.string().isoDate().allow(null, '').optional(),
+      reference_no: Joi.string().trim().max(255).allow(null, '').optional()
+    }))
+  }).or('parts', 'cash'),
   storeOrUpdatePrizePaymentSchema: Joi.object({
     id: Joi.number().optional(),
     auction_id: Joi.string().uuid().allow(null).optional(),

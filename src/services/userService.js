@@ -2278,7 +2278,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     }
                 }
 
-                const displayLabel = `${holderInfo.holderName} ${holderInfo.ticketCode}`;
+                const displayLabel = '';
                 const positionLabel = `Member ${holderInfo.ticketCode}`;
 
                 memberBreakdown.push({
@@ -2313,7 +2313,7 @@ const getChitDetailsService = async (res, userPayload, group_id, auction_type = 
                     penalty_paid: holderInfo.isJoint ? sharePenaltyPaid : parseFloat(ticketPenaltyPaid.toFixed(2)),
                     penalty_text: sharePenalty > 0 ? formatPenaltyCalculationText(sharePenalty, overDueDaysCount) : (sharePenaltyPaid > 0 ? formatPenaltyCalculationText(sharePenaltyPaid, overDueDaysCount) : ticketPenaltyText),
                     total_amount: holderInfo.isJoint ? shareTotalAmount : parseFloat(ticketTotalAmount.toFixed(2)),
-                    total_amount_formatted_label: `(${displayLabel})`,
+                    total_amount_formatted_label: '',
 
                     // Full ticket amounts
                     ticket_original_amount: parseFloat(ticketOriginal.toFixed(2)),
@@ -4094,11 +4094,13 @@ const getSubmissionsService = async (res, collection_agent_id, type, min, max) =
         };
 
         const formatted = submissions.map(sub => {
-            let amount = 0;
-            if (sub.cash && sub.cash.amount) {
-                amount = sub.cash.amount;
-            } else if (sub.bank_details && sub.bank_details.amount) {
-                amount = sub.bank_details.amount;
+            let amount = sub.received_amount ? Math.round(parseFloat(sub.received_amount)) : 0;
+            if (amount === 0) {
+                if (sub.cash && sub.cash.amount) {
+                    amount = Math.round(parseFloat(sub.cash.amount));
+                } else if (sub.bank_details && sub.bank_details.amount) {
+                    amount = Math.round(parseFloat(sub.bank_details.amount));
+                }
             }
 
             const memberEnrollments = enrollments.filter(e => e.subscriber_id === sub.member_id);
@@ -4112,12 +4114,7 @@ const getSubmissionsService = async (res, collection_agent_id, type, min, max) =
                 status_note = `Rejected on ${formatDate(sub.confirm_date)}`;
             }
 
-            let collection_id_value = 'Unknown';
-            if (sub.collection_agent && sub.collection_agent.other_info_user_code) {
-                collection_id_value = sub.collection_agent.other_info_user_code.toString();
-            } else if (sub.collection_agent_id) {
-                collection_id_value = sub.collection_agent_id.toString();
-            }
+            let collection_id_value = sub.id ? `COL${sub.id.substring(0, 8).toUpperCase()}` : 'Unknown';
 
             return {
                 id: sub.id,
@@ -4128,6 +4125,7 @@ const getSubmissionsService = async (res, collection_agent_id, type, min, max) =
                 method: getPaymentMethod(sub.payment_type),
                 date: formatDate(sub.createdAt),
                 collection_id: collection_id_value,
+                agent_name: sub.collection_agent ? sub.collection_agent.name : 'Unknown',
                 status: statusStr,
                 status_int: sub.status,
                 status_note,
@@ -5187,8 +5185,13 @@ const getMembersByGroupIdService = async (res, reqUser, group_id, search, min, m
         const limit = parseInt(max, 10) || 10;
         const offset = parseInt(min, 10) || 0;
 
+        const enrollmentWhere = { group_id, delete_status: 0 };
+        if (reqUser.role !== 'company' && reqUser.role !== 'staff') {
+            enrollmentWhere.collection_agent_id = reqUser.id;
+        }
+
         const enrollments = await Enrollment.findAll({
-            where: { group_id, delete_status: 0 },
+            where: enrollmentWhere,
             include: [
                 {
                     model: Member,
