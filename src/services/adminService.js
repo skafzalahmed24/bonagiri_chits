@@ -180,6 +180,16 @@ const loginCompanyService = async (res, user_code, password, type, deviceInfo = 
         if (user.is_active === false) {
           return errorResponse(res, statusCodes.OK, 'Your account has been deactivated. Please contact your branch.');
         }
+
+        const { normalizePlatformType } = require('../utils/platformHelper');
+        const normPlatform = normalizePlatformType(deviceInfo?.platform_type);
+        if (normPlatform === 'web' && user.other_info_web_access === false) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Web access is not enabled for your account.');
+        }
+        if ((normPlatform === 'android' || normPlatform === 'ios') && user.other_info_mobile_access === false) {
+          return errorResponse(res, statusCodes.BAD_REQUEST, 'Mobile access is not enabled for your account.');
+        }
+
         role = 'member';
       } else {
         user = null;

@@ -39,10 +39,40 @@ const formatDateToYYYYMMDD = (dateObj) => {
   return `${year}-${month}-${day}`;
 };
 
-const getBannersForSubscriberHelper = async (subscriberId, companyId = null) => {
+const getActiveBannerDateCondition = async () => {
+  const realDateStr = formatDateToYYYYMMDD(new Date());
+  let simDateStr = realDateStr;
   try {
     const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
-    const todayStr = formatDateToYYYYMMDD(simulatedNow);
+    simDateStr = formatDateToYYYYMMDD(simulatedNow);
+  } catch (e) {
+    // fallback
+  }
+
+  if (realDateStr === simDateStr) {
+    return {
+      banner_start_date: { [Op.lte]: realDateStr },
+      banner_end_date: { [Op.gte]: realDateStr }
+    };
+  }
+
+  return {
+    [Op.or]: [
+      {
+        banner_start_date: { [Op.lte]: realDateStr },
+        banner_end_date: { [Op.gte]: realDateStr }
+      },
+      {
+        banner_start_date: { [Op.lte]: simDateStr },
+        banner_end_date: { [Op.gte]: simDateStr }
+      }
+    ]
+  };
+};
+
+const getBannersForSubscriberHelper = async (subscriberId, companyId = null) => {
+  try {
+    const dateCondition = await getActiveBannerDateCondition();
 
     let subIdInt = parseInt(subscriberId, 10);
     if ((isNaN(subIdInt) || subIdInt <= 0) && subscriberId) {
@@ -96,8 +126,7 @@ const getBannersForSubscriberHelper = async (subscriberId, companyId = null) => 
     const whereClause = {
       is_deleted_status: 0,
       status: 1,
-      banner_start_date: { [Op.lte]: todayStr },
-      banner_end_date: { [Op.gte]: todayStr },
+      ...dateCondition,
       [Op.and]: andConditions
     };
 
@@ -125,8 +154,7 @@ const getBannersForSubscriberHelper = async (subscriberId, companyId = null) => 
 
 const getValidOffersForSubscriberHelper = async (subscriberId, companyId = null, bannerType = 2) => {
   try {
-    const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
-    const todayStr = formatDateToYYYYMMDD(simulatedNow);
+    const dateCondition = await getActiveBannerDateCondition();
 
     let subIdInt = parseInt(subscriberId, 10);
     if ((isNaN(subIdInt) || subIdInt <= 0) && subscriberId) {
@@ -176,8 +204,7 @@ const getValidOffersForSubscriberHelper = async (subscriberId, companyId = null,
     const whereClause = {
       is_deleted_status: 0,
       status: 1,
-      banner_start_date: { [Op.lte]: todayStr },
-      banner_end_date: { [Op.gte]: todayStr },
+      ...dateCondition,
       [Op.and]: andConditions
     };
 
@@ -559,8 +586,7 @@ const getUserValidOffersService = async (res, userPayload, body = {}) => {
     const limit = parseInt(max, 10) || 10;
     const offset = parseInt(min, 10) || 0;
 
-    const simulatedNow = new Date(await SystemSettingsService.getBusinessDate());
-    const todayStr = formatDateToYYYYMMDD(simulatedNow);
+    const dateCondition = await getActiveBannerDateCondition();
 
     // Find assigned banner IDs for this subscriber (banner_type: 2 - particular subscribers)
     let assignedBannerIds = [];
@@ -616,8 +642,7 @@ const getUserValidOffersService = async (res, userPayload, body = {}) => {
     const whereClause = {
       is_deleted_status: 0,
       status: 1,
-      banner_start_date: { [Op.lte]: todayStr },
-      banner_end_date: { [Op.gte]: todayStr },
+      ...dateCondition,
       [Op.and]: andConditions
     };
 
