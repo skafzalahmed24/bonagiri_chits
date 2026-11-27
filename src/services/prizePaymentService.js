@@ -77,8 +77,14 @@ async function prizePosition(auction, enrollment, { transaction, excludePaymentI
   });
   const adjusted = round2(adjRaw);
 
+  const excludeWhere = excludePaymentId ? {
+    id: Array.isArray(excludePaymentId)
+      ? { [Sequelize.Op.notIn]: excludePaymentId }
+      : { [Sequelize.Op.ne]: excludePaymentId }
+  } : {};
+
   const adv1Raw = await PrizePayment.sum('amount', {
-    where: { enrollment_id: enrollment.id, payment_type: 2, is_deleted: 0, ...(excludePaymentId ? { id: { [Sequelize.Op.ne]: excludePaymentId } } : {}) },
+    where: { enrollment_id: enrollment.id, payment_type: 2, is_deleted: 0, ...excludeWhere },
     transaction
   });
   const adv2Raw = await CustomerPayment.sum('received_amount', {
@@ -88,7 +94,7 @@ async function prizePosition(auction, enrollment, { transaction, excludePaymentI
   const advance = round2(adv1Raw) + round2(adv2Raw);
 
   const pdRaw = await PrizePayment.sum('amount', {
-    where: { auction_id: auction.id, payment_type: { [Sequelize.Op.in]: [1, 3] }, is_deleted: 0, ...(excludePaymentId ? { id: { [Sequelize.Op.ne]: excludePaymentId } } : {}) },
+    where: { auction_id: auction.id, payment_type: { [Sequelize.Op.in]: [1, 3] }, is_deleted: 0, ...excludeWhere },
     transaction
   });
   const paid = round2(pdRaw);
@@ -101,8 +107,14 @@ async function advancePosition(enrollment, group, { transaction, excludePaymentI
   const commission = round2(Number(group.chit_amount) * Number(group.company_commission) / 100);
   const limit = round2(Number(group.chit_amount) - commission);
 
+  const excludeWhere = excludePaymentId ? {
+    id: Array.isArray(excludePaymentId)
+      ? { [Sequelize.Op.notIn]: excludePaymentId }
+      : { [Sequelize.Op.ne]: excludePaymentId }
+  } : {};
+
   const advancedRaw = await PrizePayment.sum('amount', {
-    where: { enrollment_id: enrollment.id, payment_type: 2, is_deleted: 0, ...(excludePaymentId ? { id: { [Sequelize.Op.ne]: excludePaymentId } } : {}) },
+    where: { enrollment_id: enrollment.id, payment_type: 2, is_deleted: 0, ...excludeWhere },
     transaction
   });
   const advanced = round2(advancedRaw);
@@ -299,17 +311,24 @@ async function getPosition({ companyId, auctionId, groupId, ticketNumber, paymen
   if (auctionId && win.id !== auctionId) throw new Error('This ticket has not won an auction.');
 
   let editingAmount = 0;
+  let excludePaymentId = paymentId;
   if (paymentId) {
     const payment = await PrizePayment.findOne({ where: { id: paymentId, company_id: companyId, is_deleted: 0 } });
     if (payment && payment.auction_id === win.id) {
-      editingAmount = round2(payment.amount);
+      if (payment.split_group_id) {
+        const parts = await PrizePayment.findAll({ where: { split_group_id: payment.split_group_id, is_deleted: 0 }, attributes: ['id', 'amount'] });
+        excludePaymentId = parts.map((p) => p.id);
+        editingAmount = round2(parts.reduce((s, p) => s + Number(p.amount), 0));
+      } else {
+        editingAmount = round2(payment.amount);
+      }
     }
   }
 
   const memberStatus = await getMemberStatus(enrollment.id);
   const suretiesCount = await Surety.count({ where: { enrollment_id: enrollment.id, company_id: companyId, is_deleted_status: 0 } });
   
-  const pos = await prizePosition(win, enrollment, { transaction: null, excludePaymentId: paymentId });
+  const pos = await prizePosition(win, enrollment, { transaction: null, excludePaymentId });
   const position = {
     prize_payable: round2(win.bid_payable),
     less_adjusted: pos.adjusted,
@@ -368,17 +387,24 @@ async function advancePositionEndpoint({ companyId, enrollmentId, groupId, ticke
   if (group.chits_group_status === 2) throw new Error('This group is closed.');
 
   let editingAmount = 0;
+  let excludePaymentId = paymentId;
   if (paymentId) {
     const payment = await PrizePayment.findOne({ where: { id: paymentId, company_id: companyId, is_deleted: 0 } });
     if (payment && payment.enrollment_id === enrollment.id) {
-      editingAmount = round2(payment.amount);
+      if (payment.split_group_id) {
+        const parts = await PrizePayment.findAll({ where: { split_group_id: payment.split_group_id, is_deleted: 0 }, attributes: ['id', 'amount'] });
+        excludePaymentId = parts.map((p) => p.id);
+        editingAmount = round2(parts.reduce((s, p) => s + Number(p.amount), 0));
+      } else {
+        editingAmount = round2(payment.amount);
+      }
     }
   }
 
   const memberStatus = await getMemberStatus(enrollment.id);
   const suretiesCount = await Surety.count({ where: { enrollment_id: enrollment.id, company_id: companyId, is_deleted_status: 0 } });
   
-  const position = await advancePosition(enrollment, group, { transaction: null, excludePaymentId: paymentId });
+  const position = await advancePosition(enrollment, group, { transaction: null, excludePaymentId });
   const nextVoucher = await nextVoucherNumber(companyId, 2, new Date(), null);
   const holders = await holderNamesByEnrollment([enrollment.id]);
 
@@ -427,8 +453,8 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
       oldPayment = await PrizePayment.findOne({ where: { id, company_id: companyId, is_deleted: 0 }, transaction });
       if (!oldPayment || oldPayment.enrollment_id !== enrollment.id) throw new Error('Not found.');
       if (oldPayment.payment_type !== payment_type) throw new Error('Payment type cannot be changed.');
-      // Phase 2 (tester, row 42): a saved split payment is not edited; cancel it (both parts) and enter it again.
-      if (oldPayment.split_group_id) throw new Error('A split payment cannot be edited. Delete it (both parts) and enter it again.');
+      // Row 42 / 66: direct edit of a split payment must go through storeSplit
+      if (oldPayment.split_group_id && !_split) throw new Error('A split payment cannot be edited directly.');
     }
     // Transaction Lock Days (docs/MONEY_FLOW_BATCH2_3.md §2.3). Opening paid records prizes paid
     // before the app, so it is old-dated by nature and exempt.
@@ -514,7 +540,7 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
         throw new Error('Enter the reference number.');
       }
 
-      if (id && oldPayment.account_id) {
+      if (id && oldPayment.account_id && !_split) {
         const oldAcc = oldPayment.account_id === account.id ? account : await PaymentAccount.findOne({ where: { id: oldPayment.account_id }, transaction, lock: transaction.LOCK.UPDATE });
         if (oldAcc) {
           await oldAcc.update({ current_balance: Number(oldAcc.current_balance) + Number(oldPayment.amount) }, { transaction });
@@ -622,7 +648,13 @@ async function storeOrUpdate({ companyId, id, payment_type, auction_id, enrollme
  * parts are written inside ONE transaction, so either both exist or neither does (a failure on the second part
  * leaves nothing behind). They share a split_group_id; the list shows them as one row and Delete removes both.
  */
-async function storeSplit({ companyId, enrollment_id, payment_date, narration, override_reason, user, cash, cheque, parts }) {
+async function storeSplit({ companyId, id, split_group_id, payment_type = 1, enrollment_id, payment_date, narration, override_reason, user, cash, cheque, parts }) {
+  const type = Number(payment_type) || 1;
+  if (user && user.role === 'staff') {
+    const needed = type === 2 ? 'T_BID_ADVANCE' : 'T_BID_PAYMENTS';
+    if (!staffCanView(user.permissions, needed)) throw new Error(`You don't have permission for ${type === 2 ? 'bid advances' : 'bid payments'}.`);
+  }
+
   // Two shapes: `parts` = any number of accounts, each with its own amount (Cash / Bank / UPI, tester round 3), or the
   // first release's { cash, cheque }, kept so nothing that already calls it breaks.
   let list;
@@ -652,22 +684,85 @@ async function storeSplit({ companyId, enrollment_id, payment_date, narration, o
     else if (!(Number(p.payment_mode) === 3 || Number(p.payment_mode) === 4)) throw new Error('Choose cheque or bank transfer for the bank account.');
   });
 
-  const groupId = require('crypto').randomUUID();
-  const common = { companyId, payment_type: 1, enrollment_id, payment_date, narration, override_reason, user };
+  let existingGroupId = split_group_id || null;
+  if (!existingGroupId && id) {
+    const existingP = await PrizePayment.findOne({ where: { id, company_id: companyId, is_deleted: 0 } });
+    if (existingP?.split_group_id) {
+      existingGroupId = existingP.split_group_id;
+    }
+  }
+
+  const groupId = existingGroupId || require('crypto').randomUUID();
+  const common = { companyId, payment_type: type, enrollment_id, payment_date, narration, override_reason, user };
   const saved = [];
+
   await db.sequelize.transaction(async (transaction) => {
-    for (let i = 0; i < list.length; i += 1) {
-      const p = list[i];
-      const res = await storeOrUpdate({
-        ...common,
-        account_id: Number(p.account_id), amount: p.amount, payment_mode: Number(p.payment_mode),
-        cheque_number: p.cheque_number || null, cheque_date: p.cheque_date || null, reference_no: p.reference_no || null,
-        _tx: transaction, _split: { groupId, part: i + 1 },
+    if (existingGroupId) {
+      const oldParts = await PrizePayment.findAll({
+        where: { company_id: companyId, split_group_id: existingGroupId, is_deleted: 0 },
+        order: [['split_part', 'ASC']],
+        transaction,
+        lock: transaction.LOCK.UPDATE
       });
-      saved.push(res.payment);
+
+      for (const oldP of oldParts) {
+        if (oldP.account_id) {
+          const acc = await PaymentAccount.findOne({ where: { id: oldP.account_id, company_id: companyId }, transaction, lock: transaction.LOCK.UPDATE });
+          if (acc) {
+            await acc.update({ current_balance: Number(acc.current_balance) + Number(oldP.amount) }, { transaction });
+          }
+        }
+      }
+
+      for (let i = 0; i < list.length; i += 1) {
+        const p = list[i];
+        const existingPart = oldParts[i];
+        const res = await storeOrUpdate({
+          ...common,
+          id: existingPart ? existingPart.id : undefined,
+          account_id: Number(p.account_id),
+          amount: p.amount,
+          payment_mode: Number(p.payment_mode),
+          cheque_number: p.cheque_number || null,
+          cheque_date: p.cheque_date || null,
+          reference_no: p.reference_no || null,
+          _tx: transaction,
+          _split: { groupId, part: i + 1 },
+        });
+        saved.push(res.payment);
+      }
+
+      if (oldParts.length > list.length) {
+        for (let i = list.length; i < oldParts.length; i += 1) {
+          await oldParts[i].update({
+            is_deleted: 1,
+            deleted_by_name: await userDisplayName(user),
+            deleted_at: new Date()
+          }, { transaction });
+        }
+      }
+    } else {
+      for (let i = 0; i < list.length; i += 1) {
+        const p = list[i];
+        const res = await storeOrUpdate({
+          ...common,
+          account_id: Number(p.account_id),
+          amount: p.amount,
+          payment_mode: Number(p.payment_mode),
+          cheque_number: p.cheque_number || null,
+          cheque_date: p.cheque_date || null,
+          reference_no: p.reference_no || null,
+          _tx: transaction,
+          _split: { groupId, part: i + 1 },
+        });
+        saved.push(res.payment);
+      }
     }
   });
-  const pos = await getPosition({ companyId, auctionId: saved[0].auction_id });
+
+  const pos = saved[0]?.auction_id
+    ? await getPosition({ companyId, auctionId: saved[0].auction_id })
+    : await advancePositionEndpoint({ companyId, enrollmentId: saved[0].enrollment_id });
   return { payment: saved[saved.length - 1], payments: saved, split_group_id: groupId, position: pos.position };
 }
 
@@ -897,6 +992,7 @@ async function getById({ companyId, id }) {
     });
     const parts = all.map((x) => ({
       id: x.id, voucher_number: x.voucher_number, amount: Number(x.amount), payment_mode: x.payment_mode,
+      account_id: x.account_id,
       cheque_number: x.cheque_number || null, cheque_date: x.cheque_date || null, reference_no: x.reference_no || null,
       account_name: x.account ? x.account.name : null
     }));
@@ -931,21 +1027,22 @@ async function deletePayment({ companyId, id, reason, user, override_reason }) {
     const parts = target.split_group_id
       ? await PrizePayment.findAll({ where: { company_id: companyId, split_group_id: target.split_group_id, is_deleted: 0 }, order: [['split_part', 'ASC']], transaction })
       : [target];
+    const partIds = parts.map((p) => p.id);
     for (const payment of parts) {
-    if (payment.payment_type !== 3) {
-      await enforceLock({ companyId, user, entity: 'prize_payment', entityId: payment.id, action: 'cancel', dates: [payment.payment_date], overrideReason: override_reason, transaction });
-    }
-
-    if (payment.payment_type === 1 || payment.payment_type === 3) {
-      await Auction.findOne({ where: { id: payment.auction_id }, transaction, lock: transaction.LOCK.UPDATE });
-    } else {
-      await Enrollment.findOne({ where: { id: payment.enrollment_id }, transaction, lock: transaction.LOCK.UPDATE });
-      const { enrollment, group } = await loadTicket({ companyId, enrollmentId: payment.enrollment_id, transaction });
-      const pos = await advancePosition(enrollment, group, { transaction, excludePaymentId: payment.id });
-      if (pos.available < 0) {
-        throw new Error('Reverse the receipts paid from this advance first.');
+      if (payment.payment_type !== 3) {
+        await enforceLock({ companyId, user, entity: 'prize_payment', entityId: payment.id, action: 'cancel', dates: [payment.payment_date], overrideReason: override_reason, transaction });
       }
-    }
+
+      if (payment.payment_type === 1 || payment.payment_type === 3) {
+        await Auction.findOne({ where: { id: payment.auction_id }, transaction, lock: transaction.LOCK.UPDATE });
+      } else {
+        await Enrollment.findOne({ where: { id: payment.enrollment_id }, transaction, lock: transaction.LOCK.UPDATE });
+        const { enrollment, group } = await loadTicket({ companyId, enrollmentId: payment.enrollment_id, transaction });
+        const pos = await advancePosition(enrollment, group, { transaction, excludePaymentId: partIds });
+        if (pos.available < 0) {
+          throw new Error('Reverse the receipts paid from this advance first.');
+        }
+      }
 
     if ((payment.payment_type === 1 || payment.payment_type === 2) && payment.account_id) {
       const account = await PaymentAccount.findOne({ where: { id: payment.account_id }, transaction, lock: transaction.LOCK.UPDATE });

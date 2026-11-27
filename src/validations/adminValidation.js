@@ -1008,7 +1008,11 @@ module.exports = {
     company_id: Joi.string().uuid().required(),
     group_id: Joi.string().uuid().required(),
     ticket_number: Joi.number().integer().allow(null).optional(),
-    bidder_id: Joi.number().integer().required(),
+    bidder_id: Joi.number().integer().allow(null).optional(),
+    winners: Joi.array().items(Joi.object({
+      bidder_id: Joi.number().integer().required(),
+      ticket_number: Joi.number().integer().allow(null).optional()
+    })).optional(),
     auction_number: Joi.number().integer().allow(null).optional(),
     auction_date: Joi.date().iso().allow('', null).optional(),
     due_date: Joi.date().iso().allow('', null).optional(),
@@ -1718,18 +1722,23 @@ module.exports = {
       'any.required': 'Status is required'
     })
   }),
-  // Split bid payment (sheet row 42): a cash part and a cheque part of one prize, saved together.
+  // Split bid payment (sheet row 42, 66): a cash part and a cheque part of one prize/advance, saved together.
   storePrizeSplitSchema: Joi.object({
+    id: Joi.number().optional(),
+    split_group_id: Joi.string().uuid().allow(null, '').optional(),
+    payment_type: Joi.number().valid(1, 2).optional(),
     enrollment_id: Joi.number().integer().required(),
     payment_date: Joi.string().isoDate().required(),
     narration: Joi.string().allow(null, '').optional(),
     override_reason: Joi.string().allow('', null).optional(),
     // First release: a cash part and a cheque part.
     cash: Joi.object({
+      id: Joi.number().optional(),
       account_id: Joi.number().integer().required(),
       amount: Joi.number().positive().precision(2).required()
     }),
     cheque: Joi.object({
+      id: Joi.number().optional(),
       account_id: Joi.number().integer().required(),
       amount: Joi.number().positive().precision(2).required(),
       cheque_number: Joi.string().trim().max(255).required(),
@@ -1738,6 +1747,7 @@ module.exports = {
     // Tester round 3: any number of accounts (Cash, Bank, UPI), each with its own amount. A Bank part also sends
     // payment_mode 3 (cheque: number + date) or 4 (bank transfer: reference); a UPI part sends a reference.
     parts: Joi.array().min(2).max(8).items(Joi.object({
+      id: Joi.number().optional(),
       account_id: Joi.number().integer().required(),
       amount: Joi.number().positive().precision(2).required(),
       payment_mode: Joi.number().valid(1, 2, 3, 4).optional(),

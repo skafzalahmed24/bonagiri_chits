@@ -2540,7 +2540,7 @@ const deleteSuitFileInformationService = async (res, id, companyId) => {
 
 /** Text for the `warning` field when commission (+GST) was cut down to the auction discount, else null. */
 const buildCommissionCapWarning = (financials) => {
-  if (!financials || !financials.commissionCapped) return null;
+  if (!financials || !financials.commissionCapped || !financials.bidDiscount || financials.bidDiscount <= 0) return null;
   const fmt = (n) => (Math.round((Number(n) + Number.EPSILON) * 100) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const requested = (financials.requestedCommission || 0) + (financials.requestedGst || 0);
   const discount = Math.max(0, financials.bidDiscount || 0);
@@ -2565,9 +2565,9 @@ const auctionUniqueConflictMessage = (error) => {
       (paths.includes('group_id') && paths.includes('bidder_id'))) {
     return 'This member has already won an auction in this group. Refresh the list to see it.';
   }
-  if (constraint === 'auctions_group_auction_number_unique' || paths.includes('auctions_group_auction_number_unique') ||
-      (paths.includes('group_id') && paths.includes('auction_number'))) {
-    return 'An auction is already recorded for this month in this group. Refresh the list to see it.';
+  if (constraint === 'auctions_group_ticket_number_unique' || paths.includes('auctions_group_ticket_number_unique') ||
+      (paths.includes('group_id') && paths.includes('ticket_number'))) {
+    return 'This ticket has already won in this group. Refresh the list to see it.';
   }
   return null;
 };
@@ -2643,9 +2643,19 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
     // the next non-company month.
     let openAuctionNumber = null;
     if (!id && groupForMath && !groupForMath.scheme_configuration_id) {
-      const lastForNumber = await Auction.findOne({ where: { group_id: targetGroupId }, order: [['auction_number', 'DESC']], transaction });
-      openAuctionNumber = nextOpenAuctionNumber(lastForNumber ? lastForNumber.auction_number : 0, groupForMath, companySeats);
-      if (openAuctionNumber > (parseInt(groupForMath.no_of_installments, 10) || 0)) {
+      if (auctionData.auction_number != null && !isNaN(Number(auctionData.auction_number))) {
+        openAuctionNumber = parseInt(auctionData.auction_number, 10);
+      } else {
+        const lastForNumber = await Auction.findOne({ where: { group_id: targetGroupId }, order: [['auction_number', 'DESC']], transaction });
+        openAuctionNumber = nextOpenAuctionNumber(lastForNumber ? lastForNumber.auction_number : 0, groupForMath, companySeats);
+      }
+      if (openAuctionNumber > (parseInt(groupForMath.no_of_installments, 10) || 0) || openAuctionNumber < 1) {
+        await transaction.rollback();
+        return errorResponse(res, statusCodes.BAD_REQUEST, 'Auction schedule is already finished for this group or invalid auction number');
+      }
+      const totalWinnersSoFar = await Auction.count({ where: { group_id: targetGroupId }, transaction });
+      const maxWinnersAllowed = (parseInt(groupForMath.no_of_installments, 10) || 0) - companySeats.length;
+      if (totalWinnersSoFar >= maxWinnersAllowed) {
         await transaction.rollback();
         return errorResponse(res, statusCodes.BAD_REQUEST, 'Auction schedule is already finished for this group');
       }
@@ -2733,6 +2743,13 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         gstPercentage = 0;
       }
 
+      const winnersList = (Array.isArray(auctionData.winners) && auctionData.winners.length > 0)
+        ? auctionData.winners
+        : [{ bidder_id: auctionData.bidder_id, ticket_number: auctionData.ticket_number }];
+      const totalWinnersSoFar = await Auction.count({ where: { group_id: targetGroupId }, transaction });
+      const maxWinnersAllowed = (parseInt(groupForMath.no_of_installments, 10) || 0) - companySeats.length;
+      const isFinishingGroup = isFinalMonth || (totalWinnersSoFar + winnersList.length >= maxWinnersAllowed);
+
       const financials = calculateOpenAuctionFinancials({
         chitAmount,
         installments,
@@ -2740,7 +2757,7 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
         commissionPct: companyCommissionPct,
         memberCount: totalEnrollments || installments,
         gstPercentage,
-        capToDiscount: !isFinalMonth // the last instalment is recorded at the full chit amount: no discount by design
+        capToDiscount: !isFinishingGroup && (chitAmount > bid_amount) // last instalment and group-finishing auctions have no discount by design
       });
 
       auctionData.gst_number_percentage = financials.gstPct;
@@ -2766,76 +2783,158 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
     // Dividend already applied to the members' running balance by earlier saves of this auction (SEC-7).
     const previousDividend = existingAuction ? (parseFloat(existingAuction.dividend) || 0) : null;
 
+    let createdAuctions = [];
     if (id) {
       const auction = existingAuction;
       
       await auction.update(auctionData, { transaction });
       auctionResult = auction;
-    } else {
-      if (auctionData.group_id) {
+      createdAuctions.push(auction);
 
-        // B7: Auto-assign auction_number
-        const lastAuction = await Auction.findOne({
-          where: { group_id: auctionData.group_id },
-          order: [['auction_number', 'DESC']],
+      const resolvedGroupId = auctionData.group_id || auctionResult.group_id;
+      const resolvedBidderId = auctionData.bidder_id || auctionResult.bidder_id;
+      if (resolvedGroupId) {
+        const group = await ChitsGroup.findOne({ where: { id: resolvedGroupId, company_id: safeCompanyId }, transaction });
+        const schemeConfig = group?.scheme_configuration_id
+          ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
+          : null;
+
+        const winnerTicket = auctionResult.ticket_number != null ? Number(auctionResult.ticket_number) : null;
+        const winnerEnrollment = resolvedBidderId ? await Enrollment.findOne({
+          where: {
+            group_id: resolvedGroupId,
+            subscriber_id: resolvedBidderId,
+            delete_status: 0,
+            ...(winnerTicket ? { group_position_number: winnerTicket } : {})
+          },
+          order: [['group_position_number', 'ASC']],
           transaction
-        });
-        const lastRecorded = lastAuction ? parseInt(lastAuction.auction_number, 10) : 0;
-        auctionData.auction_number = openAuctionNumber != null ? openAuctionNumber : lastRecorded + 1;
+        }) : null;
 
-        // Duplicate-winner guard and company-seat winner rejection for new auctions
-        if (auctionData.bidder_id) {
-          const bidderTickets = await memberTicketsInGroup(auctionData.group_id, auctionData.bidder_id, { transaction });
-          const hasEligibleTicket = bidderTickets.some(t => !companySeats.includes(Number(t.group_position_number)));
-          if (!hasEligibleTicket && bidderTickets.length > 0) {
-            await transaction.rollback();
-            return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
-          }
+        const effectiveAuctionData = auctionResult.toJSON ? auctionResult.toJSON() : { ...auctionData, ...auctionResult };
 
-          if (auctionData.ticket_number) {
-            const ticketWin = await Auction.findOne({
-              where: { group_id: auctionData.group_id, ticket_number: auctionData.ticket_number },
-              transaction
-            });
-            if (ticketWin) {
-              await transaction.rollback();
-              return errorResponse(res, statusCodes.BAD_REQUEST, `Ticket #${auctionData.ticket_number} has already won auction #${ticketWin.auction_number} in this group`);
-            }
-          } else {
-            const existingWin = await Auction.findOne({
-              where: { group_id: auctionData.group_id, bidder_id: auctionData.bidder_id },
-              transaction
-            });
-            if (existingWin) {
-              await transaction.rollback();
-              return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
-            }
+        if (schemeConfig) {
+          if (winnerEnrollment) {
+            await applyWinnerSchemeAdjustments(effectiveAuctionData, schemeConfig, winnerEnrollment.id, transaction);
           }
-        }
-
-        if (auctionData.ticket_number) {
-          const ticketNum = parseInt(auctionData.ticket_number, 10);
-          if (companySeats.includes(ticketNum)) {
-            await transaction.rollback();
-            return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
-          }
-        }
-
-        if (auctionData.enrollment_id) {
-          const winEnrollment = await Enrollment.findOne({ where: { id: auctionData.enrollment_id, group_id: groupForMath.id, company_id: safeCompanyId }, transaction });
-          if (!winEnrollment) {
-            await transaction.rollback();
-            return errorResponse(res, statusCodes.NOT_FOUND, 'Enrollment not found');
-          }
-          if (companySeats.includes(Number(winEnrollment.group_position_number))) {
-            await transaction.rollback();
-            return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
-          }
+        } else {
+          await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment ? winnerEnrollment.id : null, resolvedGroupId, transaction, { previousDividend });
         }
       }
 
-      auctionResult = await Auction.create(auctionData, { transaction });
-      isNew = true;
+      if (auctionResult && auctionResult.id) {
+        const { recalcPrizeTotals } = require('./prizePaymentService');
+        await recalcPrizeTotals(auctionResult.id, transaction);
+      }
+    } else {
+      if (auctionData.group_id) {
+
+        // B7: Assign auction_number
+        if (auctionData.auction_number != null && !isNaN(Number(auctionData.auction_number))) {
+          auctionData.auction_number = parseInt(auctionData.auction_number, 10);
+        } else {
+          const lastAuction = await Auction.findOne({
+            where: { group_id: auctionData.group_id },
+            order: [['auction_number', 'DESC']],
+            transaction
+          });
+          const lastRecorded = lastAuction ? parseInt(lastAuction.auction_number, 10) : 0;
+          auctionData.auction_number = openAuctionNumber != null ? openAuctionNumber : lastRecorded + 1;
+        }
+
+        const winnersList = (Array.isArray(auctionData.winners) && auctionData.winners.length > 0)
+          ? auctionData.winners
+          : [{ bidder_id: auctionData.bidder_id, ticket_number: auctionData.ticket_number }];
+
+        // Check against total remaining winners
+        const totalWinnersSoFar = await Auction.count({ where: { group_id: auctionData.group_id }, transaction });
+        const maxWinnersAllowed = (parseInt(groupForMath.no_of_installments, 10) || 0) - companySeats.length;
+        if (totalWinnersSoFar + winnersList.length > maxWinnersAllowed) {
+          await transaction.rollback();
+          return errorResponse(res, statusCodes.BAD_REQUEST, `Selected winners (${winnersList.length}) exceed remaining auction slots (${maxWinnersAllowed - totalWinnersSoFar}) for this group`);
+        }
+
+        const schemeConfig = groupForMath?.scheme_configuration_id
+          ? await FixedSchemeChitsConfiguration.findByPk(groupForMath.scheme_configuration_id, { transaction })
+          : null;
+
+        for (const w of winnersList) {
+          const wBidderId = w.bidder_id != null ? parseInt(w.bidder_id, 10) : null;
+          const wTicketNumber = w.ticket_number != null ? parseInt(w.ticket_number, 10) : null;
+
+          if (wBidderId) {
+            const bidderTickets = await memberTicketsInGroup(auctionData.group_id, wBidderId, { transaction });
+            const hasEligibleTicket = bidderTickets.some(t => !companySeats.includes(Number(t.group_position_number)));
+            if (!hasEligibleTicket && bidderTickets.length > 0) {
+              await transaction.rollback();
+              return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
+            }
+
+            if (wTicketNumber) {
+              const ticketWin = await Auction.findOne({
+                where: { group_id: auctionData.group_id, ticket_number: wTicketNumber },
+                transaction
+              });
+              if (ticketWin) {
+                await transaction.rollback();
+                return errorResponse(res, statusCodes.BAD_REQUEST, `Ticket #${wTicketNumber} has already won auction #${ticketWin.auction_number} in this group`);
+              }
+            } else {
+              const existingWin = await Auction.findOne({
+                where: { group_id: auctionData.group_id, bidder_id: wBidderId },
+                transaction
+              });
+              if (existingWin) {
+                await transaction.rollback();
+                return errorResponse(res, statusCodes.BAD_REQUEST, `This member has already won auction #${existingWin.auction_number} in this group`);
+              }
+            }
+          }
+
+          if (wTicketNumber) {
+            if (companySeats.includes(wTicketNumber)) {
+              await transaction.rollback();
+              return errorResponse(res, statusCodes.BAD_REQUEST, 'Company seats cannot be recorded as auction winners');
+            }
+          }
+
+          const singleAuctionData = {
+            ...auctionData,
+            bidder_id: wBidderId,
+            ticket_number: wTicketNumber,
+          };
+          delete singleAuctionData.winners;
+
+          const created = await Auction.create(singleAuctionData, { transaction });
+          createdAuctions.push(created);
+
+          const winnerEnrollment = wBidderId ? await Enrollment.findOne({
+            where: {
+              group_id: auctionData.group_id,
+              subscriber_id: wBidderId,
+              delete_status: 0,
+              ...(wTicketNumber ? { group_position_number: wTicketNumber } : {})
+            },
+            order: [['group_position_number', 'ASC']],
+            transaction
+          }) : null;
+
+          const effectiveAuctionData = created.toJSON ? created.toJSON() : { ...singleAuctionData, ...created };
+          if (schemeConfig) {
+            if (winnerEnrollment) {
+              await applyWinnerSchemeAdjustments(effectiveAuctionData, schemeConfig, winnerEnrollment.id, transaction);
+            }
+          } else {
+            await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment ? winnerEnrollment.id : null, auctionData.group_id, transaction, { previousDividend });
+          }
+
+          const { recalcPrizeTotals } = require('./prizePaymentService');
+          await recalcPrizeTotals(created.id, transaction);
+        }
+
+        auctionResult = createdAuctions[0];
+        isNew = true;
+      }
     }
 
     // Automatically update the ChitsGroup's auction_date to the next_auction_date so the UI updates.
@@ -2855,58 +2954,35 @@ const storeOrUpdateAuctionService = async (res, data = {}, userToken) => {
       }
     }
 
-    const resolvedGroupId = auctionData.group_id || (auctionResult && auctionResult.group_id);
-    const resolvedBidderId = auctionData.bidder_id || (auctionResult && auctionResult.bidder_id);
-    if (resolvedGroupId) {
-      const group = await ChitsGroup.findOne({ where: { id: resolvedGroupId, company_id: safeCompanyId }, transaction });
-      const schemeConfig = group?.scheme_configuration_id
-        ? await FixedSchemeChitsConfiguration.findByPk(group.scheme_configuration_id, { transaction })
-        : null;
-
-      // The winning TICKET's enrollment, not just the member's first one: a member with three tickets has three
-      // enrollments, and each ticket's instalments switch to the Withdrawn amounts only when that ticket wins
-      // (tester sheet 2026-11-17). Auctions saved without a ticket number keep the old first-enrollment lookup.
-      const winnerTicket = auctionResult && auctionResult.ticket_number != null ? Number(auctionResult.ticket_number) : null;
-      const winnerEnrollment = resolvedBidderId ? await Enrollment.findOne({
-        where: {
-          group_id: resolvedGroupId,
-          subscriber_id: resolvedBidderId,
-          delete_status: 0,
-          ...(winnerTicket ? { group_position_number: winnerTicket } : {})
-        },
-        order: [['group_position_number', 'ASC']],
-        transaction
-      }) : null;
-
-      const effectiveAuctionData = auctionResult.toJSON ? auctionResult.toJSON() : { ...auctionData, ...auctionResult };
-
-      if (schemeConfig) {
-        if (winnerEnrollment) {
-          await applyWinnerSchemeAdjustments(effectiveAuctionData, schemeConfig, winnerEnrollment.id, transaction);
-        }
-      } else {
-        await applyOpenAuctionAdjustments(effectiveAuctionData, winnerEnrollment ? winnerEnrollment.id : null, resolvedGroupId, transaction, { previousDividend });
+    if (auctionData.group_id && isNew) {
+      const totalWonNow = await Auction.count({ where: { group_id: auctionData.group_id }, transaction });
+      const maxSeats = (parseInt(groupForMath.no_of_installments, 10) || 0) - companySeats.length;
+      if (totalWonNow >= maxSeats) {
+        await ChitsGroup.update(
+          { chits_group_status: 2 },
+          { where: { id: auctionData.group_id, company_id: safeCompanyId }, transaction }
+        );
       }
     }
 
-    if (auctionResult && auctionResult.id) {
-      const { recalcPrizeTotals } = require('./prizePaymentService');
-      await recalcPrizeTotals(auctionResult.id, transaction);
-    }
-
     await transaction.commit();
-    const savedMessage = `Auction ${isNew ? 'created' : 'updated'} successfully`;
+    const savedMessage = createdAuctions.length > 1
+      ? `${createdAuctions.length} auction winners recorded successfully`
+      : `Auction ${isNew ? 'created' : 'updated'} successfully`;
+    const savedJson = auctionResult && auctionResult.toJSON ? auctionResult.toJSON() : (auctionResult || {});
     if (capWarning) {
       // `warning` is an extra field: callers that ignore it behave as before.
-      const savedJson = auctionResult && auctionResult.toJSON ? auctionResult.toJSON() : auctionResult;
       return res.status(isNew ? statusCodes.CREATED : statusCodes.OK).json({
         status: 1,
         message: savedMessage,
-        data: { ...savedJson, warning: capWarning },
+        data: { ...savedJson, warning: capWarning, auctions: createdAuctions },
         warning: capWarning
       });
     }
-    return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, savedMessage, auctionResult);
+    return successResponse(res, isNew ? statusCodes.CREATED : statusCodes.OK, savedMessage, {
+      ...savedJson,
+      auctions: createdAuctions
+    });
   } catch (error) {
     await transaction.rollback();
 
@@ -3024,10 +3100,17 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     }
 
     // Open auction: skip all company months. Fixed schemes: skip their company months.
-    const nextAuctionNumber = schemeConfig ? Math.max(lastRecorded, companyMonths) + 1 : nextOpenAuctionNumber(lastRecorded, group, companySeats);
+    let nextAuctionNumber = null;
+    if (reqBody.auction_number != null && !isNaN(Number(reqBody.auction_number))) {
+      nextAuctionNumber = parseInt(reqBody.auction_number, 10);
+    } else {
+      nextAuctionNumber = schemeConfig ? Math.max(lastRecorded, companyMonths) + 1 : nextOpenAuctionNumber(lastRecorded, group, companySeats);
+    }
 
     // Guard against exceeding schedule
-    if (nextAuctionNumber > (group.no_of_installments || 0)) {
+    const totalWinnersInGroup = await Auction.count({ where: { group_id }, transaction });
+    const maxWinnersInGroup = (parseInt(group.no_of_installments, 10) || 0) - companySeats.length;
+    if (totalWinnersInGroup >= maxWinnersInGroup) {
       await transaction.rollback();
       return errorResponse(res, statusCodes.BAD_REQUEST, 'Auction schedule is already finished for this group');
     }
@@ -3132,7 +3215,8 @@ const recordWinnerService = async (res, reqBody, userToken) => {
     if (next_auction_date) {
       updates.auction_date = next_auction_date;
     }
-    if (parseInt(auctionData.auction_number, 10) >= parseInt(group.no_of_installments, 10)) {
+    const allWinnersCount = (await Auction.count({ where: { group_id }, transaction }));
+    if (allWinnersCount >= (parseInt(group.no_of_installments, 10) - companySeats.length) || parseInt(auctionData.auction_number, 10) >= parseInt(group.no_of_installments, 10)) {
       updates.chits_group_status = 2;
     }
 

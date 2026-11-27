@@ -396,7 +396,7 @@ function calculateOpenAuctionFinancials({ chitAmount, installments, bidAmount, c
   const requestedGst = gst;
   let commissionCapped = false;
   let totalDividend = Math.max(0, bidDiscount - commission - gst);
-  if (capToDiscount && commission + gst > Math.max(0, bidDiscount) + 0.005) {
+  if (capToDiscount && bidDiscount > 0 && commission + gst > Math.max(0, bidDiscount) + 0.005) {
     const room = Math.max(0, bidDiscount);
     commission = round2(room / (1 + gstPct / 100));
     gst = round2(room - commission);
