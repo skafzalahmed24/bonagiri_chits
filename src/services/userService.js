@@ -4542,12 +4542,22 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
         }
         const subscriber_id = userPayload.id;
 
+        const orConditions = [];
+        const numId = Number(payment_id);
+        if (!isNaN(numId) && numId > 0 && String(numId) === String(payment_id).trim()) {
+            orConditions.push({ id: numId });
+            orConditions.push({ collection_agent_amount_id: numId });
+        }
+        if (payment_id) {
+            orConditions.push({ receipt_number: String(payment_id).trim() });
+        }
+        if (orConditions.length === 0) {
+            return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid payment ID or receipt number');
+        }
+
         const payment = await CustomerPayment.findOne({
             where: {
-                [Op.or]: [
-                    { id: payment_id },
-                    { collection_agent_amount_id: payment_id }
-                ]
+                [Op.or]: orConditions
             },
             include: [
                 {
@@ -4599,9 +4609,11 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
 
         const isSubscriber = await isTicketHolder(enrollment, subscriber_id);
         const isAgentForPayment = submission && submission.collection_agent_id === subscriber_id;
+        const isAssignedAgent = enrollment.collection_agent_id === subscriber_id;
+        const isStaffOrCompany = userPayload.role === 'staff' || userPayload.role === 'company';
 
-        // Verify it belongs to this subscriber or was collected by this agent
-        if (!isSubscriber && !isAgentForPayment) {
+        // Verify it belongs to this subscriber, was collected by this agent, or viewed by staff
+        if (!isSubscriber && !isAgentForPayment && !isAssignedAgent && !isStaffOrCompany) {
             return errorResponse(res, statusCodes.FORBIDDEN, 'You are not authorized to view this receipt');
         }
 
