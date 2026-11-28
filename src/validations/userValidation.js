@@ -66,9 +66,8 @@ const getPaymentHistorySchema = Joi.object({
 });
 
 const getPaymentReceiptSchema = Joi.object({
-  payment_id: Joi.string().uuid().required().messages({
-    'any.required': 'Payment ID is required',
-    'string.uuid': 'Invalid Payment ID format'
+  payment_id: Joi.string().required().messages({
+    'any.required': 'Payment ID is required'
   })
 });
 

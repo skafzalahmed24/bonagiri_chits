@@ -4535,6 +4535,8 @@ const getPaymentHistoryService = async (res, userPayload, group_id, min = 0, max
     }
 };
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const getPaymentReceiptService = async (res, userPayload, payment_id) => {
     try {
         if (!userPayload) {
@@ -4542,18 +4544,17 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
         }
         const subscriber_id = userPayload.id;
 
-        const orConditions = [];
-        const numId = Number(payment_id);
-        if (!isNaN(numId) && numId > 0 && String(numId) === String(payment_id).trim()) {
-            orConditions.push({ id: numId });
-            orConditions.push({ collection_agent_amount_id: numId });
-        }
-        if (payment_id) {
-            orConditions.push({ receipt_number: String(payment_id).trim() });
-        }
-        if (orConditions.length === 0) {
+        const trimmed = String(payment_id || '').trim();
+        if (!trimmed) {
             return errorResponse(res, statusCodes.BAD_REQUEST, 'Invalid payment ID or receipt number');
         }
+
+        const orConditions = [];
+        if (UUID_REGEX.test(trimmed)) {
+            orConditions.push({ id: trimmed });
+            orConditions.push({ collection_agent_amount_id: trimmed });
+        }
+        orConditions.push({ receipt_number: trimmed });
 
         const payment = await CustomerPayment.findOne({
             where: {
@@ -4611,9 +4612,10 @@ const getPaymentReceiptService = async (res, userPayload, payment_id) => {
         const isAgentForPayment = submission && submission.collection_agent_id === subscriber_id;
         const isAssignedAgent = enrollment.collection_agent_id === subscriber_id;
         const isStaffOrCompany = userPayload.role === 'staff' || userPayload.role === 'company';
+        const isPayer = payment.payer_member_id === subscriber_id;
 
-        // Verify it belongs to this subscriber, was collected by this agent, or viewed by staff
-        if (!isSubscriber && !isAgentForPayment && !isAssignedAgent && !isStaffOrCompany) {
+        // Verify it belongs to this subscriber, was collected by this agent, paid by this member, or viewed by staff
+        if (!isSubscriber && !isAgentForPayment && !isAssignedAgent && !isStaffOrCompany && !isPayer) {
             return errorResponse(res, statusCodes.FORBIDDEN, 'You are not authorized to view this receipt');
         }
 
